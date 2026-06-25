@@ -110,6 +110,34 @@ async function nodes() {
   });
 }
 
+// ── 콘솔 통합 알림 연동 (ADR-UI-003 P1 발행 백본) ──
+// cluster-manager 백엔드 → 콘솔 audit bus(/api/admin/events) → 셸 단일 인박스.
+// 시작/노드 경고를 콘솔 인박스에 발행 = subShell이 콘솔 알림 core와 '유기적' 작동.
+// best-effort: 발행 실패해도 cluster-manager 본 기능엔 영향 없음. (manifest 권한 불요 — 백엔드 in-cluster 호출)
+const CONTROLLER = process.env.OSP_CONTROLLER || 'http://dupa-registry-controller.opensphere-system.svc.cluster.local:8080';
+async function publishNotify(ev) {
+  try {
+    await fetch(`${CONTROLLER}/api/admin/events`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-opensphere-source': 'cluster-manager' },
+      body: JSON.stringify({ source: 'cluster-manager', ...ev }),
+    });
+  } catch (e) { /* 콘솔 알림은 best-effort */ }
+}
+const _notifiedNodes = new Set();
+async function nodeHealthPublish() {
+  try {
+    for (const n of await nodes()) {
+      if (!n.ready && !_notifiedNodes.has(n.name)) {
+        _notifiedNodes.add(n.name);
+        await publishNotify({ action: 'NodeNotReady', target: `Node/${n.name}`, result: 'warning', reason: `노드 ${n.name} NotReady (cluster-manager 감지)` });
+      } else if (n.ready) {
+        _notifiedNodes.delete(n.name); // 복구 시 재경고 허용
+      }
+    }
+  } catch (e) { /* best-effort */ }
+}
+
 function serveFrom(root, rel, res) {
   const fp = path.join(root, path.normalize('/' + rel).replace(/^(\.\.[/\\])+/, ''));
   if (!fp.startsWith(root)) { res.writeHead(403); return res.end('forbidden'); }
@@ -240,4 +268,10 @@ server.on('upgrade', async (req, socket, head) => {
   });
 });
 
-server.listen(PORT, () => console.log(`k8s-console-ng v${VERSION} on :${PORT}`));
+server.listen(PORT, () => {
+  console.log(`k8s-console-ng v${VERSION} on :${PORT}`);
+  // 콘솔 인박스에 시작 이벤트 발행 + 주기적 노드 헬스(유기적 연동)
+  publishNotify({ action: 'started', target: 'cluster-manager', result: 'info', reason: `K8s Cluster 콘솔 백엔드 v${VERSION} 시작` });
+  nodeHealthPublish();
+  setInterval(nodeHealthPublish, 60000);
+});

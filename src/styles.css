@@ -1,0 +1,7 @@
+/* 전역(문서) 스타일은 최소화 — Clarity와 컴포넌트 스타일은 모두 Shadow DOM(app.component.css) 안에 격리.
+   DUPA 임베드 시 이 파일이 셸 문서에 로드되더라도 셸에 영향 없도록 host 외엔 규칙을 두지 않는다. */
+:root, body { margin: 0; }
+/* 임베드(DUPA) 시 셸 content-area를 꽉 채우도록 호스트 체인을 100% 높이/폭으로 전달.
+   (대형 모니터에서 콘텐츠 크기로 축소돼 우/하단이 비는 문제 해결 — React Layout 수정과 동형) */
+os-plugin-host, os-plugin-host > div { display: block; height: 100%; min-height: 0; }
+osp-k8s-console-ng { display: block; height: 100%; width: 100%; }

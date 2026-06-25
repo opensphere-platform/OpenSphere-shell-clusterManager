@@ -1,0 +1,67 @@
+/* VirtualMachine 생성 위저드 — Clarity-compliant: 토큰 전용, 인라인 스타일 금지 */
+.vc { display: flex; gap: 20px; align-items: flex-start; padding: 4px 2px 24px; }
+.vc-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 22px; }
+.vc-aside { flex: 0 0 300px; position: sticky; top: 8px; }
+.vc-head { display: flex; align-items: center; gap: 10px; margin: 0 0 4px; }
+.vc-h1 { font-size: 20px; font-weight: 700; color: var(--os-ink, #1b2438); margin: 0; }
+.vc-sec-h { font-size: 14px; font-weight: 700; color: var(--os-ink, #1b2438); margin: 0 0 4px; }
+.vc-sec-sub { font-size: 12px; color: var(--os-muted, #667193); margin: 0 0 12px; }
+.vc-step {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border-radius: 50%;
+  background: var(--clr-btn-primary-bg-color, var(--os-brand-500, #4c6fff));
+  color: #fff; font-size: 12px; font-weight: 700; margin-right: 8px;
+}
+.vc-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 10px; }
+.vc-card {
+  border: 1px solid var(--clr-table-border-color, #d4d8e0); border-radius: 8px;
+  padding: 12px; cursor: pointer; background: var(--clr-card-bg-color, #fff);
+  transition: border-color .1s, box-shadow .1s; display: flex; flex-direction: column; gap: 4px;
+}
+.vc-card:hover { border-color: var(--clr-link-color, var(--os-brand-500)); }
+.vc-card.sel {
+  border-color: var(--clr-btn-primary-bg-color, var(--os-brand-500));
+  box-shadow: 0 0 0 1px var(--clr-btn-primary-bg-color, var(--os-brand-500)) inset;
+  background: var(--clr-vertical-nav-item-active-bg-color, rgba(76,111,255,0.08));
+}
+.vc-card-ic { font-size: 22px; }
+.vc-card-t { font-weight: 700; color: var(--os-ink, #1b2438); font-size: 13px; }
+.vc-card-m { font-size: 11.5px; color: var(--os-muted, #667193); }
+.vc-tabs {
+  display: flex; gap: 2px; border-bottom: 1px solid var(--clr-table-border-color, #d4d8e0);
+  margin-bottom: 12px; flex-wrap: wrap;
+}
+.vc-tab {
+  padding: 7px 14px; font-size: 13px; color: var(--os-text-sec, #4a5568);
+  cursor: pointer; border: 0; background: none;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.vc-tab.on {
+  color: var(--clr-link-color, var(--os-brand-500));
+  border-bottom-color: var(--clr-link-color, var(--os-brand-500));
+  font-weight: 600;
+}
+.vc-form label { display: block; font-size: 12px; font-weight: 600; color: var(--os-text-sec, #4a5568); margin: 10px 0 3px; }
+.vc-form input[type=text],
+.vc-form select {
+  width: 100%; max-width: 420px; padding: 6px 9px;
+  border: 1px solid var(--clr-table-border-color, #d4d8e0);
+  border-radius: 4px; font-size: 13px;
+}
+.vc-chk { display: flex; align-items: center; gap: 7px; margin-top: 14px; font-size: 13px; color: var(--os-ink, #1b2438); }
+.vc-summary {
+  border: 1px solid var(--clr-table-border-color, #d4d8e0);
+  border-radius: 8px; background: var(--clr-card-bg-color, #fff); padding: 16px;
+}
+.vc-summary h4 { margin: 0 0 10px; font-size: 13px; font-weight: 700; color: var(--os-ink, #1b2438); }
+.vc-summary table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.vc-summary td { padding: 5px 0; border-bottom: 1px solid var(--clr-table-border-color, #d4d8e0); vertical-align: top; }
+.vc-summary td.k { color: var(--os-muted, #667193); width: 46%; }
+.vc-foot { display: flex; gap: 10px; margin-top: 8px; }
+.vc-note {
+  font-size: 12px;
+  color: var(--clr-alert-warning-font-color, #8a5b00);
+  background: var(--clr-alert-warning-bg-color, #fff7e0);
+  border: 1px solid var(--clr-alert-warning-border-color, #e5c07b);
+  border-radius: 6px; padding: 8px 12px; margin-top: 10px;
+}

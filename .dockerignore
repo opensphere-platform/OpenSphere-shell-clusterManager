@@ -5,3 +5,5 @@
 rbac.yaml
 uipluginpackage.yaml
 node_modules
+dist
+.angular

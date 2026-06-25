@@ -1,0 +1,9 @@
+{
+  "name": "k8s-console-ng-fc",
+  "version": "0.1.0",
+  "private": true,
+  "description": "k8s-console-ng feature container (정적 서빙 + 제네릭 K8s 프록시 + WS exec 게이트웨이)",
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

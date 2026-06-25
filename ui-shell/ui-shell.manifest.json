@@ -1,0 +1,20 @@
+{
+  "manifestVersion": 2,
+  "id": "cluster-manager",
+  "version": "0.1.0",
+  "title": "2. K8s Cluster + Ceph",
+  "description": "OpenSphere Perspective 2 — K8s Cluster + Ceph. 실제 Fleet 클러스터(opensphere-clusters 흡수) + 더미.",
+  "entry": "ui-shell.plugin.js",
+  "entrySha256": "a40072e7948de88b111b9c13d42a4b365432e2ccc5e8f3146d69c48b01d8d484",
+  "shellCompat": ">=0.2.0 <0.9.0",
+  "permissions": [
+    "page:register",
+    "api:proxy"
+  ],
+  "nav": {
+    "band": "운영 Operate",
+    "label": "2. K8s Cluster + Ceph"
+  },
+  "designSystem": "clarity",
+  "apiBase": "/api/plugins/cluster-manager"
+}

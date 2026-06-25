@@ -1,0 +1,49 @@
+# 2. K8s Cluster + Ceph — OpenSphere Perspective subShell (DUMMY). 생성기 산출물(console/perspectives/generate.mjs).
+# 로컬: image=localhost:5000/cluster-manager:dev (태그 pull). manifest.sha256는 서명 핀(아래) — 재생성 시 자동 갱신.
+apiVersion: plugins.opensphere.io/v1alpha1
+kind: UIPluginPackage
+metadata:
+  name: cluster-manager
+  namespace: opensphere-system
+  labels:
+    opensphere.io/perspective: "2"
+spec:
+  displayName: "2. K8s Cluster + Ceph"
+  owner: platform-experience
+  version: 0.1.0
+  description: "Perspective 2 K8s Cluster + Ceph — opensphere-clusters 흡수(실 Fleet) + 더미"
+  image:
+    repository: localhost:5000/cluster-manager
+    digest: v7
+  nav:
+    band: "운영 Operate"
+    label: "2. K8s Cluster + Ceph"
+  manifest:
+    path: /plugins/ui-shell.manifest.json
+    sha256: "cc99a16fbe8b44c31218a660603e70850ec0288cf510f2afb78d07ae863e014a"
+    signaturePath: /plugins/ui-shell.manifest.json.sig
+  trust:
+    keyId: opensphere-plugins-v1
+  shellCompat: ">=0.2.0 <0.9.0"
+  permissions:
+    - page:register
+    - api:proxy
+  api:
+    basePath: /api/plugins/cluster-manager
+---
+apiVersion: plugins.opensphere.io/v1alpha1
+kind: UIPluginRegistration
+metadata:
+  name: cluster-manager
+  namespace: opensphere-system
+spec:
+  packageRef:
+    name: cluster-manager
+  desiredState: Enabled
+  installPolicy:
+    createWorkload: true
+    createProxyRoute: false
+    exposeInNavigation: true
+  approval:
+    requestedBy: cmars
+    reason: "10 Perspective subShell scaffold (dummy)"

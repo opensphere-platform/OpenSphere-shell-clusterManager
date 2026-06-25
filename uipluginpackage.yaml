@@ -14,7 +14,7 @@ spec:
   description: "Perspective 2 K8s Cluster + Ceph — opensphere-clusters 흡수(실 Fleet) + 더미"
   image:
     repository: localhost:5000/cluster-manager
-    digest: v7
+    digest: v1
   nav:
     band: "운영 Operate"
     label: "2. K8s Cluster + Ceph"

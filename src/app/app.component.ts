@@ -83,20 +83,28 @@ export class AppComponent {
 
   /** 뷰 스코프: Cluster(코어 K8s) ↔ VM(KubeVirt). 콤보로 전환(§7.1 통합 콤보 뷰). */
   readonly viewScope = signal<'cluster' | 'vm'>('cluster');
-  /** capability-gate: kubevirt.io VirtualMachine CRD 존재 여부. 없으면 콤보·VM 그룹 숨김(§3.3 실재만 노출). */
-  readonly vmCapable = signal(false);
+  /** 클러스터에 실제 존재하는 apiGroup 집합(GET /apis 디스커버리) — nav 항목별 capability-gate·VM 스코프 결정. */
+  readonly availableGroups = signal<Set<string>>(new Set());
+  /** capability-gate: kubevirt.io 그룹이 실재할 때만 VM 스코프(콤보) 활성. §3.3 실재만 노출. */
+  readonly vmCapable = computed(() => this.availableGroups().has('kubevirt.io'));
 
-  /** 현재 스코프 그룹만 — scope==='vm' 그룹은 VM 뷰에서만, 나머지(기본 cluster)는 Cluster 뷰에서만. */
-  readonly filteredNav = computed<NavGroup[]>(() =>
-    this.viewScope() === 'vm'
-      ? NAV.filter(g => g.scope === 'vm')
-      : NAV.filter(g => g.scope !== 'vm'));
+  /** 현재 스코프 그룹 + **항목별 capability-gate**(it.requires apiGroup이 클러스터에 실재할 때만) + 빈 그룹 숨김.
+   *  → 실 CRD가 있는 페이지만 노출(없으면 자동 숨김). 더미·phantom 없음(§3.3 — 실구현된 것만). */
+  readonly filteredNav = computed<NavGroup[]>(() => {
+    const avail = this.availableGroups();
+    const inScope = (g: NavGroup) => (this.viewScope() === 'vm' ? g.scope === 'vm' : g.scope !== 'vm');
+    return NAV
+      .filter(inScope)
+      .map(g => ({ ...g, items: g.items.filter(it => !it.requires || avail.has(it.requires)) }))
+      .filter(g => g.items.length > 0);
+  });
 
   constructor() {
-    // capability-gate: KubeVirt VirtualMachine CRD가 있으면 VM 스코프 활성(없으면 404 → 비활성 → 콤보·VM 그룹 숨김).
-    this.k8s
-      .get('/apis/apiextensions.k8s.io/v1/customresourcedefinitions/virtualmachines.kubevirt.io')
-      .subscribe({ next: () => this.vmCapable.set(true), error: () => this.vmCapable.set(false) });
+    // apiGroup 디스커버리(GET /apis) → 실재 그룹만 set. nav가 이걸로 item.requires를 게이트(CRD 있으면 실페이지·없으면 숨김).
+    this.k8s.get<{ groups?: Array<{ name: string }> }>('/apis').subscribe({
+      next: d => this.availableGroups.set(new Set((d.groups ?? []).map(g => g.name))),
+      error: () => this.availableGroups.set(new Set()),
+    });
   }
 
   /** 콤보 전환 — 스코프 변경 + 활성 뷰를 새 스코프 기본으로 리셋(스코프 밖 stale 콘텐츠 방지). */

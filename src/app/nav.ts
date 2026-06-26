@@ -1,4 +1,5 @@
 import { Type } from '@angular/core';
+// ── 코어 K8s 리소스(항상 존재) ──
 import { NodesComponent } from './resources/nodes.component';
 import { PodComponent } from './resources/pods.component';
 import { DeploymentComponent } from './resources/deployments.component';
@@ -34,14 +35,22 @@ import { EventComponent } from './resources/events.component';
 import { RoleBindingComponent } from './resources/rolebindings.component';
 import { ClusterRoleComponent } from './resources/clusterroles.component';
 import { ClusterRoleBindingComponent } from './resources/clusterrolebindings.component';
-import { DummyVmTemplatesComponent, DummyInstanceTypesComponent, DummyBootableVolumesComponent, DummyVmMigrationPoliciesComponent } from './resources/dummy-virtualization';
+// ── 실 CRD 페이지(dummy→real 전환, capability-gate=requires) ──
 import { VirtualMachinesComponent } from './resources/virtualmachines.component';
-import { DummyVolumeSnapshotsComponent, DummyVolumeSnapshotClassesComponent, DummyCephComponent } from './resources/dummy-storage';
-import { DummyStorageMigrationComponent, DummyMtvProvidersComponent, DummyMtvPlansComponent } from './resources/dummy-migration';
-import { DummyAlertsComponent, DummyMetricsComponent, DummyDashboardsComponent, DummyTargetsComponent } from './resources/dummy-observability';
+import { VmTemplatesComponent } from './resources/vm-templates.component';
+import { VmInstanceTypesComponent } from './resources/vm-instancetypes.component';
+import { VmBootableVolumesComponent } from './resources/vm-bootablevolumes.component';
+import { VmMigrationPoliciesComponent } from './resources/vm-migrationpolicies.component';
+import { VolumeSnapshotsComponent } from './resources/volumesnapshots.component';
+import { VolumeSnapshotClassesComponent } from './resources/volumesnapshotclasses.component';
+import { CephClustersComponent } from './resources/ceph.component';
+import { MtvProvidersComponent } from './resources/mtv-providers.component';
+import { MtvPlansComponent } from './resources/mtv-plans.component';
+import { PrometheusRulesComponent } from './resources/mon-alerts.component';
+import { ServiceMonitorsComponent } from './resources/mon-targets.component';
 
-/** 앱 내부 사이드바 네비 — Headlamp 사이드바 그룹 매핑. */
-export interface NavItem { id: string; label: string; component: Type<any>; }
+/** 앱 내부 사이드바 네비. requires=이 항목이 요구하는 apiGroup — 클러스터에 실재할 때만 노출(capability-gate, §3.3 실구현만). */
+export interface NavItem { id: string; label: string; component: Type<any>; requires?: string; }
 /** scope: 'vm' 그룹은 VM 뷰 스코프에서만, 그 외(기본=cluster)는 Cluster 뷰에서만 노출(§7.1 통합 콤보 뷰). */
 export interface NavGroup { group: string; items: NavItem[]; scope?: 'cluster' | 'vm'; }
 
@@ -56,9 +65,9 @@ export const NAV: NavGroup[] = [
       { id: 'daemonsets', label: 'DaemonSets', component: DaemonSetComponent },
       { id: 'jobs', label: 'Jobs', component: JobComponent },
       { id: 'cronjobs', label: 'CronJobs', component: CronJobComponent },
-      { id: 'jobsets', label: 'Job Sets', component: JobSetComponent },
+      { id: 'jobsets', label: 'Job Sets', component: JobSetComponent, requires: 'jobset.x-k8s.io' },
       { id: 'hpas', label: 'Horizontal Pod Autoscalers', component: HorizontalPodAutoscalerComponent },
-      { id: 'vpas', label: 'Vertical Pod Autoscalers', component: VerticalPodAutoscalerComponent },
+      { id: 'vpas', label: 'Vertical Pod Autoscalers', component: VerticalPodAutoscalerComponent, requires: 'autoscaling.k8s.io' },
       { id: 'pdbs', label: 'Pod Disruption Budgets', component: PodDisruptionBudgetComponent },
     ],
   },
@@ -106,42 +115,39 @@ export const NAV: NavGroup[] = [
       { id: 'serviceaccounts', label: 'Service Accounts', component: ServiceAccountComponent },
     ],
   },
-  // ── OpenSphere 확장(코어 K8s 콘솔에 없는 고유 영역) — OpenShift 콘솔 구조 참고 더미 페이지, 후속 실연동 ──
+  // ── KubeVirt 가상화(VM 뷰 스코프) — 각 항목 requires로 capability-gate. 해당 CRD 없으면 자동 숨김. ──
   {
     group: 'Virtualization',
     scope: 'vm',
     items: [
-      { id: 'virtualmachines', label: 'Virtual Machines', component: VirtualMachinesComponent },
-      { id: 'vm-templates', label: 'Templates', component: DummyVmTemplatesComponent },
-      { id: 'vm-instancetypes', label: 'Instance Types', component: DummyInstanceTypesComponent },
-      { id: 'vm-bootablevolumes', label: 'Bootable Volumes', component: DummyBootableVolumesComponent },
-      { id: 'vm-migrationpolicies', label: 'Migration Policies', component: DummyVmMigrationPoliciesComponent },
+      { id: 'virtualmachines', label: 'Virtual Machines', component: VirtualMachinesComponent, requires: 'kubevirt.io' },
+      { id: 'vm-instancetypes', label: 'Instance Types', component: VmInstanceTypesComponent, requires: 'instancetype.kubevirt.io' },
+      { id: 'vm-bootablevolumes', label: 'Bootable Volumes', component: VmBootableVolumesComponent, requires: 'cdi.kubevirt.io' },
+      { id: 'vm-migrationpolicies', label: 'Migration Policies', component: VmMigrationPoliciesComponent, requires: 'migrations.kubevirt.io' },
+      { id: 'vm-templates', label: 'Templates', component: VmTemplatesComponent, requires: 'template.openshift.io' },
     ],
   },
   {
     group: 'Storage (Ceph/ODF)',
     items: [
-      { id: 'volumesnapshots', label: 'Volume Snapshots', component: DummyVolumeSnapshotsComponent },
-      { id: 'volumesnapshotclasses', label: 'Volume Snapshot Classes', component: DummyVolumeSnapshotClassesComponent },
-      { id: 'ceph', label: 'Ceph / ODF', component: DummyCephComponent },
+      { id: 'volumesnapshots', label: 'Volume Snapshots', component: VolumeSnapshotsComponent, requires: 'snapshot.storage.k8s.io' },
+      { id: 'volumesnapshotclasses', label: 'Volume Snapshot Classes', component: VolumeSnapshotClassesComponent, requires: 'snapshot.storage.k8s.io' },
+      { id: 'ceph', label: 'Ceph / ODF', component: CephClustersComponent, requires: 'ceph.rook.io' },
     ],
   },
   {
     group: 'Migration (MTV)',
     scope: 'vm',
     items: [
-      { id: 'mtv-storage-migration', label: 'Storage Migration', component: DummyStorageMigrationComponent },
-      { id: 'mtv-providers', label: 'Providers', component: DummyMtvProvidersComponent },
-      { id: 'mtv-plans', label: 'Plans', component: DummyMtvPlansComponent },
+      { id: 'mtv-providers', label: 'Providers', component: MtvProvidersComponent, requires: 'forklift.konveyor.io' },
+      { id: 'mtv-plans', label: 'Plans', component: MtvPlansComponent, requires: 'forklift.konveyor.io' },
     ],
   },
   {
     group: 'Observability',
     items: [
-      { id: 'mon-alerts', label: 'Alerting', component: DummyAlertsComponent },
-      { id: 'mon-metrics', label: 'Metrics', component: DummyMetricsComponent },
-      { id: 'mon-dashboards', label: 'Dashboards', component: DummyDashboardsComponent },
-      { id: 'mon-targets', label: 'Targets', component: DummyTargetsComponent },
+      { id: 'mon-alerts', label: 'Alerting Rules', component: PrometheusRulesComponent, requires: 'monitoring.coreos.com' },
+      { id: 'mon-targets', label: 'Service Monitors', component: ServiceMonitorsComponent, requires: 'monitoring.coreos.com' },
     ],
   },
 ];

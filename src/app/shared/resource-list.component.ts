@@ -118,7 +118,8 @@ export interface ColumnDef {
         <clr-dg-cell *ngIf="namespaced">{{ item.metadata?.namespace }}</clr-dg-cell>
         <clr-dg-cell *ngFor="let c of columns" [ngSwitch]="c.kind || 'text'">
           <ng-container *ngSwitchCase="'name'">
-            <a *ngIf="kind" class="os-link" role="button" tabindex="0" (click)="selected.set(item)" (keydown.enter)="selected.set(item)">{{ c.get(item) }}</a>
+            <a *ngIf="kind && pageDetail" class="os-link" role="button" tabindex="0" (click)="rowOpen.emit(item)" (keydown.enter)="rowOpen.emit(item)">{{ c.get(item) }}</a>
+            <a *ngIf="kind && !pageDetail" class="os-link" role="button" tabindex="0" (click)="selected.set(item)" (keydown.enter)="selected.set(item)">{{ c.get(item) }}</a>
             <a *ngIf="!kind && dummy" class="os-link" role="button" tabindex="0" (click)="rowClick.emit(item)" (keydown.enter)="rowClick.emit(item)">{{ c.get(item) }}</a>
             <strong *ngIf="!kind && !dummy">{{ c.get(item) }}</strong>
           </ng-container>
@@ -210,6 +211,8 @@ export class ResourceListComponent implements OnInit {
   @Input() vm = false;
   /** 행별 작업(⋮) — item을 받아 작업 목록 반환. 지정 시 마지막에 작업(⋮) 컬럼 표시. */
   @Input() rowActions?: (item: any) => Array<{ label: string; danger?: boolean; run: () => void }>;
+  /** 페이지 상세 모드 — 이름 클릭 시 드로어 대신 (rowOpen)으로 상위에 위임(상위가 전체 페이지로 상세 렌더). OpenShift 방식. */
+  @Input() pageDetail = false;
   /** 더미 모드 — 지정 시 프록시 호출 대신 staticRows를 그대로 렌더(예시 페이지). */
   @Input() dummy = false;
   /** 더미 정적 행(K8s 객체 형태). dummy=true와 함께 사용. */
@@ -220,6 +223,8 @@ export class ResourceListComponent implements OnInit {
   @Output() create = new EventEmitter<void>();
   /** 더미 모드에서 행(이름) 클릭 — 상위가 상세로 전환. */
   @Output() rowClick = new EventEmitter<any>();
+  /** pageDetail 모드에서 행(이름) 클릭 — 상위가 전체 페이지 상세로 전환. */
+  @Output() rowOpen = new EventEmitter<any>();
   // ── 검색 + 다중선택 패싯 필터 (Headlamp 네임스페이스 다중선택 패리티, 섀도우 자체완결) ──
   /** 네임스페이스 패싯의 예약 facetId */
   readonly NS = '__ns__';

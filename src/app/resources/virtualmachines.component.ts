@@ -1,10 +1,11 @@
 import { CommonModule } from '@angular/common';
-import { Component, OnInit, ViewChild, inject, signal } from '@angular/core';
+import { Component, OnDestroy, OnInit, ViewChild, inject, signal } from '@angular/core';
 import { ClarityModule } from '@clr/angular';
 import { of } from 'rxjs';
 import { catchError } from 'rxjs/operators';
 import { ColumnDef, ResourceListComponent } from '../shared/resource-list.component';
 import { VmCreateComponent } from './vm-create.component';
+import { VmDetailComponent } from './vm-detail.component';
 import { osIdFromImage } from '../shared/os-logo.component';
 import { K8sService } from '../core/k8s.service';
 
@@ -26,25 +27,36 @@ function vmVcpu(v: any): number { const c = v.spec?.template?.spec?.domain?.cpu;
 function vmMemBytes(v: any): number { const d = v.spec?.template?.spec?.domain; return memBytes(d?.memory?.guest || d?.resources?.requests?.memory); }
 
 /**
- * KubeVirt VirtualMachine 목록 — OpenShift Virtualization VM 목록 등가:
- * 상단 요약 밴드(네임스페이스 + 가상 머신 상태 + 사용량) + 테이블(OS 로고·상태·조건·행 액션 ⋮).
- * 행 이름 클릭 → vm-detail 드로어. ⋮ → 시작/정지/재시작/삭제(그룹 임퍼소네이션 write).
+ * KubeVirt VirtualMachine — OpenShift Virtualization 방식:
+ * 목록(요약 밴드 + 테이블) ↔ 이름 클릭 시 **전체 페이지 상세**(드로어 아님, 목록 자리를 상세가 대체).
+ * 상세는 URL ?...&name=<vm>에 반영되어 공유·뒤로가기 가능. ⋮ 행 액션(시작/정지/재시작/삭제).
  */
 @Component({
   selector: 'app-res-virtualmachines',
   standalone: true,
-  imports: [CommonModule, ClarityModule, ResourceListComponent, VmCreateComponent],
+  imports: [CommonModule, ClarityModule, ResourceListComponent, VmCreateComponent, VmDetailComponent],
   styles: [`
     .vm-summary { display: grid; grid-template-columns: 1fr 1.4fr 1.1fr; gap: 1rem; margin: .25rem 0 1rem; }
     .vm-sum-row { display: flex; gap: 1.5rem; flex-wrap: wrap; padding: .8rem 1rem; align-items: center; }
     .vm-sum-row .os-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: .35rem; }
     .vm-sum-row strong { font-size: 1.05rem; }
+    .vm-crumb { display: flex; align-items: center; gap: .4rem; margin: .25rem 0 .75rem; font-size: .9rem; }
     @media (max-width: 1000px) { .vm-summary { grid-template-columns: 1fr; } }
   `],
   template: `
     <app-vm-create *ngIf="creating()" (created)="creating.set(false); reload()" (cancel)="creating.set(false)"></app-vm-create>
-    <div *ngIf="!creating()">
-      <!-- 요약 밴드 (OpenShift Virtualization 목록 등가) -->
+
+    <!-- ===== 전체 페이지 VM 상세 (OpenShift 방식) ===== -->
+    <div *ngIf="!creating() && detailVm() as vm">
+      <div class="vm-crumb">
+        <a class="os-link" role="button" tabindex="0" (click)="closeDetail()" (keydown.enter)="closeDetail()">← Virtual Machines</a>
+        <span class="os-muted">/ {{ vm.metadata?.name }}</span>
+      </div>
+      <app-vm-detail [item]="vm" (back)="closeDetail()" (changed)="reload()"></app-vm-detail>
+    </div>
+
+    <!-- ===== 목록 + 요약 밴드 ===== -->
+    <div *ngIf="!creating() && !detailVm()">
       <div class="vm-summary">
         <div class="card">
           <div class="card-header">프로젝트</div>
@@ -72,22 +84,45 @@ function vmMemBytes(v: any): number { const d = v.spec?.template?.spec?.domain; 
       </div>
 
       <app-resource-list title="Virtual Machines" path="/apis/kubevirt.io/v1/virtualmachines" [namespaced]="true"
-        kind="VirtualMachine" [vm]="true" createLabel="Create VirtualMachine" (create)="creating.set(true)"
+        kind="VirtualMachine" [vm]="true" [pageDetail]="true" (rowOpen)="openDetail($event)"
+        createLabel="Create VirtualMachine" (create)="creating.set(true)"
         [columns]="cols" [rowActions]="vmActions"></app-resource-list>
     </div>
   `,
 })
-export class VirtualMachinesComponent implements OnInit {
+export class VirtualMachinesComponent implements OnInit, OnDestroy {
   private k8s = inject(K8sService);
   @ViewChild(ResourceListComponent) list?: ResourceListComponent;
   readonly creating = signal(false);
   readonly vms = signal<any[]>([]);
+  readonly detailVm = signal<any | null>(null);
+  private pendingName = '';
 
-  ngOnInit(): void { this.reload(); }
+  ngOnInit(): void {
+    try { this.pendingName = new URLSearchParams(location.search).get('name') || ''; } catch { /* noop */ }
+    this.reload();
+  }
+  ngOnDestroy(): void { this.clearNameParam(); }
+
   reload(): void {
     this.k8s.list('/apis/kubevirt.io/v1/virtualmachines').pipe(catchError(() => of({ items: [] as any[] })))
-      .subscribe((r: any) => this.vms.set(r.items || []));
+      .subscribe((r: any) => {
+        const items = r.items || [];
+        this.vms.set(items);
+        // 공유 URL(&name=)로 진입 시 해당 VM 상세를 전체 페이지로 연다.
+        if (this.pendingName) {
+          const vm = items.find((v: any) => v.metadata?.name === this.pendingName);
+          this.pendingName = '';
+          if (vm) this.openDetail(vm, false);
+        }
+      });
   }
+
+  // ── 전체 페이지 상세 (드로어 아님) ──
+  openDetail(vm: any, sync = true): void { this.detailVm.set(vm); if (sync) this.setNameParam(vm?.metadata?.name); }
+  closeDetail(): void { this.detailVm.set(null); this.clearNameParam(); this.reload(); }
+  private setNameParam(name: string): void { try { const p = new URLSearchParams(location.search); p.set('name', name); history.replaceState(history.state, '', location.pathname + '?' + p.toString()); } catch { /* noop */ } }
+  private clearNameParam(): void { try { const p = new URLSearchParams(location.search); if (p.has('name')) { p.delete('name'); history.replaceState(history.state, '', location.pathname + (p.toString() ? '?' + p.toString() : '')); } } catch { /* noop */ } }
 
   private bucket(v: any): string {
     const s = String(v.status?.printableStatus || '');

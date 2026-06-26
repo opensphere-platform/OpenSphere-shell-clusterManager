@@ -1,5 +1,7 @@
-import { Component } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { Component, signal } from '@angular/core';
 import { ColumnDef, ResourceListComponent } from '../shared/resource-list.component';
+import { VmCreateComponent } from './vm-create.component';
 
 // KubeVirt VM의 status.printableStatus → 상태 색상.
 const vmStatusColor = (s: string): 'success' | 'danger' | 'warning' | 'info' | 'unknown' => {
@@ -21,10 +23,14 @@ const vmStatusColor = (s: string): 'success' | 'danger' | 'warning' | 'info' | '
 @Component({
   selector: 'app-res-virtualmachines',
   standalone: true,
-  imports: [ResourceListComponent],
-  template: `<app-resource-list title="Virtual Machines" path="/apis/kubevirt.io/v1/virtualmachines" [namespaced]="true" kind="VirtualMachine" [vm]="true" [columns]="cols" />`,
+  imports: [CommonModule, ResourceListComponent, VmCreateComponent],
+  template: `
+    <app-vm-create *ngIf="creating()" (created)="creating.set(false)" (cancel)="creating.set(false)" />
+    <app-resource-list *ngIf="!creating()" title="Virtual Machines" path="/apis/kubevirt.io/v1/virtualmachines" [namespaced]="true" kind="VirtualMachine" [vm]="true" createLabel="Create VirtualMachine" (create)="creating.set(true)" [columns]="cols" />
+  `,
 })
 export class VirtualMachinesComponent {
+  readonly creating = signal(false);
   cols: ColumnDef[] = [
     { id: 'name', label: 'Name', kind: 'name', get: o => o.metadata?.name },
     { id: 'status', label: 'Status', kind: 'status', get: o => o.status?.printableStatus || 'Unknown', statusOf: o => vmStatusColor(o.status?.printableStatus) },

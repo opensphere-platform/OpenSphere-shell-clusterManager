@@ -1,6 +1,6 @@
 import { Component, ElementRef, Input, OnDestroy, OnInit, ViewChild, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import RFB from '@novnc/novnc/core/rfb';
+import RFB from '@novnc/novnc';
 import { K8sService } from '../core/k8s.service';
 
 /**

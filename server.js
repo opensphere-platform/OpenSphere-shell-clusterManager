@@ -250,35 +250,58 @@ const server = http.createServer(async (req, res) => {
 // 브라우저 WS(/api/k8s-exec/<ns>/<pod>?container=&command=) → 쿠키 토큰 JWKS 검증 → apiserver exec
 // 채널(v4.channel.k8s.io)로 투명 릴레이. SA 토큰 + Impersonate-User로 사용자 본인 RBAC(create pods/exec) 인가.
 const wss = new WebSocketServer({ noServer: true });
+// 검증된 actor → 임퍼소네이션 헤더(그룹은 배열=별도 헤더 라인). exec/VM콘솔 공용.
+function impHeaders(actor) {
+  const h = { Authorization: `Bearer ${tok()}`, 'Impersonate-User': actor.username };
+  if (Array.isArray(actor.groups) && actor.groups.length) h['Impersonate-Group'] = [...actor.groups, 'system:authenticated'];
+  return h;
+}
+// 브라우저 WS ↔ 업스트림 WS 양방향 raw 릴레이. execMode면 업스트림 에러를 채널3 프레임으로(터미널 표시).
+function relayWs(browserWs, up, execMode) {
+  const closeBoth = () => { try { browserWs.close(); } catch {} try { up.close(); } catch {} };
+  up.on('message', (data) => { if (browserWs.readyState === 1) browserWs.send(data, { binary: true }); });
+  browserWs.on('message', (data) => { if (up.readyState === 1) up.send(data); });
+  up.on('close', closeBoth);
+  up.on('error', (e) => { if (execMode) { try { browserWs.send(Buffer.from([3, ...Buffer.from(String(e))])); } catch {} } closeBoth(); });
+  browserWs.on('close', closeBoth);
+  browserWs.on('error', closeBoth);
+}
 server.on('upgrade', async (req, socket, head) => {
   const u = new URL(req.url, 'http://x');
-  const m = u.pathname.match(/^\/api\/k8s-exec\/([^/]+)\/([^/]+)$/);
-  if (!m) { socket.destroy(); return; }
+  const exec = u.pathname.match(/^\/api\/k8s-exec\/([^/]+)\/([^/]+)$/);
+  const vmc = u.pathname.match(/^\/api\/k8s-(vmconsole|vmvnc)\/([^/]+)\/([^/]+)$/);
+  if (!exec && !vmc) { socket.destroy(); return; }
   let actor;
   try { actor = await verifyToken(tokenFromCookie(req.headers.cookie)); }
   catch { socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n'); socket.destroy(); return; }
-  const ns = decodeURIComponent(m[1]);
-  const pod = decodeURIComponent(m[2]);
-  const container = u.searchParams.get('container') || '';
-  const commands = u.searchParams.getAll('command');
-  const cmds = commands.length ? commands : ['/bin/sh'];
-  wss.handleUpgrade(req, socket, head, (browserWs) => {
-    const qs = new URLSearchParams();
-    if (container) qs.set('container', container);
-    qs.set('stdin', 'true'); qs.set('stdout', 'true'); qs.set('stderr', 'true'); qs.set('tty', 'true');
-    for (const c of cmds) qs.append('command', c);
-    const upUrl = `${APISERVER.replace(/^https/, 'wss')}/api/v1/namespaces/${ns}/pods/${pod}/exec?${qs.toString()}`;
-    const up = new WebSocket(upUrl, ['v4.channel.k8s.io'], {
-      headers: { Authorization: `Bearer ${tok()}`, 'Impersonate-User': actor.username },
+  const headers = impHeaders(actor);
+  if (exec) {
+    const ns = decodeURIComponent(exec[1]);
+    const pod = decodeURIComponent(exec[2]);
+    const container = u.searchParams.get('container') || '';
+    const commands = u.searchParams.getAll('command');
+    const cmds = commands.length ? commands : ['/bin/sh'];
+    wss.handleUpgrade(req, socket, head, (browserWs) => {
+      const qs = new URLSearchParams();
+      if (container) qs.set('container', container);
+      qs.set('stdin', 'true'); qs.set('stdout', 'true'); qs.set('stderr', 'true'); qs.set('tty', 'true');
+      for (const c of cmds) qs.append('command', c);
+      const upUrl = `${APISERVER.replace(/^https/, 'wss')}/api/v1/namespaces/${ns}/pods/${pod}/exec?${qs.toString()}`;
+      const up = new WebSocket(upUrl, ['v4.channel.k8s.io'], { headers });
+      console.log(`[audit] exec user=${actor.username} pod=${ns}/${pod} container=${container} ${new Date().toISOString()}`);
+      relayWs(browserWs, up, true);
     });
-    console.log(`[audit] exec user=${actor.username} pod=${ns}/${pod} container=${container} ${new Date().toISOString()}`);
-    const closeBoth = () => { try { browserWs.close(); } catch {} try { up.close(); } catch {} };
-    up.on('message', (data) => { if (browserWs.readyState === 1) browserWs.send(data, { binary: true }); });
-    browserWs.on('message', (data) => { if (up.readyState === 1) up.send(data); });
-    up.on('close', closeBoth);
-    up.on('error', (e) => { try { browserWs.send(Buffer.from([3, ...Buffer.from(String(e))])); } catch {} closeBoth(); });
-    browserWs.on('close', closeBoth);
-    browserWs.on('error', closeBoth);
+    return;
+  }
+  // VM serial 콘솔(/console) / VNC(/vnc) — apiserver가 virt-api로 집계 프록시. raw 스트림 릴레이.
+  const sub = vmc[1] === 'vmvnc' ? 'vnc' : 'console';
+  const ns = decodeURIComponent(vmc[2]);
+  const name = decodeURIComponent(vmc[3]);
+  wss.handleUpgrade(req, socket, head, (browserWs) => {
+    const upUrl = `${APISERVER.replace(/^https/, 'wss')}/apis/subresources.kubevirt.io/v1/namespaces/${ns}/virtualmachineinstances/${name}/${sub}`;
+    const up = new WebSocket(upUrl, { headers });
+    console.log(`[audit] vm-${sub} user=${actor.username} vmi=${ns}/${name} ${new Date().toISOString()}`);
+    relayWs(browserWs, up, false);
   });
 });
 

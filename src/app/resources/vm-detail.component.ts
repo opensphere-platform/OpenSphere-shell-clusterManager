@@ -7,6 +7,7 @@ import { dump } from 'js-yaml';
 import { K8sService } from '../core/k8s.service';
 import { CodeEditorComponent } from '../shared/code-editor.component';
 import { OsLogoComponent, osIdFromImage } from '../shared/os-logo.component';
+import { VmConsoleComponent } from './vm-console.component';
 
 const ICON: Record<string, string> = {
   play: 'M8 5v14l11-7z',
@@ -33,7 +34,7 @@ const vmStatusClass = (s: string): string => {
 @Component({
   selector: 'app-vm-detail',
   standalone: true,
-  imports: [CommonModule, ClarityModule, CodeEditorComponent, OsLogoComponent],
+  imports: [CommonModule, ClarityModule, CodeEditorComponent, OsLogoComponent, VmConsoleComponent],
   styles: [`
     .vm-title-h { display: inline-flex; align-items: center; gap: .4rem; }
     .vm-tabs { display: flex; gap: .25rem; border-bottom: 1px solid var(--clr-color-neutral-300, #ccc); margin: .25rem 0 1rem; }
@@ -147,9 +148,10 @@ const vmStatusClass = (s: string): string => {
       </clr-datagrid>
     </div>
 
-    <!-- ===== 콘솔 (stage 2/3에서 serial/VNC 주입) ===== -->
+    <!-- ===== 콘솔 (serial) ===== -->
     <div *ngIf="tab() === 'console'" class="os-card">
-      <div class="card-block os-muted">콘솔(serial/VNC)은 다음 단계에서 연결됩니다.</div>
+      <div class="card-block os-muted" *ngIf="!vmi()">VM이 실행 중이 아닙니다 — 콘솔은 실행(VMI 존재) 시 사용 가능합니다.</div>
+      <app-vm-console *ngIf="vmi()" [ns]="namespace" [name]="name"></app-vm-console>
     </div>
 
     <!-- 삭제 확인 -->

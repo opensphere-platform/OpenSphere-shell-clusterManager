@@ -54,9 +54,10 @@ interface BootVol { name: string; kind: string; os: string; sc: string; size: st
 
     <!-- ── 1. 부팅할 볼륨 선택 ── -->
     <div class="it-step"><span class="it-num">1</span><h3>부팅할 볼륨 선택</h3></div>
-    <clr-datagrid [clrDgSingleSelected]="selVol()" (clrDgSingleSelectedChange)="selVol.set($any($event))" [clrDgLoading]="loading()">
-      <clr-dg-column>볼륨 이름</clr-dg-column><clr-dg-column>운영 체제</clr-dg-column><clr-dg-column>스토리지 클래스</clr-dg-column><clr-dg-column>크기</clr-dg-column>
-      <clr-dg-row *clrDgItems="let v of bootVols()" [clrDgItem]="v">
+    <clr-datagrid [clrDgLoading]="loading()">
+      <clr-dg-column>선택</clr-dg-column><clr-dg-column>볼륨 이름</clr-dg-column><clr-dg-column>운영 체제</clr-dg-column><clr-dg-column>스토리지 클래스</clr-dg-column><clr-dg-column>크기</clr-dg-column>
+      <clr-dg-row *clrDgItems="let v of bootVols()">
+        <clr-dg-cell><input type="radio" name="bootvol" [checked]="selVol()?.name === v.name" (change)="selVol.set(v)" /></clr-dg-cell>
         <clr-dg-cell><app-os-logo [os]="v.os" [size]="20"></app-os-logo> {{ v.name }} <span class="label">{{ v.kind }}</span></clr-dg-cell>
         <clr-dg-cell>{{ v.os }}</clr-dg-cell><clr-dg-cell>{{ v.sc }}</clr-dg-cell><clr-dg-cell>{{ v.size }}</clr-dg-cell>
       </clr-dg-row>

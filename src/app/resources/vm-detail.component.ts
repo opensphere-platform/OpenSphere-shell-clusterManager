@@ -8,6 +8,7 @@ import { K8sService } from '../core/k8s.service';
 import { CodeEditorComponent } from '../shared/code-editor.component';
 import { OsLogoComponent, osIdFromImage } from '../shared/os-logo.component';
 import { VmConsoleComponent } from './vm-console.component';
+import { VmVncComponent } from './vm-vnc.component';
 
 const ICON: Record<string, string> = {
   play: 'M8 5v14l11-7z',
@@ -34,7 +35,7 @@ const vmStatusClass = (s: string): string => {
 @Component({
   selector: 'app-vm-detail',
   standalone: true,
-  imports: [CommonModule, ClarityModule, CodeEditorComponent, OsLogoComponent, VmConsoleComponent],
+  imports: [CommonModule, ClarityModule, CodeEditorComponent, OsLogoComponent, VmConsoleComponent, VmVncComponent],
   styles: [`
     .vm-title-h { display: inline-flex; align-items: center; gap: .4rem; }
     .vm-tabs { display: flex; gap: .25rem; border-bottom: 1px solid var(--clr-color-neutral-300, #ccc); margin: .25rem 0 1rem; }
@@ -148,10 +149,17 @@ const vmStatusClass = (s: string): string => {
       </clr-datagrid>
     </div>
 
-    <!-- ===== 콘솔 (serial) ===== -->
+    <!-- ===== 콘솔 (VNC / serial 토글) ===== -->
     <div *ngIf="tab() === 'console'" class="os-card">
-      <div class="card-block os-muted" *ngIf="!vmi()">VM이 실행 중이 아닙니다 — 콘솔은 실행(VMI 존재) 시 사용 가능합니다.</div>
-      <app-vm-console *ngIf="vmi()" [ns]="namespace" [name]="name"></app-vm-console>
+      <div class="card-block os-muted" *ngIf="!vmi()">이 VirtualMachine이 중단되었습니다. 콘솔에 액세스하려면 VirtualMachine을 시작하십시오.</div>
+      <div *ngIf="vmi()" style="padding: .25rem 0">
+        <div class="vm-tabs" style="margin-top: 0">
+          <button class="vm-tab" [class.active]="consoleType() === 'vnc'" (click)="consoleType.set('vnc')">VNC 콘솔</button>
+          <button class="vm-tab" [class.active]="consoleType() === 'serial'" (click)="consoleType.set('serial')">Serial 콘솔</button>
+        </div>
+        <app-vm-vnc *ngIf="consoleType() === 'vnc'" [ns]="namespace" [name]="name"></app-vm-vnc>
+        <app-vm-console *ngIf="consoleType() === 'serial'" [ns]="namespace" [name]="name"></app-vm-console>
+      </div>
     </div>
 
     <!-- 삭제 확인 -->
@@ -175,6 +183,7 @@ export class VmDetailComponent implements OnInit {
   private k8s = inject(K8sService);
   readonly ic = ICON;
   readonly tab = signal<'overview' | 'yaml' | 'events' | 'console'>('overview');
+  readonly consoleType = signal<'vnc' | 'serial'>('vnc');
   readonly vm = signal<any>(null);
   readonly vmi = signal<any>(null);
   readonly pod = signal<any>(null);

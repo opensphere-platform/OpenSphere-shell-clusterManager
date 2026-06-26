@@ -1,53 +1,103 @@
 import { CommonModule } from '@angular/common';
-import { Component, EventEmitter, Output, inject, signal } from '@angular/core';
+import { Component, EventEmitter, Output, computed, inject, signal } from '@angular/core';
 import { ClarityModule } from '@clr/angular';
+import { dump } from 'js-yaml';
 import { K8sService } from '../core/k8s.service';
+import { CodeEditorComponent } from '../shared/code-editor.component';
+import { OsLogoComponent } from '../shared/os-logo.component';
+
+interface VmTemplate { id: string; logo: string; name: string; desc: string; image: string; cpu: number; mem: number; demo?: boolean; }
+
+// 부팅 소스 카탈로그 — public containerDisk(quay.io/containerdisks/*) + 데모용 cirros.
+const TEMPLATES: VmTemplate[] = [
+  { id: 'cirros', logo: 'cirros', name: 'CirrOS', desc: '경량 데모 · 빠른 부팅', image: 'quay.io/kubevirt/cirros-container-disk-demo:latest', cpu: 1, mem: 1, demo: true },
+  { id: 'fedora', logo: 'fedora', name: 'Fedora', desc: 'Fedora Linux', image: 'quay.io/containerdisks/fedora:latest', cpu: 1, mem: 2 },
+  { id: 'centos', logo: 'centos', name: 'CentOS Stream 9', desc: 'CentOS Stream', image: 'quay.io/containerdisks/centos-stream:9', cpu: 1, mem: 2 },
+  { id: 'ubuntu', logo: 'ubuntu', name: 'Ubuntu 24.04', desc: 'Ubuntu Server', image: 'quay.io/containerdisks/ubuntu:24.04', cpu: 1, mem: 2 },
+  { id: 'debian', logo: 'debian', name: 'Debian 12', desc: 'Debian', image: 'quay.io/containerdisks/debian:12', cpu: 1, mem: 2 },
+  { id: 'opensuse', logo: 'opensuse', name: 'openSUSE Leap', desc: 'openSUSE Leap 15.6', image: 'quay.io/containerdisks/opensuse-leap:15.6', cpu: 1, mem: 2 },
+];
 
 /**
- * VirtualMachine 생성 폼(증분 3) — 실 KubeVirt POST.
- * containerDisk + masquerade pod 네트워크의 최소 부팅 가능 VM. 콘솔 그룹 임퍼소네이션 write로 생성.
- * VirtualMachinesComponent가 createLabel 버튼→creating 토글로 이 폼을 띄운다.
+ * VirtualMachine 생성 — OpenShift Virtualization 템플릿 카탈로그 등가의 시각적 GUI.
+ * OS 로고 카드 그리드에서 부팅 소스 선택 → 세부정보 폼 → containerDisk VM POST. YAML 미리보기 포함.
+ * 콘솔 그룹 임퍼소네이션 write로 생성.
  */
 @Component({
   selector: 'app-vm-create',
   standalone: true,
-  imports: [CommonModule, ClarityModule],
+  imports: [CommonModule, ClarityModule, CodeEditorComponent, OsLogoComponent],
   styles: [`
-    .vm-form { max-width: 660px; }
+    .vm-cat { display: grid; grid-template-columns: repeat(auto-fill, minmax(215px, 1fr)); gap: 1rem; margin: 1rem 0 1.25rem; }
+    .vm-card { position: relative; border: 1px solid var(--clr-color-neutral-300, #cdcdcd); border-radius: 8px; padding: 1rem; cursor: pointer; background: var(--clr-global-app-background, #fff); transition: box-shadow .12s, border-color .12s; }
+    .vm-card:hover { border-color: var(--os-brand-500, #4c6fff); box-shadow: 0 2px 10px rgba(0,0,0,.09); }
+    .vm-card.sel { border-color: var(--os-brand-600, #2563eb); box-shadow: 0 0 0 2px var(--os-brand-500, #4c6fff); }
+    .vm-card-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: .6rem; }
+    .vm-card-name { font-weight: 700; font-size: .98rem; line-height: 1.2; }
+    .vm-card-desc { color: var(--clr-color-neutral-600, #6b6b6b); font-size: .78rem; margin: .1rem 0 .7rem; }
+    .vm-card-specs { display: grid; grid-template-columns: 1fr 1fr; gap: .25rem .5rem; margin: 0; font-size: .74rem; }
+    .vm-card-specs dt { color: var(--clr-color-neutral-500, #8a8a8a); }
+    .vm-card-specs dd { margin: 0; font-weight: 600; }
+    .vm-form { max-width: 760px; margin-top: .5rem; }
+    .vm-form-h { display: flex; align-items: center; gap: .5rem; }
     .vm-grid { padding: 1rem; display: grid; grid-template-columns: 150px 1fr; gap: .7rem 1rem; align-items: center; }
     .vm-grid input[type=text], .vm-grid input[type=number] { width: 100%; max-width: 360px; }
     .vm-grid label { font-weight: 600; }
   `],
   template: `
     <div class="os-title-row">
-      <h2 class="os-h2">Create VirtualMachine <span class="label label-info">KubeVirt</span></h2>
+      <h2 class="os-h2">새 VirtualMachine 생성</h2>
     </div>
+    <p class="os-sub">부팅 소스(운영체제)를 선택하면 세부 정보를 구성할 수 있습니다.</p>
 
     <div *ngIf="msg()" class="alert" [ngClass]="ok() ? 'alert-success' : 'alert-danger'" role="alert">
       <div class="alert-items"><div class="alert-item static"><span class="alert-text">{{ msg() }}</span></div></div>
     </div>
 
-    <div class="card vm-form">
-      <div class="card-header">VM 사양</div>
+    <!-- ===== OS 로고 카탈로그 ===== -->
+    <div class="vm-cat">
+      <div class="vm-card" *ngFor="let t of templates" [class.sel]="sel()?.id === t.id"
+           role="button" tabindex="0" (click)="pick(t)" (keydown.enter)="pick(t)">
+        <div class="vm-card-top">
+          <app-os-logo [os]="t.logo" [size]="42"></app-os-logo>
+          <span class="label" [ngClass]="t.demo ? 'label-warning' : 'label-info'">{{ t.demo ? '데모' : '소스 사용 가능' }}</span>
+        </div>
+        <div class="vm-card-name">{{ t.name }}</div>
+        <div class="vm-card-desc">{{ t.desc }}</div>
+        <dl class="vm-card-specs">
+          <dt>부팅 소스</dt><dd>containerDisk</dd>
+          <dt>CPU</dt><dd>{{ t.cpu }} vCPU</dd>
+          <dt>메모리</dt><dd>{{ t.mem }} GiB</dd>
+          <dt>아키텍처</dt><dd>amd64</dd>
+        </dl>
+      </div>
+    </div>
+
+    <!-- ===== 선택 시 세부 정보 폼 ===== -->
+    <div class="card vm-form" *ngIf="sel() as t">
+      <div class="card-header vm-form-h"><app-os-logo [os]="t.logo" [size]="22"></app-os-logo> {{ t.name }} — VirtualMachine 세부 정보</div>
       <div class="vm-grid">
-        <label>Name</label>
+        <label>이름</label>
         <input type="text" class="os-search" [value]="name()" (input)="name.set($any($event.target).value)" placeholder="my-vm" />
         <label>Namespace</label>
         <input type="text" class="os-search" [value]="ns()" (input)="ns.set($any($event.target).value)" />
-        <label>CPU (cores)</label>
+        <label>CPU (vCPU)</label>
         <input type="number" min="1" class="os-num" [value]="cpu()" (input)="cpu.set(+$any($event.target).value)" />
-        <label>Memory (Gi)</label>
+        <label>Memory (GiB)</label>
         <input type="number" min="1" class="os-num" [value]="mem()" (input)="mem.set(+$any($event.target).value)" />
-        <label>Boot image</label>
+        <label>부팅 이미지</label>
         <input type="text" class="os-search" [value]="image()" (input)="image.set($any($event.target).value)" />
-        <label>Start on create</label>
+        <label>생성 후 시작</label>
         <span><input type="checkbox" [checked]="start()" (change)="start.set($any($event.target).checked)" /></span>
       </div>
       <div class="os-actions" style="padding: 0 1rem 0.75rem">
-        <button class="btn btn-sm btn-primary" [disabled]="busy() || !name().trim()" (click)="submit()">Create</button>
-        <button class="btn btn-sm btn-outline" [disabled]="busy()" (click)="cancel.emit()">Cancel</button>
+        <button class="btn btn-sm btn-primary" [disabled]="busy() || !name().trim()" (click)="submit()">VirtualMachine 생성</button>
+        <button class="btn btn-sm btn-outline" (click)="showYaml.set(!showYaml())">{{ showYaml() ? 'YAML 숨기기' : 'YAML 및 CLI 보기' }}</button>
+        <button class="btn btn-sm btn-link" [disabled]="busy()" (click)="cancel.emit()">취소</button>
       </div>
-      <div class="os-muted" style="padding: 0 1rem 1rem">containerDisk + masquerade pod 네트워크의 최소 VM. 에뮬레이션 환경에선 기동이 느릴 수 있습니다. 기본 이미지는 cirros(경량 데모).</div>
+      <div *ngIf="showYaml()" style="padding: 0 1rem 1rem">
+        <app-code-editor [value]="yamlPreview()" language="yaml" [readOnly]="true" height="380px"></app-code-editor>
+      </div>
     </div>
   `,
 })
@@ -56,30 +106,36 @@ export class VmCreateComponent {
   @Output() cancel = new EventEmitter<void>();
 
   private k8s = inject(K8sService);
+  readonly templates = TEMPLATES;
+  readonly sel = signal<VmTemplate | null>(null);
   readonly name = signal('');
   readonly ns = signal('default');
   readonly cpu = signal(1);
   readonly mem = signal(1);
-  readonly image = signal('quay.io/kubevirt/cirros-container-disk-demo:latest');
+  readonly image = signal('');
   readonly start = signal(true);
+  readonly showYaml = signal(false);
   readonly busy = signal(false);
   readonly msg = signal<string | null>(null);
   readonly ok = signal(false);
 
-  submit(): void {
-    const nm = this.name().trim();
+  pick(t: VmTemplate): void {
+    this.sel.set(t);
+    this.cpu.set(t.cpu); this.mem.set(t.mem); this.image.set(t.image);
+    this.msg.set(null);
+  }
+
+  private buildVm(): any {
+    const nm = this.name().trim() || 'my-vm';
     const ns = this.ns().trim() || 'default';
-    if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(nm)) {
-      this.ok.set(false); this.msg.set('이름은 소문자/숫자/하이픈만(시작·끝은 영숫자).'); return;
-    }
-    const vm = {
+    return {
       apiVersion: 'kubevirt.io/v1',
       kind: 'VirtualMachine',
-      metadata: { name: nm, namespace: ns, labels: { app: nm } },
+      metadata: { name: nm, namespace: ns, labels: { app: nm, 'vm.kubevirt.io/template': this.sel()?.id || '' } },
       spec: {
         running: this.start(),
         template: {
-          metadata: { labels: { 'kubevirt.io/domain': nm } },
+          metadata: { labels: { 'kubevirt.io/domain': nm }, annotations: { 'vm.kubevirt.io/os': this.sel()?.id || '' } },
           spec: {
             domain: {
               cpu: { cores: this.cpu() },
@@ -95,9 +151,18 @@ export class VmCreateComponent {
         },
       },
     };
-    this.busy.set(true);
-    this.msg.set(null);
-    this.k8s.post(`/apis/kubevirt.io/v1/namespaces/${ns}/virtualmachines`, vm).subscribe({
+  }
+
+  yamlPreview(): string { try { return dump(this.buildVm()); } catch { return ''; } }
+
+  submit(): void {
+    const nm = this.name().trim();
+    const ns = this.ns().trim() || 'default';
+    if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(nm)) {
+      this.ok.set(false); this.msg.set('이름은 소문자/숫자/하이픈만(시작·끝은 영숫자).'); return;
+    }
+    this.busy.set(true); this.msg.set(null);
+    this.k8s.post(`/apis/kubevirt.io/v1/namespaces/${ns}/virtualmachines`, this.buildVm()).subscribe({
       next: () => { this.busy.set(false); this.ok.set(true); this.msg.set('생성됨.'); this.created.emit(); },
       error: e => { this.busy.set(false); this.ok.set(false); this.msg.set(e?.error?.message || e?.error?.error || e?.message || String(e)); },
     });

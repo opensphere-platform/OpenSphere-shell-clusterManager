@@ -4,14 +4,15 @@ import { ClarityModule } from '@clr/angular';
 import { K8sService } from '../core/k8s.service';
 import { ResourceDetailComponent } from './resource-detail.component';
 import { VmDetailComponent } from '../resources/vm-detail.component';
+import { OsLogoComponent } from './os-logo.component';
 
 /** 컬럼 정의 — 원시 K8s 객체에서 값을 뽑고(get), 렌더 종류(kind)로 셀을 그린다. */
 export interface ColumnDef {
   id: string;
   label: string;
   get: (o: any) => any;
-  /** text(기본) | name(굵게, 추후 상세링크) | age(상대시간) | tags(배지 배열) | status(상태 라벨) */
-  kind?: 'text' | 'name' | 'age' | 'tags' | 'status';
+  /** text(기본) | name(굵게, 추후 상세링크) | age(상대시간) | tags(배지 배열) | status(상태 라벨) | logo(OS 로고) */
+  kind?: 'text' | 'name' | 'age' | 'tags' | 'status' | 'logo';
   /** kind=status일 때 색상 매핑 */
   statusOf?: (o: any) => 'success' | 'danger' | 'warning' | 'info' | 'unknown';
   /** 이 컬럼을 다중선택 패싯(드롭다운)으로 노출. kind:'status'면 자동으로 패싯. */
@@ -27,7 +28,7 @@ export interface ColumnDef {
 @Component({
   selector: 'app-resource-list',
   standalone: true,
-  imports: [CommonModule, ClarityModule, ResourceDetailComponent, VmDetailComponent],
+  imports: [CommonModule, ClarityModule, ResourceDetailComponent, VmDetailComponent, OsLogoComponent],
   template: `
     <!-- 목록은 항상 좌측에 유지. 상세는 우측 슬라이드 오버 드로어로 표시. -->
     <div class="os-title-row">
@@ -121,6 +122,7 @@ export interface ColumnDef {
           <ng-container *ngSwitchCase="'status'">
             <span class="label" [ngClass]="statusClass(c.statusOf?.(item))">{{ c.get(item) }}</span>
           </ng-container>
+          <ng-container *ngSwitchCase="'logo'"><app-os-logo [os]="c.get(item)" [size]="22"></app-os-logo></ng-container>
           <ng-container *ngSwitchDefault>{{ display(c.get(item)) }}</ng-container>
         </clr-dg-cell>
       </clr-dg-row>

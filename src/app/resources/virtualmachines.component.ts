@@ -2,6 +2,7 @@ import { CommonModule } from '@angular/common';
 import { Component, signal } from '@angular/core';
 import { ColumnDef, ResourceListComponent } from '../shared/resource-list.component';
 import { VmCreateComponent } from './vm-create.component';
+import { osIdFromImage } from '../shared/os-logo.component';
 
 // KubeVirt VM의 status.printableStatus → 상태 색상.
 const vmStatusColor = (s: string): 'success' | 'danger' | 'warning' | 'info' | 'unknown' => {
@@ -32,6 +33,7 @@ const vmStatusColor = (s: string): 'success' | 'danger' | 'warning' | 'info' | '
 export class VirtualMachinesComponent {
   readonly creating = signal(false);
   cols: ColumnDef[] = [
+    { id: 'os', label: '', kind: 'logo', get: o => osIdFromImage(o.spec?.template?.metadata?.annotations?.['vm.kubevirt.io/os'] || (o.spec?.template?.spec?.volumes || []).map((v: any) => v.containerDisk?.image).find(Boolean)) },
     { id: 'name', label: 'Name', kind: 'name', get: o => o.metadata?.name },
     { id: 'status', label: 'Status', kind: 'status', get: o => o.status?.printableStatus || 'Unknown', statusOf: o => vmStatusColor(o.status?.printableStatus) },
     { id: 'ready', label: 'Ready', get: o => (o.status?.ready ? 'True' : 'False') },

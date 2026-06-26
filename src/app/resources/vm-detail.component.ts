@@ -6,6 +6,7 @@ import { catchError } from 'rxjs/operators';
 import { dump } from 'js-yaml';
 import { K8sService } from '../core/k8s.service';
 import { CodeEditorComponent } from '../shared/code-editor.component';
+import { OsLogoComponent, osIdFromImage } from '../shared/os-logo.component';
 
 const ICON: Record<string, string> = {
   play: 'M8 5v14l11-7z',
@@ -32,8 +33,9 @@ const vmStatusClass = (s: string): string => {
 @Component({
   selector: 'app-vm-detail',
   standalone: true,
-  imports: [CommonModule, ClarityModule, CodeEditorComponent],
+  imports: [CommonModule, ClarityModule, CodeEditorComponent, OsLogoComponent],
   styles: [`
+    .vm-title-h { display: inline-flex; align-items: center; gap: .4rem; }
     .vm-tabs { display: flex; gap: .25rem; border-bottom: 1px solid var(--clr-color-neutral-300, #ccc); margin: .25rem 0 1rem; }
     .vm-tab { padding: .4rem .9rem; cursor: pointer; border: none; background: none; font-size: .9rem; color: var(--clr-color-neutral-700, #565656); border-bottom: 2px solid transparent; }
     .vm-tab.active { color: var(--os-brand-600, #2563eb); border-bottom-color: var(--os-brand-600, #2563eb); font-weight: 600; }
@@ -45,7 +47,8 @@ const vmStatusClass = (s: string): string => {
   `],
   template: `
     <div class="os-title-row">
-      <h2 class="os-h2">
+      <h2 class="os-h2 vm-title-h">
+        <app-os-logo [os]="osId()" [size]="26"></app-os-logo>
         <span class="label label-info">VM</span> {{ name }}
         <span class="label" [ngClass]="statusClass()">{{ status() }}</span>
       </h2>
@@ -212,6 +215,7 @@ export class VmDetailComponent implements OnInit {
   // ── 파생 ──
   status() { return this.vm()?.status?.printableStatus || 'Unknown'; }
   statusClass() { return vmStatusClass(this.status()); }
+  osId() { const img = (this.vm()?.spec?.template?.spec?.volumes || []).map((v: any) => v.containerDisk?.image).find(Boolean); return osIdFromImage(this.vm()?.spec?.template?.metadata?.annotations?.['vm.kubevirt.io/os'] || img); }
   running(): boolean {
     const s = this.vm()?.spec || {};
     if (typeof s.running === 'boolean') return s.running;

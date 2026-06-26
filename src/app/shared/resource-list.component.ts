@@ -157,6 +157,7 @@ export interface ColumnDef {
             [scalable]="scalable"
             [restartable]="restartable"
             [cordonable]="cordonable"
+            [vm]="vm"
             (back)="selected.set(null)"
             (changed)="load()"
           />
@@ -182,6 +183,8 @@ export class ResourceListComponent implements OnInit {
   @Input() restartable = false;
   /** 코든/드레인 가능(Node) */
   @Input() cordonable = false;
+  /** KubeVirt VM 라이프사이클(Start/Stop/Restart) 액션 활성 — kind='VirtualMachine'과 함께 사용. */
+  @Input() vm = false;
   /** 더미 모드 — 지정 시 프록시 호출 대신 staticRows를 그대로 렌더(예시 페이지). */
   @Input() dummy = false;
   /** 더미 정적 행(K8s 객체 형태). dummy=true와 함께 사용. */

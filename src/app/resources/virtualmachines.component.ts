@@ -22,7 +22,7 @@ const vmStatusColor = (s: string): 'success' | 'danger' | 'warning' | 'info' | '
   selector: 'app-res-virtualmachines',
   standalone: true,
   imports: [ResourceListComponent],
-  template: `<app-resource-list title="Virtual Machines" path="/apis/kubevirt.io/v1/virtualmachines" [namespaced]="true" kind="VirtualMachine" [columns]="cols" />`,
+  template: `<app-resource-list title="Virtual Machines" path="/apis/kubevirt.io/v1/virtualmachines" [namespaced]="true" kind="VirtualMachine" [vm]="true" [columns]="cols" />`,
 })
 export class VirtualMachinesComponent {
   cols: ColumnDef[] = [

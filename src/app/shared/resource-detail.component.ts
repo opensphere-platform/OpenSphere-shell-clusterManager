@@ -21,6 +21,8 @@ const ICON: Record<string, string> = {
   cordon: 'M12 2a10 10 0 100 20 10 10 0 000-20zm0 2c1.85 0 3.55.63 4.9 1.69L5.69 16.9A7.95 7.95 0 014 12a8 8 0 018-8zm0 16c-1.85 0-3.55-.63-4.9-1.69L18.31 7.1A7.95 7.95 0 0120 12a8 8 0 01-8 8z',
   uncordon: 'M12 2a10 10 0 100 20 10 10 0 000-20zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z',
   drain: 'M20 3h-9v2h9v14h-9v2h9a2 2 0 002-2V5a2 2 0 00-2-2zM7 8l-1.41 1.41L8.17 12H1v2h7.17l-2.58 2.59L7 18l5-5-5-5z',
+  play: 'M8 5v14l11-7z',
+  stop: 'M6 6h12v12H6z',
 };
 
 /** 단일 리소스 상세 + 액션(View/Download/Edit YAML, Delete, Scale, Restart).
@@ -43,6 +45,9 @@ const ICON: Record<string, string> = {
       <button class="os-iconbtn" title="Edit YAML" aria-label="Edit YAML" (click)="startEdit()"><svg viewBox="0 0 24 24" class="os-ic"><path [attr.d]="ic.pencil"/></svg></button>
       <button class="os-iconbtn" *ngIf="scalable" title="Scale" aria-label="Scale" (click)="scaleOpen.set(true)"><svg viewBox="0 0 24 24" class="os-ic"><path [attr.d]="ic.resize"/></svg></button>
       <button class="os-iconbtn" *ngIf="restartable" title="Restart" aria-label="Restart" (click)="restart()"><svg viewBox="0 0 24 24" class="os-ic"><path [attr.d]="ic.refresh"/></svg></button>
+      <button class="os-iconbtn" *ngIf="vm && !vmRunning()" title="Start VM" aria-label="Start VM" [disabled]="busy()" (click)="vmStart()"><svg viewBox="0 0 24 24" class="os-ic"><path [attr.d]="ic.play"/></svg></button>
+      <button class="os-iconbtn" *ngIf="vm && vmRunning()" title="Stop VM" aria-label="Stop VM" [disabled]="busy()" (click)="vmStop()"><svg viewBox="0 0 24 24" class="os-ic"><path [attr.d]="ic.stop"/></svg></button>
+      <button class="os-iconbtn" *ngIf="vm" title="Restart VM" aria-label="Restart VM" [disabled]="busy()" (click)="vmRestart()"><svg viewBox="0 0 24 24" class="os-ic"><path [attr.d]="ic.refresh"/></svg></button>
       <button class="os-iconbtn" *ngIf="cordonable && !unschedulable()" title="Cordon (스케줄 차단)" aria-label="Cordon" (click)="cordon(true)"><svg viewBox="0 0 24 24" class="os-ic"><path [attr.d]="ic.cordon"/></svg></button>
       <button class="os-iconbtn" *ngIf="cordonable && unschedulable()" title="Uncordon (스케줄 허용)" aria-label="Uncordon" (click)="cordon(false)"><svg viewBox="0 0 24 24" class="os-ic"><path [attr.d]="ic.uncordon"/></svg></button>
       <button class="os-iconbtn os-iconbtn-danger" *ngIf="cordonable" title="Drain (파드 축출)" aria-label="Drain" (click)="drainOpen.set(true)"><svg viewBox="0 0 24 24" class="os-ic"><path [attr.d]="ic.drain"/></svg></button>
@@ -175,6 +180,8 @@ export class ResourceDetailComponent implements OnInit {
   @Input() scalable = false;
   @Input() restartable = false;
   @Input() cordonable = false;
+  /** KubeVirt VM — Start/Stop/Restart 라이프사이클 액션 노출 */
+  @Input() vm = false;
   @Output() back = new EventEmitter<void>();
   @Output() changed = new EventEmitter<void>();
 
@@ -321,6 +328,38 @@ export class ResourceDetailComponent implements OnInit {
     this.k8s.patchStrategic(this.singlePath(), patch).subscribe({
       next: o => { this.obj.set(o); this.busy.set(false); this.flash('롤링 재시작 트리거.', true); this.changed.emit(); },
       error: e => { this.busy.set(false); this.flash(this.errText(e), false); },
+    });
+  }
+
+  // ── KubeVirt VM 라이프사이클 ──
+  /** VM 희망 가동 상태(spec.running bool 우선, 없으면 runStrategy). */
+  vmRunning(): boolean {
+    const s = this.obj()?.spec || {};
+    if (typeof s.running === 'boolean') return s.running;
+    if (s.runStrategy) return s.runStrategy !== 'Halted' && s.runStrategy !== 'Manual';
+    return false;
+  }
+  vmStart() { this.vmSetRunning(true); }
+  vmStop() { this.vmSetRunning(false); }
+  /** spec.running(또는 runStrategy) merge-patch로 시작/정지 — VM 컨트롤러가 VMI를 조정. 콘솔 임퍼소네이션 write. */
+  private vmSetRunning(on: boolean) {
+    const s = this.obj()?.spec || {};
+    const patch = (s.runStrategy && typeof s.running !== 'boolean')
+      ? { spec: { runStrategy: on ? 'Always' : 'Halted' } }
+      : { spec: { running: on } };
+    this.busy.set(true);
+    this.k8s.patchMerge(this.singlePath(), patch).subscribe({
+      next: o => { this.obj.set(o); this.busy.set(false); this.flash(on ? 'VM 시작 요청.' : 'VM 정지 요청.', true); this.changed.emit(); },
+      error: e => { this.busy.set(false); this.flash(this.errText(e), false); },
+    });
+  }
+  /** VM 재시작 — KubeVirt restart 서브리소스(virt-api 필요; 미설치 클러스터에선 404). */
+  vmRestart() {
+    this.busy.set(true);
+    const sub = `/apis/subresources.kubevirt.io/v1/namespaces/${this.namespace}/virtualmachines/${this.name}/restart`;
+    this.k8s.post(sub, {}).subscribe({
+      next: () => { this.busy.set(false); this.flash('VM 재시작 요청.', true); this.changed.emit(); },
+      error: e => { this.busy.set(false); this.flash('재시작 실패(KubeVirt virt-api 필요): ' + this.errText(e), false); },
     });
   }
 

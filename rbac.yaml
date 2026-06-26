@@ -74,3 +74,41 @@ metadata: { name: cluster-reader-system }
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: cluster-reader }
 subjects:
   - { kind: ServiceAccount, name: default, namespace: opensphere-system }
+---
+# 콘솔 관리자 그룹(opensphere-console-admins) RBAC — 임퍼소네이션된 콘솔관리자 사용자가 받는 권한.
+# 설계 원칙: 와일드카드(*/*) 금지. 광범위 read는 인벤토리 한정, write는 콘솔이 실제 관리하는 그룹만.
+# 명시 제외: rbac write(권한상승), secrets(프록시도 차단), impersonate/escalate/bind verb. exec/attach/token=프록시 차단(심층방어).
+# 토큰 groups 클레임은 JWKS 검증되며 server.js가 Impersonate-Group으로 전달 → 그룹 바인딩이 발효.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: { name: opensphere-console-admin }
+rules:
+  # ── 광범위 read(콘솔 인벤토리) — rbac/CRD 포함하되 read만 ──
+  - apiGroups: [""]
+    resources: ["nodes","namespaces","pods","pods/log","services","configmaps","endpoints","limitranges","resourcequotas","serviceaccounts","events","persistentvolumeclaims","persistentvolumes","replicationcontrollers"]
+    verbs: ["get","list","watch"]
+  - apiGroups: ["apps","batch","autoscaling","autoscaling.k8s.io","policy","networking.k8s.io","discovery.k8s.io","storage.k8s.io","scheduling.k8s.io","node.k8s.io","coordination.k8s.io","apiextensions.k8s.io","metrics.k8s.io","rbac.authorization.k8s.io","jobset.x-k8s.io","kubevirt.io","subresources.kubevirt.io","cdi.kubevirt.io","instancetype.kubevirt.io","snapshot.storage.k8s.io","forklift.konveyor.io","monitoring.coreos.com","fleet.opensphere.io","cluster.open-cluster-management.io"]
+    resources: ["*"]
+    verbs: ["get","list","watch"]
+  # ── 관리 write(편집/삭제/스케일/생성) — core: secrets 제외 ──
+  - apiGroups: [""]
+    resources: ["pods","configmaps","services","persistentvolumeclaims","resourcequotas","limitranges"]
+    verbs: ["create","update","patch","delete"]
+  - apiGroups: ["apps","batch","autoscaling","autoscaling.k8s.io","policy","networking.k8s.io","storage.k8s.io"]
+    resources: ["*"]
+    verbs: ["create","update","patch","delete"]
+  # ── VM 관리 write(KubeVirt + 라이프사이클 서브리소스 + CDI/InstanceType) ──
+  - apiGroups: ["kubevirt.io","subresources.kubevirt.io","cdi.kubevirt.io","instancetype.kubevirt.io"]
+    resources: ["*"]
+    verbs: ["create","update","patch","delete"]
+  # ── 스토리지 스냅샷·마이그레이션(MTV)·모니터링 룰 write ──
+  - apiGroups: ["snapshot.storage.k8s.io","forklift.konveyor.io","monitoring.coreos.com"]
+    resources: ["*"]
+    verbs: ["create","update","patch","delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: { name: opensphere-console-admins }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: opensphere-console-admin }
+subjects:
+  - { kind: Group, name: opensphere-console-admins, apiGroup: rbac.authorization.k8s.io }

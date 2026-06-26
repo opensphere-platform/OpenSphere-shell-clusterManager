@@ -188,8 +188,15 @@ async function k8sProxy(req, res, rawUrl) {
   }
 
   const body = isWrite ? await readBody(req) : undefined;
+  // 검증된 토큰의 groups → Impersonate-Group(그룹 기반 RBAC). K8s는 그룹 지정 시 기본 그룹 집합을
+  // 대체하므로 system:authenticated를 명시 추가. 그룹은 JWKS 검증된 클레임이라 위조 불가(클라 헤더 미전달).
+  const fh = new Headers(headers);
+  if (actor && Array.isArray(actor.groups) && actor.groups.length) {
+    for (const g of actor.groups) fh.append('Impersonate-Group', g);
+    fh.append('Impersonate-Group', 'system:authenticated');
+  }
   // 업스트림은 검증된 디코드 경로 + 원형 쿼리로 재구성(원시 sub 그대로 전달 금지)
-  const r = await fetch(`${APISERVER}${pathOnly}${rawQuery}`, { method: req.method, headers, body });
+  const r = await fetch(`${APISERVER}${pathOnly}${rawQuery}`, { method: req.method, headers: fh, body });
   const text = await r.text();
   if (isWrite) console.log(`[audit] user=${actor && actor.username} verb=${req.method} path=${pathOnly} status=${r.status} ${new Date().toISOString()}`);
   res.writeHead(r.status, { 'content-type': r.headers.get('content-type') || 'application/json', 'cache-control': 'no-store' });

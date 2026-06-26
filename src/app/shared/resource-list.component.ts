@@ -29,6 +29,13 @@ export interface ColumnDef {
   selector: 'app-resource-list',
   standalone: true,
   imports: [CommonModule, ClarityModule, ResourceDetailComponent, VmDetailComponent, OsLogoComponent],
+  styles: [`
+    .os-kebab { font-size: 1.15rem; line-height: 1; font-weight: 700; }
+    .os-row-actions { position: fixed; z-index: 1100; background: var(--clr-global-app-background, #fff); border: 1px solid var(--clr-color-neutral-300, #ccc); border-radius: 4px; box-shadow: 0 3px 12px rgba(0,0,0,.18); min-width: 150px; padding: .25rem 0; }
+    .os-row-action { display: block; width: 100%; text-align: left; padding: .42rem 1rem; border: none; background: none; cursor: pointer; font-size: .85rem; color: var(--clr-color-neutral-800, #333); }
+    .os-row-action:hover { background: var(--clr-color-neutral-100, #f3f3f3); }
+    .os-row-action.danger { color: var(--clr-color-danger-700, #e74c3c); }
+  `],
   template: `
     <!-- 목록은 항상 좌측에 유지. 상세는 우측 슬라이드 오버 드로어로 표시. -->
     <div class="os-title-row">
@@ -105,6 +112,7 @@ export interface ColumnDef {
     <clr-datagrid [clrDgLoading]="loading()">
       <clr-dg-column *ngIf="namespaced" [clrDgSortBy]="nsComparator">Namespace</clr-dg-column>
       <clr-dg-column *ngFor="let c of columns" [clrDgSortBy]="comparator(c)">{{ c.label }}</clr-dg-column>
+      <clr-dg-column *ngIf="rowActions"></clr-dg-column>
 
       <clr-dg-row *clrDgItems="let item of filtered()">
         <clr-dg-cell *ngIf="namespaced">{{ item.metadata?.namespace }}</clr-dg-cell>
@@ -125,6 +133,7 @@ export interface ColumnDef {
           <ng-container *ngSwitchCase="'logo'"><app-os-logo [os]="c.get(item)" [size]="22"></app-os-logo></ng-container>
           <ng-container *ngSwitchDefault>{{ display(c.get(item)) }}</ng-container>
         </clr-dg-cell>
+        <clr-dg-cell *ngIf="rowActions"><button class="os-iconbtn os-kebab" type="button" title="작업" (click)="toggleActions(item, $event)">⋮</button></clr-dg-cell>
       </clr-dg-row>
 
       <clr-dg-footer>
@@ -134,6 +143,11 @@ export interface ColumnDef {
         </clr-dg-pagination>
       </clr-dg-footer>
     </clr-datagrid>
+
+    <!-- 행 작업 메뉴 (자체완결 fixed 팝오버 — clr-dropdown 미사용, 섀도우 포털 탈출 없음) -->
+    <div class="os-row-actions" *ngIf="openActions() as item" [style.top.px]="actionsPos().top" [style.left.px]="actionsPos().left">
+      <button *ngFor="let a of rowActions!(item)" type="button" class="os-row-action" [class.danger]="a.danger" (click)="runAction(a)">{{ a.label }}</button>
+    </div>
 
     <!-- 우측 슬라이드 오버 상세 드로어 (좌측 끝 드래그로 리사이즈). 그레이 백드롭 없음(불투명·고z로 겹침 방지), 닫기는 헤더 X -->
 
@@ -194,6 +208,8 @@ export class ResourceListComponent implements OnInit {
   @Input() cordonable = false;
   /** KubeVirt VM 라이프사이클(Start/Stop/Restart) 액션 활성 — kind='VirtualMachine'과 함께 사용. */
   @Input() vm = false;
+  /** 행별 작업(⋮) — item을 받아 작업 목록 반환. 지정 시 마지막에 작업(⋮) 컬럼 표시. */
+  @Input() rowActions?: (item: any) => Array<{ label: string; danger?: boolean; run: () => void }>;
   /** 더미 모드 — 지정 시 프록시 호출 대신 staticRows를 그대로 렌더(예시 페이지). */
   @Input() dummy = false;
   /** 더미 정적 행(K8s 객체 형태). dummy=true와 함께 사용. */
@@ -213,6 +229,9 @@ export class ResourceListComponent implements OnInit {
   readonly selections = signal<Record<string, string[]>>({});
   /** 한 번에 하나의 팝오버만 열림 */
   readonly openFacet = signal<string | null>(null);
+  /** 열린 행-작업 메뉴 대상 item + fixed 위치 */
+  readonly openActions = signal<any | null>(null);
+  readonly actionsPos = signal<{ top: number; left: number }>({ top: 0, left: 0 });
 
   /** 패싯 컬럼(상태 컬럼 자동 + facet:true 명시) */
   readonly facetCols = computed<ColumnDef[]>(() => this.columns.filter(c => c.facet || c.kind === 'status'));
@@ -272,6 +291,16 @@ export class ResourceListComponent implements OnInit {
   clearAll(): void { this.selections.set({}); this.search.set(''); }
   togglePopover(facetId: string): void { this.openFacet.set(this.openFacet() === facetId ? null : facetId); }
 
+  toggleActions(item: any, ev: Event): void {
+    ev.stopPropagation();
+    if (this.openActions() === item) { this.openActions.set(null); return; }
+    const btn = (ev.target as HTMLElement).closest('button');
+    const r = btn ? btn.getBoundingClientRect() : ({ bottom: 0, right: 0 } as DOMRect);
+    this.actionsPos.set({ top: r.bottom + 2, left: Math.max(8, r.right - 160) });
+    this.openActions.set(item);
+  }
+  runAction(a: { run: () => void }): void { this.openActions.set(null); a.run(); }
+
   /** 상태 옵션 배지 색(값에 해당하는 첫 행의 statusOf) */
   statusSwatch(c: ColumnDef, value: string): 'success' | 'danger' | 'warning' | 'info' | 'unknown' {
     const o = this.rows().find(r => this.facetVal(c, r).includes(value));
@@ -281,13 +310,14 @@ export class ResourceListComponent implements OnInit {
   // 바깥 클릭/Esc 시 팝오버 닫기. 섀도우 이벤트 retarget 때문에 composedPath 사용(CSP-safe, 인라인 핸들러 없음).
   @HostListener('document:click', ['$event'])
   onDocClick(e: MouseEvent): void {
-    if (!this.openFacet()) return;
     const path = (e as any).composedPath?.() ?? [];
+    if (this.openActions() && !path.some((el: any) => el?.classList?.contains?.('os-row-actions') || el?.classList?.contains?.('os-kebab'))) this.openActions.set(null);
+    if (!this.openFacet()) return;
     const inside = path.some((el: any) => el?.classList?.contains?.('os-facet') || el?.classList?.contains?.('os-filter-popover'));
     if (!inside) this.openFacet.set(null);
   }
   @HostListener('document:keydown.escape')
-  onEsc(): void { this.openFacet.set(null); }
+  onEsc(): void { this.openFacet.set(null); this.openActions.set(null); }
 
   /** 선택된 항목 → 우측 슬라이드 드로어 상세 표시 */
   readonly selected = signal<any | null>(null);

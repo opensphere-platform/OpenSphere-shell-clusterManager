@@ -3,6 +3,7 @@ import { Component, EventEmitter, HostListener, Input, OnInit, Output, Signal, c
 import { ClarityModule } from '@clr/angular';
 import { K8sService } from '../core/k8s.service';
 import { ResourceDetailComponent } from './resource-detail.component';
+import { VmDetailComponent } from '../resources/vm-detail.component';
 
 /** 컬럼 정의 — 원시 K8s 객체에서 값을 뽑고(get), 렌더 종류(kind)로 셀을 그린다. */
 export interface ColumnDef {
@@ -26,7 +27,7 @@ export interface ColumnDef {
 @Component({
   selector: 'app-resource-list',
   standalone: true,
-  imports: [CommonModule, ClarityModule, ResourceDetailComponent],
+  imports: [CommonModule, ClarityModule, ResourceDetailComponent, VmDetailComponent],
   template: `
     <!-- 목록은 항상 좌측에 유지. 상세는 우측 슬라이드 오버 드로어로 표시. -->
     <div class="os-title-row">
@@ -149,7 +150,14 @@ export interface ColumnDef {
           </span>
         </div>
         <div class="os-drawer-body">
-          <app-resource-detail
+          <app-vm-detail *ngIf="vm"
+            [item]="sel"
+            [listPath]="path"
+            [namespaced]="namespaced"
+            (back)="closeDrawer()"
+            (changed)="load()"
+          />
+          <app-resource-detail *ngIf="!vm"
             [kind]="kind!"
             [listPath]="path"
             [namespaced]="namespaced"
@@ -157,7 +165,6 @@ export interface ColumnDef {
             [scalable]="scalable"
             [restartable]="restartable"
             [cordonable]="cordonable"
-            [vm]="vm"
             (back)="selected.set(null)"
             (changed)="load()"
           />

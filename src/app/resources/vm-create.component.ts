@@ -6,7 +6,7 @@ import { K8sService } from '../core/k8s.service';
 import { CodeEditorComponent } from '../shared/code-editor.component';
 import { OsLogoComponent } from '../shared/os-logo.component';
 
-interface VmTemplate { id: string; logo: string; name: string; desc: string; image: string; cpu: number; mem: number; demo?: boolean; }
+interface VmTemplate { id: string; logo: string; name: string; desc: string; image: string; cpu: number; mem: number; demo?: boolean; windows?: boolean; }
 
 // 부팅 소스 카탈로그 — public containerDisk(quay.io/containerdisks/*) + 데모용 cirros.
 const TEMPLATES: VmTemplate[] = [
@@ -16,6 +16,8 @@ const TEMPLATES: VmTemplate[] = [
   { id: 'ubuntu', logo: 'ubuntu', name: 'Ubuntu 24.04', desc: 'Ubuntu Server', image: 'quay.io/containerdisks/ubuntu:24.04', cpu: 1, mem: 2 },
   { id: 'debian', logo: 'debian', name: 'Debian 12', desc: 'Debian', image: 'quay.io/containerdisks/debian:12', cpu: 1, mem: 2 },
   { id: 'opensuse', logo: 'opensuse', name: 'openSUSE Leap', desc: 'openSUSE Leap 15.6', image: 'quay.io/containerdisks/opensuse-leap:15.6', cpu: 1, mem: 2 },
+  { id: 'windows2022', logo: 'windows', name: 'Windows Server 2022', desc: 'hyperv·sata (Windows 이미지 필요)', image: 'quay.io/containerdisks/windows-server:2022', cpu: 2, mem: 4, windows: true },
+  { id: 'windows11', logo: 'windows', name: 'Windows 11', desc: 'hyperv·sata (Windows 이미지 필요)', image: 'quay.io/containerdisks/windows:11', cpu: 2, mem: 4, windows: true },
 ];
 
 /**
@@ -128,6 +130,7 @@ export class VmCreateComponent {
   private buildVm(): any {
     const nm = this.name().trim() || 'my-vm';
     const ns = this.ns().trim() || 'default';
+    const win = !!this.sel()?.windows;
     return {
       apiVersion: 'kubevirt.io/v1',
       kind: 'VirtualMachine',
@@ -140,9 +143,10 @@ export class VmCreateComponent {
             domain: {
               cpu: { cores: this.cpu() },
               memory: { guest: `${this.mem()}Gi` },
+              ...(win ? { features: { acpi: {}, apic: {}, hyperv: { relaxed: {}, vapic: {}, spinlocks: { spinlocks: 8191 } } }, clock: { utc: {}, timer: { hpet: { present: false }, pit: { tickPolicy: 'delay' }, rtc: { tickPolicy: 'catchup' }, hyperv: {} } } } : {}),
               devices: {
-                disks: [{ name: 'containerdisk', disk: { bus: 'virtio' } }],
-                interfaces: [{ name: 'default', masquerade: {} }],
+                disks: [{ name: 'containerdisk', disk: { bus: win ? 'sata' : 'virtio' } }],
+                interfaces: [{ name: 'default', masquerade: {}, ...(win ? { model: 'e1000e' } : {}) }],
               },
             },
             networks: [{ name: 'default', pod: {} }],

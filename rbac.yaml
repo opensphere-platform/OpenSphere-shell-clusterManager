@@ -46,6 +46,10 @@ rules:
   - apiGroups: ["apiextensions.k8s.io"]
     resources: ["customresourcedefinitions"]
     verbs: ["get","list","watch"]
+  # KubeVirt VM read — OKD-perspective-binding §7.1 통합 콤보 뷰(VM 뷰 스코프). capability-gate(CRD 존재) 통과 시에만 사용.
+  - apiGroups: ["kubevirt.io"]
+    resources: ["virtualmachines","virtualmachineinstances"]
+    verbs: ["get","list","watch"]
   - apiGroups: ["jobset.x-k8s.io"]
     resources: ["jobsets"]
     verbs: ["get","list","watch"]

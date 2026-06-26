@@ -17,12 +17,14 @@ import { K8sService } from './core/k8s.service';
   encapsulation: ViewEncapsulation.ShadowDom,
   styleUrls: ['./app.component.css'],
   styles: [`
-    .os-scope { padding: 0.45rem 0.6rem 0.15rem; }
+    .os-scope { padding: 0.5rem 0.6rem 0.3rem; }
+    .os-scope-label { display: block; font-size: 0.58rem; color: #8a93ab; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.25rem; }
     .os-scope-sel {
-      width: 100%; font-size: 0.7rem; padding: 0.25rem 0.4rem;
-      border: 1px solid rgba(0,0,0,0.2); border-radius: 3px;
-      background: transparent; color: inherit; cursor: pointer;
+      width: 100%; font-size: 0.72rem; padding: 0.32rem 0.4rem;
+      border: 1px solid rgba(255,255,255,0.28); border-radius: 3px;
+      background: rgba(255,255,255,0.08); color: #e8ecf5; cursor: pointer;
     }
+    .os-scope-sel option { color: #1b2a4a; }
   `],
   template: `
     <div class="os-shell">
@@ -33,9 +35,10 @@ import { K8sService } from './core/k8s.service';
 
         <!-- 뷰 스코프 콤보(Cluster ↔ VM) — KubeVirt VirtualMachine CRD 존재 시에만 노출(capability-gate). -->
         <div class="os-scope" *ngIf="vmCapable()">
-          <select class="os-scope-sel" [value]="viewScope()" (change)="setScope($any($event.target).value)">
-            <option value="cluster">Cluster</option>
-            <option value="vm">Virtual Machines</option>
+          <span class="os-scope-label">View</span>
+          <select class="os-scope-sel" (change)="setScope($any($event.target).value)">
+            <option value="cluster" [selected]="viewScope() === 'cluster'">Cluster</option>
+            <option value="vm" [selected]="viewScope() === 'vm'">Virtual Machines</option>
           </select>
         </div>
 

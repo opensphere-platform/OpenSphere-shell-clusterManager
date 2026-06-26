@@ -17,7 +17,11 @@ export class K8sService {
   private http = inject(HttpClient);
 
   private base(): string {
-    return ((window as any).__OSP_NG_API_BASE__ || '').replace(/\/$/, '');
+    // per-TAG base(__OSP_NG_BASES__['osp-k8s-console-ng']) 우선 — 멀티 subShell 전역충돌 회피.
+    // 구 단일 전역(__OSP_NG_API_BASE__)은 하위호환 폴백.
+    const w = window as any;
+    const b = w.__OSP_NG_BASES__?.['osp-k8s-console-ng'] ?? w.__OSP_NG_API_BASE__ ?? '';
+    return String(b).replace(/\/$/, '');
   }
 
   /** 셸이 제공하는 사용자 토큰을 헤더로. (없으면 빈 헤더 → 백엔드 SA 읽기 폴백) */

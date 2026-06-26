@@ -11,7 +11,10 @@ let injected = false;
 function injectOnce(base) {
   if (injected) return;
   injected = true;
-  window.__OSP_NG_API_BASE__ = base; // Angular 앱이 /api/k8s/* 프록시를 셸 경유로 호출
+  // per-TAG base 레지스트리 — 전역 단일 키(__OSP_NG_API_BASE__) 충돌 회피.
+  // 멀티 subShell(cluster-manager·ai 등) 공존 시 셸이 전부 로드하면 마지막이 전역을 덮어써 콘솔이 엉뚱한 base로 호출되던 버그 수정.
+  // 각 콘솔은 자기 TAG로 base를 읽으므로(TAG가 서로 다름) 충돌 없음.
+  (window.__OSP_NG_BASES__ = window.__OSP_NG_BASES__ || {})[TAG] = base;
   const v = `?v=${Date.now()}`; // 재배포 번들 즉시 반영(PoC 캐시버스터)
   const css = document.createElement('link');
   css.rel = 'stylesheet'; css.href = `${base}/app/styles.css${v}`;

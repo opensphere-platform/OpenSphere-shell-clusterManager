@@ -20,7 +20,7 @@ spec:
     label: "2. K8s Cluster + Ceph"
   manifest:
     path: /plugins/ui-shell.manifest.json
-    sha256: "cc99a16fbe8b44c31218a660603e70850ec0288cf510f2afb78d07ae863e014a"
+    sha256: "d30fd40da4cb5e127580cfde73f95aa8952aa8526f93d267f571eed3f38af316"
     signaturePath: /plugins/ui-shell.manifest.json.sig
   trust:
     keyId: opensphere-plugins-v1

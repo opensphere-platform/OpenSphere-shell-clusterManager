@@ -5,6 +5,7 @@ import { dump } from 'js-yaml';
 import { K8sService } from '../core/k8s.service';
 import { CodeEditorComponent } from '../shared/code-editor.component';
 import { OsLogoComponent } from '../shared/os-logo.component';
+import { VmCreateInstancetypeComponent } from './vm-create-instancetype.component';
 
 interface VmTemplate { id: string; logo: string; name: string; desc: string; image: string; cpu: number; mem: number; demo?: boolean; windows?: boolean; }
 
@@ -28,8 +29,11 @@ const TEMPLATES: VmTemplate[] = [
 @Component({
   selector: 'app-vm-create',
   standalone: true,
-  imports: [CommonModule, ClarityModule, CodeEditorComponent, OsLogoComponent],
+  imports: [CommonModule, ClarityModule, CodeEditorComponent, OsLogoComponent, VmCreateInstancetypeComponent],
   styles: [`
+    .vm-mode { display: flex; gap: .25rem; border-bottom: 1px solid var(--clr-color-neutral-300,#ccc); margin: .5rem 0 1rem; }
+    .vm-mtab { padding: .4rem .9rem; cursor: pointer; border: none; background: none; border-bottom: 2px solid transparent; font-size: .9rem; }
+    .vm-mtab.active { color: var(--os-brand-600,#2563eb); border-bottom-color: var(--os-brand-600,#2563eb); font-weight: 600; }
     .vm-cat { display: grid; grid-template-columns: repeat(auto-fill, minmax(215px, 1fr)); gap: 1rem; margin: 1rem 0 1.25rem; }
     .vm-card { position: relative; border: 1px solid var(--clr-color-neutral-300, #cdcdcd); border-radius: 8px; padding: 1rem; cursor: pointer; background: var(--clr-global-app-background, #fff); transition: box-shadow .12s, border-color .12s; }
     .vm-card:hover { border-color: var(--os-brand-500, #4c6fff); box-shadow: 0 2px 10px rgba(0,0,0,.09); }
@@ -50,14 +54,19 @@ const TEMPLATES: VmTemplate[] = [
     <div class="os-title-row">
       <h2 class="os-h2">새 VirtualMachine 생성</h2>
     </div>
-    <p class="os-sub">부팅 소스(운영체제)를 선택하면 세부 정보를 구성할 수 있습니다.</p>
+    <div class="vm-mode">
+      <button class="vm-mtab" [class.active]="mode()==='instancetype'" (click)="mode.set('instancetype')">InstanceTypes</button>
+      <button class="vm-mtab" [class.active]="mode()==='catalog'" (click)="mode.set('catalog')">템플릿 카탈로그</button>
+    </div>
+    <app-vm-create-instancetype *ngIf="mode()==='instancetype'" (created)="created.emit()" (cancel)="cancel.emit()"></app-vm-create-instancetype>
+    <p class="os-sub" *ngIf="mode()==='catalog'">부팅 소스(운영체제)를 선택하면 세부 정보를 구성할 수 있습니다.</p>
 
     <div *ngIf="msg()" class="alert" [ngClass]="ok() ? 'alert-success' : 'alert-danger'" role="alert">
       <div class="alert-items"><div class="alert-item static"><span class="alert-text">{{ msg() }}</span></div></div>
     </div>
 
     <!-- ===== OS 로고 카탈로그 ===== -->
-    <div class="vm-cat">
+    <div class="vm-cat" *ngIf="mode()==='catalog'">
       <div class="vm-card" *ngFor="let t of templates" [class.sel]="sel()?.id === t.id"
            role="button" tabindex="0" (click)="pick(t)" (keydown.enter)="pick(t)">
         <div class="vm-card-top">
@@ -76,7 +85,7 @@ const TEMPLATES: VmTemplate[] = [
     </div>
 
     <!-- ===== 선택 시 세부 정보 폼 ===== -->
-    <div class="card vm-form" *ngIf="sel() as t">
+    <div class="card vm-form" *ngIf="catalogSel() as t">
       <div class="card-header vm-form-h"><app-os-logo [os]="t.logo" [size]="22"></app-os-logo> {{ t.name }} — VirtualMachine 세부 정보</div>
       <div class="vm-grid">
         <label>이름</label>
@@ -109,7 +118,9 @@ export class VmCreateComponent {
 
   private k8s = inject(K8sService);
   readonly templates = TEMPLATES;
+  readonly mode = signal<'instancetype' | 'catalog'>('instancetype');
   readonly sel = signal<VmTemplate | null>(null);
+  readonly catalogSel = computed(() => this.mode() === 'catalog' ? this.sel() : null);
   readonly name = signal('');
   readonly ns = signal('default');
   readonly cpu = signal(1);

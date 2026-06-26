@@ -86,6 +86,11 @@ interface BootVol { name: string; kind: string; os: string; sc: string; size: st
       <label>부팅 볼륨</label><span>{{ selVol()?.name || '—' }}</span>
       <label>디스크 크기 (Gi)</label><input type="number" min="10" class="os-num" [value]="disk()" (input)="disk.set(+$any($event.target).value)" />
       <label>스토리지 클래스</label><input type="text" class="os-search" [value]="sc()" (input)="sc.set($any($event.target).value)" />
+      <label>노드 *</label>
+      <select class="os-search" style="max-width: 360px" (change)="selNode.set($any($event.target).value)">
+        <option value="">— 배치할 노드 선택 (필수) —</option>
+        <option *ngFor="let n of nodes()" [value]="n" [selected]="selNode() === n">{{ n }}</option>
+      </select>
       <label>생성 후 시작</label><span><input type="checkbox" [checked]="start()" (change)="start.set($any($event.target).checked)" /></span>
     </div>
 
@@ -113,6 +118,8 @@ export class VmCreateInstancetypeComponent implements OnInit {
   readonly name = signal('');
   readonly disk = signal(40);
   readonly sc = signal('standard');
+  readonly nodes = signal<string[]>([]);
+  readonly selNode = signal('');
   readonly start = signal(true);
   readonly showYaml = signal(false);
   readonly busy = signal(false);
@@ -125,7 +132,9 @@ export class VmCreateInstancetypeComponent implements OnInit {
       its: safe('/apis/instancetype.kubevirt.io/v1beta1/virtualmachineclusterinstancetypes'),
       dvs: safe('/apis/cdi.kubevirt.io/v1beta1/namespaces/default/datavolumes'),
       pvcs: safe('/api/v1/namespaces/default/persistentvolumeclaims'),
+      nodes: safe('/api/v1/nodes'),
     }).subscribe(r => {
+      this.nodes.set((r.nodes.items || []).map((n: any) => n.metadata?.name).filter(Boolean));
       this.instancetypes.set((r.its.items || []).map((i: any) => ({
         name: i.metadata?.name, cpu: i.spec?.cpu?.guest ?? 0, mem: i.spec?.memory?.guest ?? '—', series: (i.metadata?.name || '').split('.')[0],
       })).sort((a: ITItem, b: ITItem) => a.name.localeCompare(b.name)));
@@ -145,7 +154,7 @@ export class VmCreateInstancetypeComponent implements OnInit {
   icon(s: string) { return SERIES_ICON[s] || SERIES_ICON['u1']; }
   pickIt(series: string, name: string) { this.selSeries.set(series); this.selIt.set(name); }
   selItObj() { return this.instancetypes().find(i => i.name === this.selIt()); }
-  canCreate() { return !!this.name().trim() && !!this.selIt() && !!this.selVol(); }
+  canCreate() { return !!this.name().trim() && !!this.selIt() && !!this.selVol() && !!this.selNode(); }
 
   private buildVm(): any {
     const nm = this.name().trim() || 'my-vm';
@@ -166,6 +175,7 @@ export class VmCreateInstancetypeComponent implements OnInit {
         template: {
           metadata: { labels: { 'kubevirt.io/domain': nm } },
           spec: {
+            nodeSelector: { 'kubernetes.io/hostname': this.selNode() },
             domain: { devices: { disks: [{ name: 'rootdisk', disk: { bus: 'virtio' } }], interfaces: [{ name: 'default', masquerade: {} }] } },
             networks: [{ name: 'default', pod: {} }],
             volumes: [{ name: 'rootdisk', dataVolume: { name: `${nm}-disk` } }],

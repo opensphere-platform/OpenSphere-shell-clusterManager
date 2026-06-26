@@ -1,6 +1,7 @@
 import { Type } from '@angular/core';
 // ── 코어 K8s 리소스(항상 존재) ──
 import { NodesComponent } from './resources/nodes.component';
+import { NodeWorkloadsComponent } from './resources/node-workloads.component';
 import { PodComponent } from './resources/pods.component';
 import { DeploymentComponent } from './resources/deployments.component';
 import { ReplicaSetComponent } from './resources/replicasets.component';
@@ -98,6 +99,7 @@ export const NAV: NavGroup[] = [
     group: 'Cluster',
     items: [
       { id: 'nodes', label: 'Nodes', component: NodesComponent },
+      { id: 'node-workloads', label: 'Node Workloads', component: NodeWorkloadsComponent },
       { id: 'namespaces', label: 'Namespaces', component: NamespaceComponent },
       { id: 'events', label: 'Events', component: EventComponent },
       { id: 'priorityclasses', label: 'Priority Classes', component: PriorityClassComponent },

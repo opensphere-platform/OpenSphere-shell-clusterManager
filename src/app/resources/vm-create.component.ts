@@ -1,6 +1,8 @@
 import { CommonModule } from '@angular/common';
-import { Component, EventEmitter, Output, computed, inject, signal } from '@angular/core';
+import { Component, EventEmitter, OnInit, Output, computed, inject, signal } from '@angular/core';
 import { ClarityModule } from '@clr/angular';
+import { of } from 'rxjs';
+import { catchError } from 'rxjs/operators';
 import { dump } from 'js-yaml';
 import { K8sService } from '../core/k8s.service';
 import { CodeEditorComponent } from '../shared/code-editor.component';
@@ -98,11 +100,16 @@ const TEMPLATES: VmTemplate[] = [
         <input type="number" min="1" class="os-num" [value]="mem()" (input)="mem.set(+$any($event.target).value)" />
         <label>부팅 이미지</label>
         <input type="text" class="os-search" [value]="image()" (input)="image.set($any($event.target).value)" />
+        <label>노드 *</label>
+        <select class="os-search" (change)="selNode.set($any($event.target).value)">
+          <option value="">— 배치할 노드 선택 (필수) —</option>
+          <option *ngFor="let n of nodes()" [value]="n" [selected]="selNode() === n">{{ n }}</option>
+        </select>
         <label>생성 후 시작</label>
         <span><input type="checkbox" [checked]="start()" (change)="start.set($any($event.target).checked)" /></span>
       </div>
       <div class="os-actions" style="padding: 0 1rem 0.75rem">
-        <button class="btn btn-sm btn-primary" [disabled]="busy() || !name().trim()" (click)="submit()">VirtualMachine 생성</button>
+        <button class="btn btn-sm btn-primary" [disabled]="busy() || !name().trim() || !selNode()" (click)="submit()">VirtualMachine 생성</button>
         <button class="btn btn-sm btn-outline" (click)="showYaml.set(!showYaml())">{{ showYaml() ? 'YAML 숨기기' : 'YAML 및 CLI 보기' }}</button>
         <button class="btn btn-sm btn-link" [disabled]="busy()" (click)="cancel.emit()">취소</button>
       </div>
@@ -112,12 +119,14 @@ const TEMPLATES: VmTemplate[] = [
     </div>
   `,
 })
-export class VmCreateComponent {
+export class VmCreateComponent implements OnInit {
   @Output() created = new EventEmitter<void>();
   @Output() cancel = new EventEmitter<void>();
 
   private k8s = inject(K8sService);
   readonly templates = TEMPLATES;
+  readonly nodes = signal<string[]>([]);
+  readonly selNode = signal('');
   readonly mode = signal<'instancetype' | 'catalog'>('instancetype');
   readonly sel = signal<VmTemplate | null>(null);
   readonly catalogSel = computed(() => this.mode() === 'catalog' ? this.sel() : null);
@@ -131,6 +140,11 @@ export class VmCreateComponent {
   readonly busy = signal(false);
   readonly msg = signal<string | null>(null);
   readonly ok = signal(false);
+
+  ngOnInit(): void {
+    this.k8s.list('/api/v1/nodes').pipe(catchError(() => of({ items: [] as any[] })))
+      .subscribe((r: any) => this.nodes.set((r.items || []).map((n: any) => n.metadata?.name).filter(Boolean)));
+  }
 
   pick(t: VmTemplate): void {
     this.sel.set(t);
@@ -151,6 +165,7 @@ export class VmCreateComponent {
         template: {
           metadata: { labels: { 'kubevirt.io/domain': nm }, annotations: { 'vm.kubevirt.io/os': this.sel()?.id || '' } },
           spec: {
+            nodeSelector: { 'kubernetes.io/hostname': this.selNode() },
             domain: {
               cpu: { cores: this.cpu() },
               memory: { guest: `${this.mem()}Gi` },

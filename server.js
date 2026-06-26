@@ -188,19 +188,26 @@ async function k8sProxy(req, res, rawUrl) {
   }
 
   const body = isWrite ? await readBody(req) : undefined;
-  // 검증된 토큰의 groups → Impersonate-Group(그룹 기반 RBAC). K8s는 그룹 지정 시 기본 그룹 집합을
-  // 대체하므로 system:authenticated를 명시 추가. 그룹은 JWKS 검증된 클레임이라 위조 불가(클라 헤더 미전달).
-  const fh = new Headers(headers);
+  // 검증된 토큰의 groups → Impersonate-Group(그룹 기반 RBAC). 배열로 주면 http가 그룹마다 '별도'
+  // 헤더 라인으로 전송(K8s 요구). undici fetch는 동명 헤더를 콤마 결합해 단일 그룹명으로 오인시키므로
+  // 업스트림은 https.request 사용. 그룹은 JWKS 검증 클레임이라 위조 불가(클라 Impersonate-* 미전달).
   if (actor && Array.isArray(actor.groups) && actor.groups.length) {
-    for (const g of actor.groups) fh.append('Impersonate-Group', g);
-    fh.append('Impersonate-Group', 'system:authenticated');
+    headers['Impersonate-Group'] = [...actor.groups, 'system:authenticated'];
   }
   // 업스트림은 검증된 디코드 경로 + 원형 쿼리로 재구성(원시 sub 그대로 전달 금지)
-  const r = await fetch(`${APISERVER}${pathOnly}${rawQuery}`, { method: req.method, headers: fh, body });
-  const text = await r.text();
-  if (isWrite) console.log(`[audit] user=${actor && actor.username} verb=${req.method} path=${pathOnly} status=${r.status} ${new Date().toISOString()}`);
-  res.writeHead(r.status, { 'content-type': r.headers.get('content-type') || 'application/json', 'cache-control': 'no-store' });
-  res.end(text);
+  const u = new URL(`${APISERVER}${pathOnly}${rawQuery}`);
+  const up = await new Promise((resolve, reject) => {
+    const preq = https.request({ hostname: u.hostname, port: u.port || 443, path: u.pathname + u.search, method: req.method, headers }, (pres) => {
+      const ch = []; pres.on('data', (c) => ch.push(c));
+      pres.on('end', () => resolve({ status: pres.statusCode, ct: pres.headers['content-type'], text: Buffer.concat(ch).toString('utf8') }));
+    });
+    preq.on('error', reject);
+    if (body && body.length) preq.write(body);
+    preq.end();
+  });
+  if (isWrite) console.log(`[audit] user=${actor && actor.username} groups=${JSON.stringify((actor && actor.groups) || [])} verb=${req.method} path=${pathOnly} status=${up.status} ${new Date().toISOString()}`);
+  res.writeHead(up.status, { 'content-type': up.ct || 'application/json', 'cache-control': 'no-store' });
+  res.end(up.text);
 }
 
 const server = http.createServer(async (req, res) => {

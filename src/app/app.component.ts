@@ -110,6 +110,7 @@ export class AppComponent {
         ),
         error: () => this.availableGroups.set(new Set()),
       });
+    this.applyUrlState();
   }
 
   /** 콤보 전환 — 스코프 변경 + 활성 뷰를 새 스코프 기본으로 리셋(스코프 밖 stale 콘텐츠 방지). */
@@ -122,9 +123,10 @@ export class AppComponent {
     } else {
       this.active.set(this.OVERVIEW);
     }
+    this.syncUrl();
   }
 
-  select(it: NavItem) { this.active.set(it); }
+  select(it: NavItem) { this.active.set(it); this.syncUrl(); }
   icon(id: string) { return NAV_ICON[id] || NAV_ICON['fallback']; }
   secIcon(group: string) { return NAV_ICON['sec:' + group] || NAV_ICON['fallback']; }
   isOpen(group: string) { return this.expanded().has(group); }
@@ -133,7 +135,7 @@ export class AppComponent {
   }
   /** 개요 카드/링크 클릭 → 항목 id로 이동(없으면 무시). vm 스코프 항목이면 스코프도 전환. */
   openId(id: string) {
-    if (id === 'overview') { this.viewScope.set('cluster'); this.active.set(this.OVERVIEW); return; }
+    if (id === 'overview') { this.viewScope.set('cluster'); this.active.set(this.OVERVIEW); this.syncUrl(); return; }
     for (const g of NAV) {
       const it = g.items.find(x => x.id === id);
       if (it) {
@@ -141,8 +143,33 @@ export class AppComponent {
         else { this.viewScope.set('cluster'); }
         this.expanded.update(s => new Set(s).add(g.group));
         this.active.set(it);
+        this.syncUrl();
         return;
       }
     }
+  }
+
+  // ── 공유 가능한 URL: 뷰 스코프(view) + 활성 리소스(res)를 쿼리 파라미터로 동기화 ──
+  // 셸 경로(/p/cluster-manager)는 보존하고 쿼리만 갱신(replaceState — 셸 라우터 popstate 미발화).
+  private applyUrlState(): void {
+    try {
+      const p = new URLSearchParams(window.location.search);
+      const view = p.get('view'); const res = p.get('res');
+      if (view === 'vm' || view === 'cluster') this.viewScope.set(view);
+      if (res === 'overview') { this.active.set(this.OVERVIEW); }
+      else if (res) {
+        for (const g of NAV) {
+          const it = g.items.find(x => x.id === res);
+          if (it) { this.active.set(it); if (g.scope === 'vm') this.viewScope.set('vm'); this.expanded.update(s => new Set(s).add(g.group)); break; }
+        }
+      }
+    } catch { /* noop */ }
+  }
+  private syncUrl(): void {
+    try {
+      const p = new URLSearchParams(window.location.search);
+      p.set('view', this.viewScope()); p.set('res', this.active().id);
+      history.replaceState(history.state, '', window.location.pathname + '?' + p.toString() + window.location.hash);
+    } catch { /* noop */ }
   }
 }

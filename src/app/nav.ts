@@ -37,6 +37,7 @@ import { ClusterRoleComponent } from './resources/clusterroles.component';
 import { ClusterRoleBindingComponent } from './resources/clusterrolebindings.component';
 // ── 실 CRD 페이지(dummy→real 전환, capability-gate=requires) ──
 import { VirtualMachinesComponent } from './resources/virtualmachines.component';
+import { VmOverviewComponent } from './resources/vm-overview.component';
 import { VmTemplatesComponent } from './resources/vm-templates.component';
 import { VmInstanceTypesComponent } from './resources/vm-instancetypes.component';
 import { VmBootableVolumesComponent } from './resources/vm-bootablevolumes.component';
@@ -120,6 +121,7 @@ export const NAV: NavGroup[] = [
     group: 'Virtualization',
     scope: 'vm',
     items: [
+      { id: 'vm-overview', label: '개요 (Overview)', component: VmOverviewComponent, requires: 'kubevirt.io' },
       { id: 'virtualmachines', label: 'Virtual Machines', component: VirtualMachinesComponent, requires: 'kubevirt.io' },
       { id: 'vm-instancetypes', label: 'Instance Types', component: VmInstanceTypesComponent, requires: 'instancetype.kubevirt.io' },
       { id: 'vm-bootablevolumes', label: 'Bootable Volumes', component: VmBootableVolumesComponent, requires: 'cdi.kubevirt.io' },

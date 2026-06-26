@@ -100,11 +100,16 @@ export class AppComponent {
   });
 
   constructor() {
-    // apiGroup 디스커버리(GET /apis) → 실재 그룹만 set. nav가 이걸로 item.requires를 게이트(CRD 있으면 실페이지·없으면 숨김).
-    this.k8s.get<{ groups?: Array<{ name: string }> }>('/apis').subscribe({
-      next: d => this.availableGroups.set(new Set((d.groups ?? []).map(g => g.name))),
-      error: () => this.availableGroups.set(new Set()),
-    });
+    // CRD 디스커버리 → 전체 CRD의 spec.group 집합으로 capability-gate(item.requires).
+    // (bare GET /apis는 백엔드 k8s 프록시가 400 거부 → 프록시가 허용하는 CRD 목록을 사용. requires는 전부 CRD apiGroup이라 충분.)
+    this.k8s
+      .get<{ items?: Array<{ spec?: { group?: string } }> }>('/apis/apiextensions.k8s.io/v1/customresourcedefinitions')
+      .subscribe({
+        next: d => this.availableGroups.set(
+          new Set((d.items ?? []).map(c => c.spec?.group).filter((g): g is string => !!g)),
+        ),
+        error: () => this.availableGroups.set(new Set()),
+      });
   }
 
   /** 콤보 전환 — 스코프 변경 + 활성 뷰를 새 스코프 기본으로 리셋(스코프 밖 stale 콘텐츠 방지). */

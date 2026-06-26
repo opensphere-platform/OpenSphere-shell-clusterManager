@@ -34,14 +34,16 @@ import { EventComponent } from './resources/events.component';
 import { RoleBindingComponent } from './resources/rolebindings.component';
 import { ClusterRoleComponent } from './resources/clusterroles.component';
 import { ClusterRoleBindingComponent } from './resources/clusterrolebindings.component';
-import { DummyVirtualMachinesComponent, DummyVmTemplatesComponent, DummyInstanceTypesComponent, DummyBootableVolumesComponent, DummyVmMigrationPoliciesComponent } from './resources/dummy-virtualization';
+import { DummyVmTemplatesComponent, DummyInstanceTypesComponent, DummyBootableVolumesComponent, DummyVmMigrationPoliciesComponent } from './resources/dummy-virtualization';
+import { VirtualMachinesComponent } from './resources/virtualmachines.component';
 import { DummyVolumeSnapshotsComponent, DummyVolumeSnapshotClassesComponent, DummyCephComponent } from './resources/dummy-storage';
 import { DummyStorageMigrationComponent, DummyMtvProvidersComponent, DummyMtvPlansComponent } from './resources/dummy-migration';
 import { DummyAlertsComponent, DummyMetricsComponent, DummyDashboardsComponent, DummyTargetsComponent } from './resources/dummy-observability';
 
 /** 앱 내부 사이드바 네비 — Headlamp 사이드바 그룹 매핑. */
 export interface NavItem { id: string; label: string; component: Type<any>; }
-export interface NavGroup { group: string; items: NavItem[]; }
+/** scope: 'vm' 그룹은 VM 뷰 스코프에서만, 그 외(기본=cluster)는 Cluster 뷰에서만 노출(§7.1 통합 콤보 뷰). */
+export interface NavGroup { group: string; items: NavItem[]; scope?: 'cluster' | 'vm'; }
 
 export const NAV: NavGroup[] = [
   {
@@ -107,8 +109,9 @@ export const NAV: NavGroup[] = [
   // ── OpenSphere 확장(코어 K8s 콘솔에 없는 고유 영역) — OpenShift 콘솔 구조 참고 더미 페이지, 후속 실연동 ──
   {
     group: 'Virtualization',
+    scope: 'vm',
     items: [
-      { id: 'virtualmachines', label: 'Virtual Machines', component: DummyVirtualMachinesComponent },
+      { id: 'virtualmachines', label: 'Virtual Machines', component: VirtualMachinesComponent },
       { id: 'vm-templates', label: 'Templates', component: DummyVmTemplatesComponent },
       { id: 'vm-instancetypes', label: 'Instance Types', component: DummyInstanceTypesComponent },
       { id: 'vm-bootablevolumes', label: 'Bootable Volumes', component: DummyBootableVolumesComponent },
@@ -125,6 +128,7 @@ export const NAV: NavGroup[] = [
   },
   {
     group: 'Migration (MTV)',
+    scope: 'vm',
     items: [
       { id: 'mtv-storage-migration', label: 'Storage Migration', component: DummyStorageMigrationComponent },
       { id: 'mtv-providers', label: 'Providers', component: DummyMtvProvidersComponent },

@@ -4,6 +4,8 @@ import { ClarityModule } from '@clr/angular';
 import { firstValueFrom } from 'rxjs';
 import { dump, load } from 'js-yaml';
 import { K8sService } from '../core/k8s.service';
+import { singleResourcePath } from './k8s-path';
+import { errText as errTextOf } from './k8s-error';
 import { CodeEditorComponent } from './code-editor.component';
 import { LogViewerComponent } from './log-viewer.component';
 import { TerminalComponent } from './terminal.component';
@@ -223,12 +225,7 @@ export class ResourceDetailComponent implements OnInit {
   set drainOpenModel(v: boolean) { this.drainOpen.set(v); }
 
   private singlePath(): string {
-    const i = this.listPath.lastIndexOf('/');
-    const base = this.listPath.slice(0, i);
-    const plural = this.listPath.slice(i + 1);
-    return this.namespaced
-      ? `${base}/namespaces/${this.namespace}/${plural}/${this.name}`
-      : `${this.listPath}/${this.name}`;
+    return singleResourcePath(this.listPath, this.namespace, this.name, this.namespaced);
   }
 
   ngOnInit(): void {
@@ -425,7 +422,7 @@ export class ResourceDetailComponent implements OnInit {
   }
 
   private flash(m: string, ok: boolean) { this.ok.set(ok); this.msg.set(m); }
-  private errText(e: any): string { return e?.error?.message || e?.error?.error || e?.message || String(e); }
+  private errText(e: any): string { return errTextOf(e); }
   age(ts: string): string {
     if (!ts) return '—';
     const ms = Date.now() - new Date(ts).getTime();

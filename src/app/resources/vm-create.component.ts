@@ -5,6 +5,7 @@ import { of } from 'rxjs';
 import { catchError } from 'rxjs/operators';
 import { dump } from 'js-yaml';
 import { K8sService } from '../core/k8s.service';
+import { isRfc1123 } from '../shared/k8s-validate';
 import { CodeEditorComponent } from '../shared/code-editor.component';
 import { OsLogoComponent } from '../shared/os-logo.component';
 import { VmCreateInstancetypeComponent } from './vm-create-instancetype.component';
@@ -188,7 +189,7 @@ export class VmCreateComponent implements OnInit {
   submit(): void {
     const nm = this.name().trim();
     const ns = this.ns().trim() || 'default';
-    if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(nm)) {
+    if (!isRfc1123(nm)) {
       this.ok.set(false); this.msg.set('이름은 소문자/숫자/하이픈만(시작·끝은 영숫자).'); return;
     }
     this.busy.set(true); this.msg.set(null);

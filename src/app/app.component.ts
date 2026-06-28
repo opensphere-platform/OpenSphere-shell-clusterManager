@@ -48,10 +48,17 @@ import { K8sService } from './core/k8s.service';
     .cm-scope .clr-select-wrapper { width: 100%; }
     .cm-scope .clr-select { width: 100%; }
 
-    /* 페이지 경로(breadcrumb) — 비-현재=accent, 현재=ink, '/' 구분. */
-    .cc-crumbs { display: flex; align-items: center; flex-wrap: wrap; gap: 0.4rem; margin: 0 0 0.85rem; font-size: 0.8rem; }
-    .cc-crumb { color: #4c6fff; }
-    .cc-crumb.is-cur { color: #161616; }
+    /* 페이지 경로 — AI Hub 표준: 상단 회색 박스 바(좌우 풀폭). negative margin = .os-content 패딩(1.1rem 1.4rem)과 동일. */
+    .cc-crumbs {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; min-height: 2rem;
+      margin: -1.1rem -1.4rem 0.9rem; padding: 0.45rem 1.4rem;
+      background: #f4f4f4; border-top: 1px solid #d0d0d0; border-bottom: 1px solid #d0d0d0;
+      font-size: 0.8125rem; line-height: 1rem;
+    }
+    .cc-crumb { color: #525252; }
+    .cc-crumb-link { color: #4c6fff; text-decoration: none; cursor: pointer; }
+    .cc-crumb-link:hover { text-decoration: underline; }
+    .cc-crumb.is-cur { color: #525252; }
     .cc-crumb-sep { color: #8c8c8c; }
   `],
   template: `
@@ -92,10 +99,12 @@ import { K8sService } from './core/k8s.service';
       </clr-vertical-nav>
 
       <section class="os-content">
-        <!-- 페이지 경로(breadcrumb) -->
+        <!-- 페이지 경로(breadcrumb) — 비-현재 크럼브는 링크(AI Hub 방식). -->
         <nav class="cc-crumbs" aria-label="페이지 경로">
           <ng-container *ngFor="let c of crumbs(); let last = last">
-            <span class="cc-crumb" [class.is-cur]="last">{{ c }}</span>
+            <a *ngIf="c.link === 'home'" class="cc-crumb cc-crumb-link" href="/">{{ c.label }}</a>
+            <a *ngIf="c.link && c.link !== 'home'" class="cc-crumb cc-crumb-link" (click)="crumbNav(c)">{{ c.label }}</a>
+            <span *ngIf="!c.link" class="cc-crumb is-cur">{{ c.label }}</span>
             <span class="cc-crumb-sep" *ngIf="!last">/</span>
           </ng-container>
         </nav>
@@ -132,13 +141,26 @@ export class AppComponent {
   });
 
   /** 페이지 경로(breadcrumb) — [perspective] / [group] / [active]. 표준 템플릿 경로 표시와 동일. */
-  readonly crumbs = computed<string[]>(() => {
+  /** 페이지 경로 — 비-현재는 링크(home=콘솔/, overview=셸 루트, group=그룹 첫 항목). 현재는 link:null. */
+  readonly crumbs = computed<{ label: string; link: 'home' | 'overview' | 'group' | null; groupId?: string }[]>(() => {
     const a = this.active();
     const root = '2. K8s Cluster + Ceph';
-    if (a.id === 'overview') return [root, 'Overview'];
+    const out: { label: string; link: 'home' | 'overview' | 'group' | null; groupId?: string }[] = [{ label: 'OpenSphere', link: 'home' }];
+    if (a.id === 'overview') { out.push({ label: root, link: null }); return out; }
+    out.push({ label: root, link: 'overview' });
     const g = this.filteredNav().find((x) => x.items.some((it) => it.id === a.id));
-    return g ? [root, g.group, a.label] : [root, a.label];
+    if (g) out.push({ label: g.group, link: 'group', groupId: g.group });
+    out.push({ label: a.label, link: null });
+    return out;
   });
+  /** 크럼브 클릭 이동(home은 anchor href로 처리). */
+  crumbNav(c: { link: 'home' | 'overview' | 'group' | null; groupId?: string }): void {
+    if (c.link === 'overview') { this.select(this.OVERVIEW); return; }
+    if (c.link === 'group' && c.groupId) {
+      const g = this.filteredNav().find((x) => x.group === c.groupId);
+      if (g?.items[0]) { this.setOpen(g.group, true); this.select(g.items[0]); }
+    }
+  }
 
   constructor() {
     // CRD 디스커버리 → 전체 CRD의 spec.group 집합으로 capability-gate(item.requires).

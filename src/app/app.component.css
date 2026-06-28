@@ -16,12 +16,7 @@
   --os-ink:       #1b2438;
   --os-muted:     #667193;
 
-  /* Clarity 토큰 → shadow root 안에서 nav 다크 테마 */
-  --clr-vertical-nav-bg-color: #101a38;
-  --clr-vertical-nav-item-color: #c7d0e8;
-  --clr-vertical-nav-item-active-color: #ffffff;
-  --clr-vertical-nav-item-active-bg-color: rgba(76, 111, 255, 0.22);
-  --clr-vertical-nav-icon-active-color: var(--os-brand-300);
+  /* Clarity 토큰(버튼/링크 — 자식 페이지에서 사용) */
   --clr-btn-primary-bg-color: var(--os-brand-500);
   --clr-btn-primary-hover-bg-color: #3a5af0;
   --clr-link-color: var(--os-brand-500);
@@ -64,42 +59,12 @@
   color: var(--os-ink);
 }
 
-/* 레이아웃: 좌측 Clarity vertical nav + 우측 콘텐츠 */
-.os-shell { display: flex; height: 100%; min-height: 100%; }
+/* 레이아웃: 좌측 2단 보조 내비 + 우측 콘텐츠.
+   표준 템플릿(/containers/overview .cc-frame)과 동일하게 콘솔 콘텐츠 패딩(1.5rem)을 음수 마진으로 상쇄 →
+   메인 셸 1단 레일에 2단이 밀착(풀블리드, 좌/우/상/하 여백 제거). */
+.os-shell { display: flex; align-items: stretch; margin: -1.5rem; min-height: calc(100% + 3rem); overflow-x: hidden; }
 
-/* ── Clarity clr-vertical-nav 내부 오버라이드 (Shadow DOM 경계 내) ──
-   Clarity nav 컴포넌트는 ViewEncapsulation.None 이므로 :host 하위 선택자로 도달 가능. */
-.os-sidebar-nav {
-  flex: 0 0 220px;
-  min-width: 0;
-  height: 100%;
-  overflow-y: auto;
-}
-
-/* nav 브랜드 헤더 — Clarity nav 위에 오버레이 */
-.os-brand {
-  padding: 10px 16px 12px;
-  font-size: 0.95rem;
-  font-weight: 500;
-  color: var(--clr-vertical-nav-item-active-color, #fff);
-  background: var(--clr-vertical-nav-bg-color, #101a38);
-}
-
-/* 자식 링크의 SVG 아이콘 */
-.os-tree-ic { width: 16px; height: 16px; fill: currentColor; flex: 0 0 auto; opacity: 0.85; }
-.os-tree-ic-child { width: 14px; height: 14px; }
-
-/* nav 그룹 children 패널 — Clarity 기본이 흰 배경으로 보이는 버그 방지 */
-clr-vertical-nav-group-children,
-.nav-group-children,
-.nav-group-content { background: transparent !important; }
-
-/* active 링크 강조 — Clarity 토큰 적용 확인 */
-a[clrVerticalNavLink].active,
-a.nav-link.active {
-  color: var(--clr-vertical-nav-item-active-color, #fff) !important;
-  background: var(--clr-vertical-nav-item-active-bg-color, rgba(76,111,255,0.22)) !important;
-}
+/* 보조 내비(2단)는 컴포넌트 인라인 styles의 .cc-* 규칙이 담당(표준 /containers/overview 템플릿). */
 
 /* Overview 카드 */
 .os-ov-cards { display: flex; flex-wrap: wrap; gap: 12px; margin: 4px 0 16px; }
@@ -144,7 +109,14 @@ a.nav-link.active {
 .os-bar-track { flex: 1 1 auto; height: 14px; background: var(--os-surface); border-radius: 3px; overflow: hidden; }
 .os-bar-track > i { display: block; height: 100%; border-radius: 3px; min-width: 2px; transition: width 0.2s; }
 .os-bar-val { flex: 0 0 auto; color: var(--os-text-sec); min-width: 36px; text-align: right; }
-.os-content { flex: 1 1 auto; padding: 16px 20px; overflow: auto; min-width: 0; position: relative; }
+.os-content {
+  flex: 1 1 auto; padding: 16px 20px; overflow: auto; min-width: 0; position: relative;
+  /* 표준 템플릿(/containers/overview)과 동일한 라이트 그라데이션 배경(하단-우측 글로우) */
+  background:
+    radial-gradient(circle at 82% 82%, rgba(190, 230, 255, 0.5), transparent 26rem),
+    radial-gradient(circle at 92% 72%, rgba(255, 214, 232, 0.4), transparent 24rem),
+    #f4f4f4;
+}
 
 /* 우측 슬라이드 오버 상세 드로어 */
 .os-drawer {

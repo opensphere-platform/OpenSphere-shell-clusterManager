@@ -238,3 +238,9 @@
 .os-gval-mem   { stroke: var(--os-gauge-mem,  #8e44ad); }
 .os-gval-pods  { stroke: var(--os-accent,     #00bfa5); }
 .os-gval-nodes { stroke: var(--os-gauge-node, #16a3b8); }
+
+/* C5 — PVC reclaimPolicy 가시화 배지(데이터 영속성). */
+.os-pvrp { display: flex; align-items: center; gap: 0.5rem; margin: 0 0 0.7rem; padding: 0.45rem 0.7rem; border: 1px solid var(--os-border); border-radius: 4px; background: var(--os-bg-subtle); font-size: 0.8rem; }
+.os-pvrp-warn { border-color: #e6a700; background: rgba(241,194,27,0.08); }
+.os-pvrp-k { color: var(--os-text-sec); font-weight: 600; }
+.os-pvrp-hint { color: var(--os-muted); }

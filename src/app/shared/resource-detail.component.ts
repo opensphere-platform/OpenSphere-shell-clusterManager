@@ -64,6 +64,13 @@ const ICON: Record<string, string> = {
     <!-- C3 Diagnose — 문제 있을 때만 상세 최상단에 평문 진단+추천 액션(읽기). -->
     <app-diagnose-card *ngIf="mode() === 'view' && diagnoses().length" [diagnoses]="diagnoses()" (act)="onDiag($event)" />
 
+    <!-- C5 PVC reclaimPolicy — 데이터 영속성 가시화(read만). -->
+    <div *ngIf="mode() === 'view' && pvReclaim() as rp" class="os-pvrp" [class.os-pvrp-warn]="rp === 'Delete'">
+      <span class="os-pvrp-k">디스크 삭제 정책</span>
+      <span class="label" [class.label-warning]="rp === 'Delete'">{{ rp }}</span>
+      <span class="os-pvrp-hint">{{ rp === 'Delete' ? 'PVC 삭제 시 디스크 데이터도 함께 삭제됩니다.' : rp === 'Retain' ? 'PVC를 삭제해도 디스크(PV)는 보존됩니다.' : '' }}</span>
+    </div>
+
     <clr-datagrid *ngIf="obj() && mode() === 'view'" [clrDgLoading]="loading()">
       <clr-dg-column>Field</clr-dg-column>
       <clr-dg-column>Value</clr-dg-column>
@@ -202,6 +209,8 @@ export class ResourceDetailComponent implements OnInit {
   readonly events = signal<any[]>([]);
   /** C3 — 읽은 obj()·events()로 규칙기반 진단(네트워크 0). length>0이면 상세 최상단 카드. */
   readonly diagnoses = computed(() => diagnose(this.obj(), this.events()));
+  /** C5 — PVC가 바인딩된 PV의 reclaimPolicy(Retain/Delete/Recycle). read만. */
+  readonly pvReclaim = signal<string | null>(null);
   // Pod 로그(tail)
   readonly container = signal('');
   readonly tail = signal(500);
@@ -238,7 +247,11 @@ export class ResourceDetailComponent implements OnInit {
 
   ngOnInit(): void {
     this.k8s.get(this.singlePath()).subscribe({
-      next: o => { this.obj.set(o); this.replicas.set(o?.spec?.replicas ?? 0); this.loading.set(false); },
+      next: o => {
+        this.obj.set(o); this.replicas.set(o?.spec?.replicas ?? 0); this.loading.set(false);
+        // C5 — PVC면 bound PV의 reclaimPolicy 조회(read만).
+        if (/persistentvolumeclaims/i.test(this.listPath) && o?.spec?.volumeName) this.loadPvReclaim(o.spec.volumeName);
+      },
       error: e => { this.obj.set(this.item); this.loading.set(false); this.flash(this.errText(e), false); },
     });
     const evNs = this.namespaced ? `/api/v1/namespaces/${this.namespace}/events` : `/api/v1/events`;
@@ -285,6 +298,14 @@ export class ResourceDetailComponent implements OnInit {
       ...(o.spec?.initContainers || []).map((c: any) => c.name),
     ];
   }
+  /** C5 — bound PV의 reclaimPolicy 조회(read만). */
+  private loadPvReclaim(pvName: string): void {
+    this.k8s.get(`/api/v1/persistentvolumes/${pvName}`).subscribe({
+      next: (pv: any) => this.pvReclaim.set(pv?.spec?.persistentVolumeReclaimPolicy ?? null),
+      error: () => this.pvReclaim.set(null),
+    });
+  }
+
   /** C3 — 진단 카드 액션 라우팅. logs=로그 열기(기존), explain=AI Phase0 스텁(write·LLM 0), navigate/editField=후속 단계 안내. */
   onDiag(a: DiagAction): void {
     if (a.kind === 'logs') { if (a.hint) this.container.set(a.hint); this.openLogs(); return; }

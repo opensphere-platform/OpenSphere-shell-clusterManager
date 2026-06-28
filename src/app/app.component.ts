@@ -1,5 +1,6 @@
 import { CommonModule } from '@angular/common';
 import { Component, ViewEncapsulation, signal, computed, inject } from '@angular/core';
+import { ClarityModule } from '@clr/angular';
 import { NAV, NavItem, NavGroup } from './nav';
 import { NAV_ICON } from './nav-icons';
 import { OverviewComponent } from './resources/overview.component';
@@ -12,45 +13,42 @@ import { K8sService } from './core/k8s.service';
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [CommonModule, OverviewComponent],
+  imports: [CommonModule, ClarityModule, OverviewComponent],
   encapsulation: ViewEncapsulation.ShadowDom,
   styleUrls: ['./app.component.css'],
   styles: [`
-    /* ── 표준 2단 보조 내비(콘솔 /containers/overview 템플릿과 동일: 라이트 .cc-secondbar) ──
-       ShadowDom이라 셸 토큰이 :host의 다크값에 가려질 수 있어, 표준 라이트 팔레트를 명시값으로 고정. */
-    .cc-secondbar { flex: 0 0 15.75rem; width: 15.75rem; overflow-y: auto; background: #fff; border-inline-end: 1px solid #e0e0e0; }
-    .cc-title { display: flex; align-items: center; gap: 0.5rem; min-height: 3.25rem; padding-inline: 1rem; border-block-end: 1px solid #e0e0e0; }
-    .cc-title strong { font-size: 0.875rem; font-weight: 600; color: #161616; }
-    .cc-badge { font-size: 0.6rem; font-weight: 600; color: #4c6fff; background: rgba(76,111,255,0.12); padding: 0.05rem 0.35rem; border-radius: 3px; }
-
-    .cc-scope { padding: 0.6rem 1rem 0.4rem; }
-    .cc-scope-label { display: block; font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.05em; color: #8c8c8c; margin-bottom: 0.25rem; }
-    .cc-scope-sel { width: 100%; font-size: 0.8rem; padding: 0.35rem 0.4rem; border: 1px solid #e0e0e0; border-radius: 4px; background: #f4f4f4; color: #161616; cursor: pointer; font-family: inherit; }
-    .cc-scope-sel option { color: #161616; }
-
-    .cc-items { padding-bottom: 0.5rem; }
-    .cc-item {
-      display: grid; grid-template-columns: 1rem minmax(0,1fr) auto; column-gap: 0.5rem; align-items: center;
-      width: 100%; min-height: 2.25rem; padding: 0.5rem 1rem; border: 0; background: transparent; text-align: left;
-      color: #525252; font-size: 0.875rem; font-family: inherit; text-decoration: none; cursor: pointer; border-left: 3px solid transparent;
+    /* ── 표준 2단 보조 내비 — OpenSphere AI Hub(/p/ai) 방식: Clarity clr-vertical-nav, 흰 배경, 왼쪽 blue bar active ── */
+    .cm-nav { min-height: 100vh; background: #ffffff; }
+    .cm-nav clr-vertical-nav-group,
+    .cm-nav .nav-group,
+    .cm-nav .nav-group-content,
+    .cm-nav .nav-group-children { background: transparent; }
+    .cm-nav a[clrVerticalNavLink],
+    .cm-nav .nav-link,
+    .cm-nav .nav-trigger { color: var(--clr-vertical-nav-item-color, #1b2438); font-size: 0.72rem; }
+    .cm-nav a[clrVerticalNavLink]:hover,
+    .cm-nav .nav-link:hover,
+    .cm-nav .nav-trigger:hover { color: #1b2438; background: rgba(0, 0, 0, 0.04); }
+    /* active = 왼쪽 blue bar 하나만(중복/외곽 표시 제거) */
+    .cm-nav a[clrVerticalNavLink]::before,
+    .cm-nav .nav-link::before { display: none !important; content: none !important; }
+    .cm-nav a[clrVerticalNavLink].active,
+    .cm-nav .nav-link.active {
+      color: #1b2438; font-weight: 600;
+      background: rgba(76, 111, 255, 0.10);
+      box-shadow: inset 3px 0 0 #4c6fff;
     }
-    .cc-item:hover { background: #e8e8e8; color: #161616; }
-    .cc-item.is-active { background: #e8e8e8; color: #161616; font-weight: 600; border-left-color: #4c6fff; }
-    .cc-ic { width: 1rem; height: 1rem; fill: currentColor; opacity: 0.85; }
-    .cc-chev { width: 1rem; height: 1rem; fill: #8c8c8c; transition: transform 0.12s; }
-    .cc-chev.is-open { transform: rotate(90deg); }
 
-    .cc-nested { display: none; }
-    .cc-group.is-open > .cc-nested { display: block; }
-    .cc-group:has(.cc-child.is-active) > .cc-nested { display: block; }
-    .cc-child {
-      display: block; padding: 0.45rem 1rem 0.45rem 2.55rem; color: #525252; font-size: 0.84rem;
-      text-decoration: none; cursor: pointer; border-left: 3px solid transparent;
-    }
-    .cc-child:hover { background: #e8e8e8; color: #161616; }
-    .cc-child.is-active { background: #e8e8e8; color: #161616; font-weight: 600; border-left-color: #4c6fff; }
+    .cm-brand { display: flex; align-items: center; gap: 0.35rem; min-height: 3.05rem; padding: 0.55rem 0.9rem; color: #1b2438; border-bottom: 1px solid #e0e0e0; }
+    .cm-brand strong { font-size: 0.78rem; font-weight: 600; }
+    .cm-brand .label { font-size: 0.58rem; }
 
-    /* 페이지 경로(breadcrumb) — 표준 os-breadcrumb와 동일(비-현재=accent, 현재=ink, '/' 구분). */
+    /* 뷰 스코프 = Clarity Select(clr-select-wrapper + clr-select). 라벨 없음(요청). 풀폭. */
+    .cm-scope { padding: 0.5rem 0.9rem 0.45rem; }
+    .cm-scope .clr-select-wrapper { width: 100%; }
+    .cm-scope .clr-select { width: 100%; }
+
+    /* 페이지 경로(breadcrumb) — 비-현재=accent, 현재=ink, '/' 구분. */
     .cc-crumbs { display: flex; align-items: center; flex-wrap: wrap; gap: 0.4rem; margin: 0 0 0.85rem; font-size: 0.8rem; }
     .cc-crumb { color: #4c6fff; }
     .cc-crumb.is-cur { color: #161616; }
@@ -58,47 +56,43 @@ import { K8sService } from './core/k8s.service';
   `],
   template: `
     <div class="os-shell">
-      <!-- 표준 2단 보조 내비(콘솔 /containers/overview 템플릿 방식) — 라이트 .cc-secondbar 트리 -->
-      <nav class="cc-secondbar" aria-label="K8s Console 보조 내비">
-        <!-- 브랜드 헤더 -->
-        <div class="cc-title"><strong>K8s Console</strong><span class="cc-badge">Angular</span></div>
+      <!-- 표준 2단 보조 내비 — AI Hub(/p/ai) 방식: Clarity clr-vertical-nav(흰 배경, 12rem, 왼쪽 blue bar) -->
+      <clr-vertical-nav class="cm-nav" [clrVerticalNavCollapsible]="false" aria-label="K8s Console 보조 내비">
+        <!-- 브랜드 -->
+        <div class="cm-brand"><strong>K8s Console</strong><span class="label label-info">Angular</span></div>
 
-        <!-- 뷰 스코프 콤보(Cluster ↔ VM) — KubeVirt VirtualMachine CRD 존재 시에만 노출(capability-gate). -->
-        <div class="cc-scope" *ngIf="vmCapable()">
-          <span class="cc-scope-label">View</span>
-          <select class="cc-scope-sel" (change)="setScope($any($event.target).value)">
-            <option value="cluster" [selected]="viewScope() === 'cluster'">Cluster</option>
-            <option value="vm" [selected]="viewScope() === 'vm'">Virtual Machines</option>
-          </select>
-        </div>
-
-        <div class="cc-items" role="menu">
-          <!-- 개요(인덱스) — 단독 항목 -->
-          <a class="cc-item" [class.is-active]="active().id === 'overview'" tabindex="0"
-             (click)="select(OVERVIEW)" (keydown.enter)="select(OVERVIEW)">
-            <svg viewBox="0 0 24 24" class="cc-ic"><path [attr.d]="icon('overview')"/></svg>
-            <span class="lbl">Overview</span>
-          </a>
-
-          <!-- 현재 스코프 그룹(filteredNav) — 트리(접기/펼치기) -->
-          <div class="cc-group" *ngFor="let g of filteredNav()" [class.is-open]="isOpen(g.group)">
-            <button type="button" class="cc-item cc-group-title"
-                (click)="setOpen(g.group, !isOpen(g.group))" [attr.aria-expanded]="isOpen(g.group)">
-              <svg viewBox="0 0 24 24" class="cc-ic"><path [attr.d]="secIcon(g.group)"/></svg>
-              <span class="lbl">{{ g.group }}</span>
-              <svg viewBox="0 0 24 24" class="cc-chev" [class.is-open]="isOpen(g.group)"><path d="M9 6l6 6-6 6z"/></svg>
-            </button>
-            <div class="cc-nested">
-              <a *ngFor="let it of g.items" class="cc-child" tabindex="0"
-                 [class.is-active]="active().id === it.id"
-                 (click)="select(it)" (keydown.enter)="select(it)">{{ it.label }}</a>
-            </div>
+        <!-- 뷰 스코프 콤보(Cluster ↔ VM) — KubeVirt CRD 존재 시에만 노출(capability-gate). -->
+        <div class="cm-scope" *ngIf="vmCapable()">
+          <div class="clr-select-wrapper">
+            <select class="clr-select" aria-label="뷰 스코프(Cluster/Virtual Machines)" (change)="setScope($any($event.target).value)">
+              <option value="cluster" [selected]="viewScope() === 'cluster'">Cluster</option>
+              <option value="vm" [selected]="viewScope() === 'vm'">Virtual Machines</option>
+            </select>
           </div>
         </div>
-      </nav>
+
+        <!-- 개요(인덱스) — 단독 leaf. 최종(이동) 메뉴는 아이콘 미사용(원칙). -->
+        <a clrVerticalNavLink [class.active]="active().id === 'overview'"
+           (click)="select(OVERVIEW)" (keydown.enter)="select(OVERVIEW)">
+          Overview
+        </a>
+
+        <!-- 현재 스코프 그룹(filteredNav) — clr-vertical-nav-group -->
+        <clr-vertical-nav-group *ngFor="let g of filteredNav()"
+            [clrVerticalNavGroupExpanded]="isOpen(g.group)"
+            (clrVerticalNavGroupExpandedChange)="setOpen(g.group, $event)">
+          <svg viewBox="0 0 24 24" class="os-tree-ic" clrVerticalNavIcon><path [attr.d]="secIcon(g.group)"/></svg>
+          {{ g.group }}
+          <clr-vertical-nav-group-children>
+            <a *ngFor="let it of g.items" clrVerticalNavLink
+               [class.active]="active().id === it.id"
+               (click)="select(it)" (keydown.enter)="select(it)">{{ it.label }}</a>
+          </clr-vertical-nav-group-children>
+        </clr-vertical-nav-group>
+      </clr-vertical-nav>
 
       <section class="os-content">
-        <!-- 페이지 경로(breadcrumb) — 표준 템플릿(/containers/overview)과 동일한 경로 표시 -->
+        <!-- 페이지 경로(breadcrumb) -->
         <nav class="cc-crumbs" aria-label="페이지 경로">
           <ng-container *ngFor="let c of crumbs(); let last = last">
             <span class="cc-crumb" [class.is-cur]="last">{{ c }}</span>
@@ -174,7 +168,7 @@ export class AppComponent {
   }
 
   select(it: NavItem) { this.active.set(it); this.syncUrl(); }
-  icon(id: string) { return NAV_ICON[id] || NAV_ICON['fallback']; }
+  /** 그룹 헤더 아이콘(최종 메뉴는 아이콘 미사용 — leaf는 호출 안 함). */
   secIcon(group: string) { return NAV_ICON['sec:' + group] || NAV_ICON['fallback']; }
   isOpen(group: string) { return this.expanded().has(group); }
   setOpen(group: string, open: boolean) {

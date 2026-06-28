@@ -1,11 +1,14 @@
 import { CommonModule } from '@angular/common';
-import { Component, EventEmitter, Input, OnInit, Output, inject, signal } from '@angular/core';
+import { Component, EventEmitter, Input, OnInit, Output, inject, signal, computed } from '@angular/core';
 import { ClarityModule } from '@clr/angular';
 import { firstValueFrom } from 'rxjs';
 import { dump, load } from 'js-yaml';
 import { K8sService } from '../core/k8s.service';
 import { singleResourcePath } from './k8s-path';
 import { errText as errTextOf } from './k8s-error';
+import { diagnose } from './diagnose.rules';
+import { DiagAction } from './diagnose.model';
+import { DiagnoseCardComponent } from './diagnose-card.component';
 import { CodeEditorComponent } from './code-editor.component';
 import { LogViewerComponent } from './log-viewer.component';
 import { TerminalComponent } from './terminal.component';
@@ -32,7 +35,7 @@ const ICON: Record<string, string> = {
 @Component({
   selector: 'app-resource-detail',
   standalone: true,
-  imports: [CommonModule, ClarityModule, TerminalComponent, CodeEditorComponent, LogViewerComponent],
+  imports: [CommonModule, ClarityModule, TerminalComponent, CodeEditorComponent, LogViewerComponent, DiagnoseCardComponent],
   template: `
     <div *ngIf="namespaced" class="os-sub os-sub-mb">namespace: {{ namespace }}</div>
 
@@ -57,6 +60,9 @@ const ICON: Record<string, string> = {
       <button class="os-iconbtn" *ngIf="kind === 'Pod'" title="Terminal (exec)" aria-label="Terminal" (click)="openExec()"><svg viewBox="0 0 24 24" class="os-ic"><path [attr.d]="ic.terminal"/></svg></button>
       <button class="os-iconbtn os-iconbtn-danger" title="Delete" aria-label="Delete" (click)="deleteOpen.set(true)"><svg viewBox="0 0 24 24" class="os-ic"><path [attr.d]="ic.trash"/></svg></button>
     </div>
+
+    <!-- C3 Diagnose — 문제 있을 때만 상세 최상단에 평문 진단+추천 액션(읽기). -->
+    <app-diagnose-card *ngIf="mode() === 'view' && diagnoses().length" [diagnoses]="diagnoses()" (act)="onDiag($event)" />
 
     <clr-datagrid *ngIf="obj() && mode() === 'view'" [clrDgLoading]="loading()">
       <clr-dg-column>Field</clr-dg-column>
@@ -194,6 +200,8 @@ export class ResourceDetailComponent implements OnInit {
   readonly mode = signal<'view' | 'edit' | 'logs' | 'exec'>('view');
   readonly draft = signal('');
   readonly events = signal<any[]>([]);
+  /** C3 — 읽은 obj()·events()로 규칙기반 진단(네트워크 0). length>0이면 상세 최상단 카드. */
+  readonly diagnoses = computed(() => diagnose(this.obj(), this.events()));
   // Pod 로그(tail)
   readonly container = signal('');
   readonly tail = signal(500);
@@ -276,6 +284,12 @@ export class ResourceDetailComponent implements OnInit {
       ...(o.spec?.containers || []).map((c: any) => c.name),
       ...(o.spec?.initContainers || []).map((c: any) => c.name),
     ];
+  }
+  /** C3 — 진단 카드 액션 라우팅. logs=로그 열기(기존), explain=AI Phase0 스텁(write·LLM 0), navigate/editField=후속 단계 안내. */
+  onDiag(a: DiagAction): void {
+    if (a.kind === 'logs') { if (a.hint) this.container.set(a.hint); this.openLogs(); return; }
+    if (a.kind === 'explain') { this.flash('AI 설명은 곧 제공됩니다(현재는 진단 규칙 기반).', true); return; }
+    this.flash(`추천 조치: ${a.label}${a.hint ? ' (' + a.hint + ')' : ''} — 후속 단계(폼/이동)에서 연결됩니다.`, true);
   }
   openLogs() {
     const cs = this.containers();

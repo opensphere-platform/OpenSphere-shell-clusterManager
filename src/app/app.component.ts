@@ -1,5 +1,5 @@
 import { CommonModule } from '@angular/common';
-import { Component, ViewEncapsulation, signal, computed, inject } from '@angular/core';
+import { Component, ViewEncapsulation, signal, computed, inject, OnDestroy } from '@angular/core';
 import { ClarityModule } from '@clr/angular';
 import { NAV, NavItem, NavGroup } from './nav';
 import { NAV_ICON } from './nav-icons';
@@ -114,8 +114,9 @@ import { K8sService } from './core/k8s.service';
     </div>
   `,
 })
-export class AppComponent {
+export class AppComponent implements OnDestroy {
   private k8s = inject(K8sService);
+  private readonly onPopState = () => this.applyUrlState();
 
   readonly OVERVIEW: NavItem = { id: 'overview', label: 'Overview', component: OverviewComponent };
   readonly active = signal<NavItem>(this.OVERVIEW);
@@ -174,6 +175,11 @@ export class AppComponent {
         error: () => this.availableGroups.set(new Set()),
       });
     this.applyUrlState();
+    window.addEventListener('popstate', this.onPopState);
+  }
+
+  ngOnDestroy(): void {
+    window.removeEventListener('popstate', this.onPopState);
   }
 
   /** 콤보 전환 — 스코프 변경 + 활성 뷰를 새 스코프 기본으로 리셋(스코프 밖 stale 콘텐츠 방지). */
@@ -212,15 +218,25 @@ export class AppComponent {
     }
   }
 
-  // ── 공유 가능한 URL: 뷰 스코프(view) + 활성 리소스(res)를 쿼리 파라미터로 동기화 ──
-  // 셸 경로(/p/cluster-manager)는 보존하고 쿼리만 갱신(replaceState — 셸 라우터 popstate 미발화).
+  // ── 공유 가능한 URL: 표준 = `/p/<id>/서브패스` + pushState/popstate(§OpenSphere-console/app.routes.ts
+  // pluginHostMatcher, OpenSphere-shell-ai의 원조 구현과 동형). 뷰 스코프(view)/활성 리소스(res)를
+  // `/p/cluster-manager/<view>/<resId>` 경로로 인코딩 — 콘솔 라우터는 `id`만 보므로 재마운트되지 않는다.
+  // (구 쿼리 파라미터+replaceState 방식은 popstate를 피하려던 과잉 안전장치였음이 밝혀져 폐기 — 뒤로가기 지원.)
+  private static readonly BASE = '/p/cluster-manager';
+
+  /** 콘솔 경로 중 'cluster-manager' 세그먼트 뒤(서브패스)만 취함 — 접두사 변경에 안전. */
+  private currentUiRoute(): string {
+    const parts = window.location.pathname.split('/').filter(Boolean);
+    const idx = parts.indexOf('cluster-manager');
+    return idx >= 0 ? parts.slice(idx + 1).join('/') : '';
+  }
+
   private applyUrlState(): void {
     try {
-      const p = new URLSearchParams(window.location.search);
-      const view = p.get('view'); const res = p.get('res');
+      const [view, res] = this.currentUiRoute().split('/');
       if (view === 'vm' || view === 'cluster') this.viewScope.set(view);
-      if (res === 'overview') { this.active.set(this.OVERVIEW); }
-      else if (res) {
+      if (!res || res === 'overview') { this.active.set(this.OVERVIEW); }
+      else {
         for (const g of NAV) {
           const it = g.items.find(x => x.id === res);
           if (it) { this.active.set(it); if (g.scope === 'vm') this.viewScope.set('vm'); this.expanded.update(s => new Set(s).add(g.group)); break; }
@@ -230,9 +246,10 @@ export class AppComponent {
   }
   private syncUrl(): void {
     try {
-      const p = new URLSearchParams(window.location.search);
-      p.set('view', this.viewScope()); p.set('res', this.active().id);
-      history.replaceState(history.state, '', window.location.pathname + '?' + p.toString() + window.location.hash);
+      const atDefault = this.viewScope() === 'cluster' && this.active().id === this.OVERVIEW.id;
+      const nextUrl = atDefault ? AppComponent.BASE : `${AppComponent.BASE}/${this.viewScope()}/${this.active().id}`;
+      if (window.location.pathname === nextUrl) return;
+      history.pushState(null, '', nextUrl + window.location.search + window.location.hash);
     } catch { /* noop */ }
   }
 }

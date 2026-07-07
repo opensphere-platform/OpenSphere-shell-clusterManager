@@ -47,11 +47,18 @@
   --os-gauge-mem:   #8e44ad;
   --os-gauge-node:  #16a3b8;
 
+  /* Clarity의 h1/h2/h3(--clr-h1~h3-font-family → --clr-display-font → 이 토큰)가 Metropolis를 하드 참조 —
+     :host font-family 상속만으로는 heading에 안 먹힘(명시적 규칙이 상속을 항상 이김). 토큰 자체를 재정의. */
+  --clr-metropolis-font-family: var(--os-font, "IBM Plex Sans", "IBM Plex Sans KR", Metropolis, 'Avenir Next', 'Helvetica Neue', Arial, sans-serif);
+  --cds-alias-typography-font-family: var(--clr-metropolis-font-family);
+  --cds-alias-typography-header-font-family: var(--clr-metropolis-font-family);
+
   display: block;
   height: 100%;
-  /* 상속 누수 차단(셸 body line-height 20px 등) → Clarity 기본 */
+  /* 상속 누수 차단(셸 body line-height 20px 등) → Clarity 기본. var(--os-font)로 콘솔 IBM Plex 토큰 상속
+     (다른 subShell 정렬 — clusterManager만 Plex 미적용이었던 것을 수정, standalone은 Metropolis 폴백). */
   line-height: 1.428571429;
-  font-family: Metropolis, 'Avenir Next', 'Helvetica Neue', Arial, sans-serif;
+  font-family: var(--os-font, "IBM Plex Sans", "IBM Plex Sans KR", Metropolis, 'Avenir Next', 'Helvetica Neue', Arial, sans-serif);
   font-size: 0.875rem;
   font-weight: 400;
   letter-spacing: normal;
@@ -166,8 +173,8 @@
 .os-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0 12px; }
 .os-card { background: var(--os-bg); border: 1px solid var(--os-border); border-radius: 3px; margin: 12px 0; }
 .os-card-h { padding: 8px 14px; border-bottom: 1px solid var(--os-border); font-weight: 500; color: var(--os-text-sec); font-size: 0.85rem; }
-.os-yaml { margin: 0; padding: 12px 14px; font-family: 'Courier New', monospace; font-size: 0.72rem; line-height: 1.45; white-space: pre; overflow: auto; max-height: 460px; color: var(--os-ink); }
-.os-editor { width: 100%; min-height: 360px; border: 0; border-top: 1px solid var(--os-border); padding: 12px 14px; font-family: 'Courier New', monospace; font-size: 0.72rem; line-height: 1.45; resize: vertical; box-sizing: border-box; }
+.os-yaml { margin: 0; padding: 12px 14px; font-family: var(--os-font-mono, 'Courier New', monospace); font-size: 0.72rem; line-height: 1.45; white-space: pre; overflow: auto; max-height: 460px; color: var(--os-ink); }
+.os-editor { width: 100%; min-height: 360px; border: 0; border-top: 1px solid var(--os-border); padding: 12px 14px; font-family: var(--os-font-mono, 'Courier New', monospace); font-size: 0.72rem; line-height: 1.45; resize: vertical; box-sizing: border-box; }
 .os-num { width: 90px; padding: 4px 6px; border: 1px solid var(--os-border); border-radius: 3px; margin-left: 8px; }
 
 /* 아이콘 액션 버튼 (인라인 SVG) */
@@ -204,7 +211,7 @@
 .lv-search { flex: 0 1 280px; padding: 3px 8px; border: 1px solid var(--os-dark-border2); border-radius: 4px; background: var(--os-dark-bg3); color: var(--os-dark-text); font-size: 0.78rem; }
 .lv-search:focus { outline: none; border-color: var(--os-dark-link); }
 .lv-count { font-size: 0.72rem; color: var(--os-dark-dim); min-width: 46px; }
-.lv-body { overflow: auto; resize: vertical; min-height: 160px; background: var(--os-dark-bg); color: var(--os-dark-text); font-family: 'SF Mono', 'Courier New', monospace; font-size: 0.74rem; line-height: 1.5; padding: 8px 12px; tab-size: 2; }
+.lv-body { overflow: auto; resize: vertical; min-height: 160px; background: var(--os-dark-bg); color: var(--os-dark-text); font-family: var(--os-font-mono, 'SF Mono', 'Courier New', monospace); font-size: 0.74rem; line-height: 1.5; padding: 8px 12px; tab-size: 2; }
 .lv-line { white-space: pre; min-height: 1.1em; }
 .lv-body.wrap .lv-line { white-space: pre-wrap; overflow-wrap: anywhere; }
 .lv-hl { background: rgba(255,221,0,0.25); border-radius: 2px; }

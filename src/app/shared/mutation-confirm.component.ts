@@ -55,7 +55,7 @@ import { MutationPlan } from '../core/mutation.types';
     .mc-reasons { margin: 0 0 0.7rem; padding-left: 1.1rem; font-size: 0.8rem; color: #525252; }
     .mc-reasons .mc-red { color: #da1e28; font-weight: 600; }
     .mc-diff-h { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: #8c8c8c; margin: 0.4rem 0 0.3rem; }
-    .mc-row { display: flex; gap: 0.4rem; align-items: center; font-family: monospace; font-size: 0.72rem; padding: 0.15rem 0; border-bottom: 1px solid #f0f0f0; }
+    .mc-row { display: flex; gap: 0.4rem; align-items: center; font-family: var(--os-font-mono, monospace); font-size: 0.72rem; padding: 0.15rem 0; border-bottom: 1px solid #f0f0f0; }
     .mc-path { color: #525252; min-width: 11rem; word-break: break-all; }
     .mc-before { color: #da1e28; text-decoration: line-through; }
     .mc-after { color: #1c7d3a; }

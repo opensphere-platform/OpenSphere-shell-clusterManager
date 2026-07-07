@@ -39,7 +39,7 @@ import { Diagnosis, DiagAction } from './diagnose.model';
     .dg-btn { border: 1px solid #4c6fff; background: #fff; color: #4c6fff; border-radius: 4px; padding: 0.2rem 0.6rem; font-size: 0.78rem; cursor: pointer; }
     .dg-btn:hover { background: rgba(76,111,255,0.08); }
     .dg-src { margin: 0.5rem 0 0 1.05rem; font-size: 0.66rem; color: #8c8c8c; }
-    .dg-mono { font-family: monospace; }
+    .dg-mono { font-family: var(--os-font-mono, monospace); }
   `],
 })
 export class DiagnoseCardComponent {

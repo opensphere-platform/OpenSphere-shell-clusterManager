@@ -8,19 +8,24 @@ metadata:
   labels:
     opensphere.io/perspective: "2"
 spec:
+  kind: subShell
+  hostRef: main
+  hostApiVersion: "1.0.0"
+  hostCompat: ">=1.0.0 <2.0.0"
+  serviceAccountName: opensphere-cluster-manager
   displayName: "2. K8s Cluster + Ceph"
   owner: platform-experience
   version: 0.1.0
   description: "Perspective 2 K8s Cluster + Ceph — opensphere-clusters 흡수(실 Fleet) + 더미"
   image:
-    repository: localhost:5000/cluster-manager
-    digest: v15
+    repository: cluster-manager
+    digest: sha256:41c5f95988eeff75441e2cd77a0efab11aa2659a794d59b98e434c03155cbf39
   nav:
     band: "운영 Operate"
     label: "2. K8s Cluster + Ceph"
   manifest:
     path: /plugins/ui-shell.manifest.json
-    sha256: "d30fd40da4cb5e127580cfde73f95aa8952aa8526f93d267f571eed3f38af316"
+    sha256: "7ffed35af14200e8891e7e62718050d7b6f23d037d751b7cd477bf368cfb1adf"
     signaturePath: /plugins/ui-shell.manifest.json.sig
   trust:
     keyId: opensphere-plugins-v1
@@ -30,6 +35,15 @@ spec:
     - api:proxy
   api:
     basePath: /api/plugins/cluster-manager
+  contributions:
+    page: { enabled: true }
+    navigation: { enabled: false, mode: "none", reason: "2. K8s Cluster + Ceph owns navigation inside its page" }
+    api: { enabled: true, basePath: "/api/plugins/cluster-manager" }
+    cli: { enabled: false, reason: "2. K8s Cluster + Ceph CLI manifest is not published" }
+    manual: { enabled: false, mode: "none", reason: "2. K8s Cluster + Ceph Manual contribution is not published" }
+    search: { enabled: false, mode: "none", reason: "2. K8s Cluster + Ceph search contribution is not published" }
+    notification: { enabled: false, frontend: false, backend: false, reason: "2. K8s Cluster + Ceph notification contribution is not published" }
+    observability: { enabled: false, logs: false, metrics: false, traces: false, reason: "2. K8s Cluster + Ceph observability contract is not published" }
 ---
 apiVersion: plugins.opensphere.io/v1alpha1
 kind: UIPluginRegistration

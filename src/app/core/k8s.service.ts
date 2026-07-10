@@ -3,8 +3,8 @@ import { Injectable, inject } from '@angular/core';
 import { Observable } from 'rxjs';
 
 /** 제네릭 K8s API 프록시 클라이언트. 백엔드 /api/k8s/<표준 K8s 경로>로 패스스루.
- *  셸이 토큰을 window.__OS_AUTH__.token()으로 제공 → 호출자가 X-OS-Id-Token 헤더로 실어야
- *  백엔드가 JWKS 검증 후 사용자 임퍼소네이션(쓰기 인가). 독립 실행 시 토큰 없음 → SA 읽기 폴백. */
+ *  Main Shell HttpInterceptor가 ctx.api.fetch로 인증을 중개하고, backend가 사용자 임퍼소네이션한다.
+ *  Consumer JavaScript는 raw token을 읽지 않는다. */
 export interface K8sList<T = any> {
   kind?: string;
   apiVersion?: string;
@@ -24,14 +24,9 @@ export class K8sService {
     return String(b).replace(/\/$/, '');
   }
 
-  /** 셸이 제공하는 사용자 토큰을 헤더로. (없으면 빈 헤더 → 백엔드 SA 읽기 폴백) */
+  /** 인증은 hostApiInterceptor가 주입한다. 여기서는 요청별 content headers만 구성한다. */
   private hdr(extra?: Record<string, string>): { headers: Record<string, string> } {
-    const h: Record<string, string> = { ...(extra || {}) };
-    try {
-      const t = (window as any).__OS_AUTH__?.token?.();
-      if (t) h['X-OS-Id-Token'] = t;
-    } catch { /* noop */ }
-    return { headers: h };
+    return { headers: { ...(extra || {}) } };
   }
 
   private url(path: string): string { return `${this.base()}/api/k8s${path}`; }
@@ -57,7 +52,7 @@ export class K8sService {
     return this.http.get(this.url(path) + qs, { headers: this.hdr().headers, responseType: 'text' });
   }
 
-  // ── 쓰기 (X-OS-Id-Token → 백엔드 JWKS 검증 → 사용자 임퍼소네이션) ──
+  // ── 쓰기 (Host-mediated Authorization → backend JWKS 검증 → 사용자 임퍼소네이션) ──
   /** 전체 교체(PUT). Edit YAML 적용에 사용(resourceVersion 포함된 obj 필요). */
   replace<T = any>(path: string, obj: any): Observable<T> {
     return this.http.put<T>(this.url(path), obj, this.hdr());

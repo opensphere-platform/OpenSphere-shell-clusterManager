@@ -1,12 +1,17 @@
 {
-  "manifestVersion": 2,
+  "manifestVersion": 3,
+  "kind": "subShell",
   "id": "cluster-manager",
+  "hostRef": "main",
+  "hostApiVersion": "1.0.0",
+  "hostCompat": ">=1.0.0 <2.0.0",
   "version": "0.1.0",
   "title": "2. K8s Cluster + Ceph",
-  "description": "OpenSphere Perspective 2 — K8s Cluster + Ceph. 실제 Fleet 클러스터(opensphere-clusters 흡수) + 더미.",
+  "description": "OpenSphere 2. K8s Cluster + Ceph subShell.",
   "entry": "ui-shell.plugin.js",
-  "entrySha256": "66ca4d586f63c4e34c25f4edec32087a45be6d0e10eb5617a0f24929bf815f47",
+  "entrySha256": "4980a561013788d51a0e98054154ef5013eaa8f4a6ffd2a10eb290e51e4d0740",
   "shellCompat": ">=0.2.0 <0.9.0",
+  "sdkVersion": "0.3.6",
   "permissions": [
     "page:register",
     "api:proxy"
@@ -16,5 +21,47 @@
     "label": "2. K8s Cluster + Ceph"
   },
   "designSystem": "clarity",
-  "apiBase": "/api/plugins/cluster-manager"
+  "apiBase": "/api/plugins/cluster-manager",
+  "renderMode": "esm",
+  "contributions": {
+    "page": {
+      "enabled": true
+    },
+    "navigation": {
+      "enabled": false,
+      "mode": "none",
+      "reason": "2. K8s Cluster + Ceph owns navigation inside its page"
+    },
+    "api": {
+      "enabled": true,
+      "basePath": "/api/plugins/cluster-manager"
+    },
+    "cli": {
+      "enabled": false,
+      "reason": "2. K8s Cluster + Ceph CLI manifest is not published"
+    },
+    "manual": {
+      "enabled": false,
+      "mode": "none",
+      "reason": "2. K8s Cluster + Ceph Manual contribution is not published"
+    },
+    "search": {
+      "enabled": false,
+      "mode": "none",
+      "reason": "2. K8s Cluster + Ceph search contribution is not published"
+    },
+    "notification": {
+      "enabled": false,
+      "frontend": false,
+      "backend": false,
+      "reason": "2. K8s Cluster + Ceph notification contribution is not published"
+    },
+    "observability": {
+      "enabled": false,
+      "logs": false,
+      "metrics": false,
+      "traces": false,
+      "reason": "2. K8s Cluster + Ceph observability contract is not published"
+    }
+  }
 }

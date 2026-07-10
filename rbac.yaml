@@ -1,8 +1,12 @@
 # Perspective 2 K8s Cluster — 구 k8s-console-ng RBAC 전체 흡수(누락 없이): 광범위 read-only(인벤토리 28종) + impersonate.
 # secrets는 의도적으로 제외(보안 기조 + 프록시도 차단). 쓰기는 검증된 사용자 임퍼소네이션(SA 자체 write 없음).
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: opensphere-cluster-manager, namespace: opensphere-system }
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
-metadata: { name: cluster-reader }
+metadata: { name: cluster-manager-cluster-reader }
 rules:
   - apiGroups: [""]
     resources: ["nodes","namespaces","pods","pods/log","services","configmaps","endpoints","limitranges","resourcequotas","serviceaccounts","events","persistentvolumeclaims","persistentvolumes","replicationcontrollers"]
@@ -71,10 +75,10 @@ rules:
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
-metadata: { name: cluster-reader-system }
-roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: cluster-reader }
+metadata: { name: cluster-manager-cluster-reader }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: cluster-manager-cluster-reader }
 subjects:
-  - { kind: ServiceAccount, name: default, namespace: opensphere-system }
+  - { kind: ServiceAccount, name: opensphere-cluster-manager, namespace: opensphere-system }
 ---
 # 콘솔 관리자 그룹(opensphere-console-admins) RBAC — 임퍼소네이션된 콘솔관리자 사용자가 받는 권한.
 # 설계 원칙: 와일드카드(*/*) 금지. 광범위 read는 인벤토리 한정, write는 콘솔이 실제 관리하는 그룹만.

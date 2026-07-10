@@ -7,6 +7,7 @@
 // ─────────────────────────────────────────────────────────────────────────
 const TAG = 'osp-k8s-console-ng'; // www/main.js(Angular Elements)가 customElements.define(TAG)
 let injected = false;
+let hostContextInstalled = false;
 
 function injectOnce(base) {
   if (injected) return;
@@ -22,11 +23,15 @@ function injectOnce(base) {
   document.head.appendChild(css);
   const s = document.createElement('script');
   s.type = 'module'; s.src = `${base}/app/main.js${v}`;
+  s.setAttribute('data-osp-plugin', 'cluster-manager');
   document.head.appendChild(s);
 }
 
 export function activate(ctx) {
   const base = (ctx.api?.baseUrl ?? '').replace(/\/$/, '');
+  const contexts = window.__OPENSPHERE_HOST_CONTEXTS__ ||= Object.create(null);
+  contexts['cluster-manager'] = { api: { baseUrl: base, fetch: ctx.api?.fetch } };
+  hostContextInstalled = true;
   injectOnce(base);
   ctx.extensions.registerPage({
     id: ctx.pluginId,
@@ -36,4 +41,10 @@ export function activate(ctx) {
   });
 }
 
-export function deactivate() {}
+export function deactivate() {
+  if (hostContextInstalled && window.__OPENSPHERE_HOST_CONTEXTS__) delete window.__OPENSPHERE_HOST_CONTEXTS__['cluster-manager'];
+  document.querySelectorAll('[data-osp-plugin="cluster-manager"], [data-osp-plugin="cluster"]').forEach((node) => node.remove());
+  if (window.__OSP_NG_BASES__) delete window.__OSP_NG_BASES__[TAG];
+  hostContextInstalled = false;
+  injected = false;
+}

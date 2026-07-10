@@ -17,7 +17,10 @@ function tokenFromCookie(cookieHeader) {
   }
   return null;
 }
-const PORT = process.env.PORT || 8080;
+function requestToken(req) {
+  const match = String(req.headers.authorization || '').match(/^Bearer\s+(.+)$/i);
+  return match ? match[1] : '';
+}const PORT = process.env.PORT || 8080;
 const PLUGINS = process.env.PLUGINS_DIR || '/app/plugins';
 const WWW = process.env.WWW_DIR || '/app/www';
 const VERSION = process.env.APP_VERSION || '0.1.0';
@@ -171,7 +174,7 @@ async function k8sProxy(req, res, rawUrl) {
   if (segs.includes('serviceaccounts') && last === 'token') return jsonRes(res, 403, { error: 'token subresource blocked by policy' });
 
   const isWrite = WRITE_METHODS.has(req.method);
-  const idToken = req.headers['x-os-id-token']; // 셸이 실어 보낸 Keycloak 토큰
+  const idToken = requestToken(req); // 셸이 실어 보낸 Keycloak 토큰
   // 헤더는 새로 구성 — 클라이언트의 Impersonate-*/Authorization은 절대 전달하지 않음(위조 차단)
   const headers = { Authorization: `Bearer ${tok()}`, Accept: 'application/json' };
   let actor = null;
@@ -217,12 +220,12 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/session') {
       // WS(exec/터미널)용 신원 쿠키 발급 — 토큰 JWKS 검증 후 HttpOnly 쿠키로(브라우저 WS가 보낼 수 있게)
       let actor;
-      try { actor = await verifyToken(req.headers['x-os-id-token']); }
+      try { actor = await verifyToken(requestToken(req)); }
       catch (e) { return jsonRes(res, e.code || 401, { error: e.msg || 'unauthorized' }); }
       const secure = req.headers['x-forwarded-proto'] === 'https' ? ' Secure;' : '';
       res.writeHead(200, {
         'content-type': 'application/json',
-        'set-cookie': `${COOKIE}=${encodeURIComponent(req.headers['x-os-id-token'])}; HttpOnly; SameSite=Strict; Path=/api/plugins/cluster-manager;${secure} Max-Age=600`,
+        'set-cookie': `${COOKIE}=${encodeURIComponent(requestToken(req))}; HttpOnly; SameSite=Strict; Path=/api/plugins/cluster-manager;${secure} Max-Age=600`,
       });
       return res.end(JSON.stringify({ user: actor.username }));
     }

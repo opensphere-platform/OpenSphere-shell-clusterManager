@@ -18,7 +18,7 @@ spec:
   description: "OpenSphere cluster inventory and operations subShell"
   image:
     repository: ghcr.io/opensphere-platform/opensphere-shell-cluster-manager
-    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    digest: sha256:e725d37bfb6b5f236f029dce16978afb15bdeeb53a387c04d2066dda878b5bcf
   nav:
     band: "운영 Operate"
     label: "Cluster Manager"

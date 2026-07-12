@@ -1,35 +1,40 @@
-# 2. K8s Cluster + Ceph — OpenSphere Perspective subShell (DUMMY). 생성기 산출물(console/perspectives/generate.mjs).
-# 로컬: image=localhost:5000/cluster-manager:dev (태그 pull). manifest.sha256는 서명 핀(아래) — 재생성 시 자동 갱신.
+# 참고용 설치 결과. 실제 설치 정본은 OCI 이미지의 서명된 module-package.json이며 os extensions install이 이 CR을 생성한다.
 apiVersion: plugins.opensphere.io/v1alpha1
 kind: UIPluginPackage
 metadata:
   name: cluster-manager
   namespace: opensphere-system
   labels:
-    opensphere.io/perspective: "2"
+    opensphere.io/source: oci
 spec:
   kind: subShell
   hostRef: main
   hostApiVersion: "1.0.0"
   hostCompat: ">=1.0.0 <2.0.0"
   serviceAccountName: opensphere-cluster-manager
-  displayName: "2. K8s Cluster + Ceph"
-  owner: platform-experience
-  version: 0.1.0
-  description: "Perspective 2 K8s Cluster + Ceph — opensphere-clusters 흡수(실 Fleet) + 더미"
+  displayName: "Cluster Manager"
+  owner: opensphere-platform
+  version: 1.0.0
+  description: "OpenSphere cluster inventory and operations subShell"
   image:
-    repository: cluster-manager
-    digest: sha256:41c5f95988eeff75441e2cd77a0efab11aa2659a794d59b98e434c03155cbf39
+    repository: ghcr.io/opensphere-platform/opensphere-shell-cluster-manager
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
   nav:
     band: "운영 Operate"
-    label: "2. K8s Cluster + Ceph"
+    label: "Cluster Manager"
   manifest:
     path: /plugins/ui-shell.manifest.json
-    sha256: "7ffed35af14200e8891e7e62718050d7b6f23d037d751b7cd477bf368cfb1adf"
+    sha256: "c11237b505859c3ee656722ef8ff051b55b9d3f308cdf8d2de6aa59b634390b8"
     signaturePath: /plugins/ui-shell.manifest.json.sig
   trust:
     keyId: opensphere-plugins-v1
   shellCompat: ">=0.2.0 <0.9.0"
+  permissionProfile: cluster-observer-v1
+  runtime:
+    port: 8080
+    healthPath: /healthz
+    serviceAccountName: opensphere-cluster-manager
+    resources: { cpuRequest: 50m, memoryRequest: 128Mi, cpuLimit: 500m, memoryLimit: 512Mi }
   permissions:
     - page:register
     - api:proxy
@@ -37,27 +42,10 @@ spec:
     basePath: /api/plugins/cluster-manager
   contributions:
     page: { enabled: true }
-    navigation: { enabled: false, mode: "none", reason: "2. K8s Cluster + Ceph owns navigation inside its page" }
+    navigation: { enabled: false, mode: "none", reason: "Cluster Manager owns navigation inside its page" }
     api: { enabled: true, basePath: "/api/plugins/cluster-manager" }
-    cli: { enabled: false, reason: "2. K8s Cluster + Ceph CLI manifest is not published" }
-    manual: { enabled: false, mode: "none", reason: "2. K8s Cluster + Ceph Manual contribution is not published" }
-    search: { enabled: false, mode: "none", reason: "2. K8s Cluster + Ceph search contribution is not published" }
-    notification: { enabled: false, frontend: false, backend: false, reason: "2. K8s Cluster + Ceph notification contribution is not published" }
-    observability: { enabled: false, logs: false, metrics: false, traces: false, reason: "2. K8s Cluster + Ceph observability contract is not published" }
----
-apiVersion: plugins.opensphere.io/v1alpha1
-kind: UIPluginRegistration
-metadata:
-  name: cluster-manager
-  namespace: opensphere-system
-spec:
-  packageRef:
-    name: cluster-manager
-  desiredState: Enabled
-  installPolicy:
-    createWorkload: true
-    createProxyRoute: false
-    exposeInNavigation: true
-  approval:
-    requestedBy: cmars
-    reason: "10 Perspective subShell scaffold (dummy)"
+    cli: { enabled: false, reason: "Cluster Manager CLI manifest is not published" }
+    manual: { enabled: false, mode: "none", reason: "Cluster Manager Manual contribution is not published" }
+    search: { enabled: false, mode: "none", reason: "Cluster Manager search contribution is not published" }
+    notification: { enabled: false, frontend: false, backend: false, reason: "Cluster Manager notification contribution is not published" }
+    observability: { enabled: false, logs: false, metrics: false, traces: false, reason: "Cluster Manager observability contract is not published" }

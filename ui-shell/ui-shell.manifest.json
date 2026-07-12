@@ -5,20 +5,20 @@
   "hostRef": "main",
   "hostApiVersion": "1.0.0",
   "hostCompat": ">=1.0.0 <2.0.0",
-  "version": "0.1.0",
-  "title": "2. K8s Cluster + Ceph",
-  "description": "OpenSphere 2. K8s Cluster + Ceph subShell.",
+  "version": "1.0.0",
+  "title": "Cluster Manager",
+  "description": "OpenSphere cluster inventory and operations subShell.",
   "entry": "ui-shell.plugin.js",
   "entrySha256": "4980a561013788d51a0e98054154ef5013eaa8f4a6ffd2a10eb290e51e4d0740",
   "shellCompat": ">=0.2.0 <0.9.0",
-  "sdkVersion": "0.3.6",
+  "sdkVersion": "0.2.0",
   "permissions": [
     "page:register",
     "api:proxy"
   ],
   "nav": {
     "band": "운영 Operate",
-    "label": "2. K8s Cluster + Ceph"
+    "label": "Cluster Manager"
   },
   "designSystem": "clarity",
   "apiBase": "/api/plugins/cluster-manager",
@@ -30,7 +30,7 @@
     "navigation": {
       "enabled": false,
       "mode": "none",
-      "reason": "2. K8s Cluster + Ceph owns navigation inside its page"
+      "reason": "Cluster Manager owns navigation inside its page"
     },
     "api": {
       "enabled": true,
@@ -38,30 +38,30 @@
     },
     "cli": {
       "enabled": false,
-      "reason": "2. K8s Cluster + Ceph CLI manifest is not published"
+      "reason": "Cluster Manager CLI manifest is not published"
     },
     "manual": {
       "enabled": false,
       "mode": "none",
-      "reason": "2. K8s Cluster + Ceph Manual contribution is not published"
+      "reason": "Cluster Manager Manual contribution is not published"
     },
     "search": {
       "enabled": false,
       "mode": "none",
-      "reason": "2. K8s Cluster + Ceph search contribution is not published"
+      "reason": "Cluster Manager search contribution is not published"
     },
     "notification": {
       "enabled": false,
       "frontend": false,
       "backend": false,
-      "reason": "2. K8s Cluster + Ceph notification contribution is not published"
+      "reason": "Cluster Manager notification contribution is not published"
     },
     "observability": {
       "enabled": false,
       "logs": false,
       "metrics": false,
       "traces": false,
-      "reason": "2. K8s Cluster + Ceph observability contract is not published"
+      "reason": "Cluster Manager observability contract is not published"
     }
   }
 }

@@ -6,9 +6,14 @@ on:
     branches: [main]
     paths:
       - Dockerfile
+      - server.js
+      - his-catalog.js
+      - his-manager.js
+      - his-values/**
       - package.json
       - package-lock.json
       - src/**
+      - test/**
       - ui-shell/**
       - module-package.json
       - module-package.json.sig
@@ -40,8 +45,8 @@ jobs:
           push: true
           provenance: false
           tags: |
-            ghcr.io/opensphere-platform/opensphere-shell-cluster-manager:1.0.0
-            ghcr.io/opensphere-platform/opensphere-shell-cluster-manager:stable
+            ghcr.io/opensphere-platform/opensphere-shell-cluster-manager:1.1.0
+            ghcr.io/opensphere-platform/opensphere-shell-cluster-manager:edge
           build-args: |
             OS_MODULE_DESCRIPTOR=${{ steps.package.outputs.descriptor }}
             OS_MODULE_SIGNATURE=${{ steps.package.outputs.signature }}

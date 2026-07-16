@@ -14,8 +14,8 @@ spec:
   serviceAccountName: opensphere-cluster-manager
   displayName: "Cluster Manager"
   owner: opensphere-platform
-  version: 1.0.0
-  description: "OpenSphere cluster inventory and operations subShell"
+  version: 1.1.0
+  description: "OpenSphere cluster inventory, operations and HIS prerequisite management subShell"
   image:
     repository: ghcr.io/opensphere-platform/opensphere-shell-cluster-manager
     digest: sha256:e725d37bfb6b5f236f029dce16978afb15bdeeb53a387c04d2066dda878b5bcf
@@ -29,7 +29,7 @@ spec:
   trust:
     keyId: opensphere-plugins-v1
   shellCompat: ">=0.2.0 <0.9.0"
-  permissionProfile: cluster-observer-v1
+  permissionProfile: cluster-his-manager-v1
   runtime:
     port: 8080
     healthPath: /healthz

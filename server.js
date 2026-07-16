@@ -8,6 +8,7 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const { WebSocketServer, WebSocket } = require('ws');
+const { createHisManager } = require('./his-manager');
 const COOKIE = 'osng_token'; // 브라우저 WS는 커스텀 헤더를 못 실음 → 신원 토큰을 HttpOnly 쿠키로 전달
 function tokenFromCookie(cookieHeader) {
   if (!cookieHeader) return null;
@@ -117,7 +118,7 @@ async function nodes() {
 // cluster-manager 백엔드 → 콘솔 audit bus(/api/admin/events) → 셸 단일 인박스.
 // 시작/노드 경고를 콘솔 인박스에 발행 = subShell이 콘솔 알림 core와 '유기적' 작동.
 // best-effort: 발행 실패해도 cluster-manager 본 기능엔 영향 없음. (manifest 권한 불요 — 백엔드 in-cluster 호출)
-const CONTROLLER = process.env.OSP_CONTROLLER || 'http://dupa-registry-controller.opensphere-system.svc.cluster.local:8080';
+const CONTROLLER = process.env.OSP_CONTROLLER || 'http://opensphere-console-dupa-controller.opensphere-console.svc.cluster.local:8080';
 async function publishNotify(ev) {
   try {
     await fetch(`${CONTROLLER}/api/admin/events`, {
@@ -127,6 +128,16 @@ async function publishNotify(ev) {
     });
   } catch (e) { /* 콘솔 알림은 best-effort */ }
 }
+const hisManager = createHisManager({
+  verifyToken,
+  requestToken,
+  jsonRes,
+  token: tok,
+  apiServer: APISERVER,
+  caPath: `${SA}/ca.crt`,
+  controller: CONTROLLER,
+  publishNotify,
+});
 const _notifiedNodes = new Set();
 async function nodeHealthPublish() {
   try {
@@ -229,6 +240,7 @@ const server = http.createServer(async (req, res) => {
       });
       return res.end(JSON.stringify({ user: actor.username }));
     }
+    if (p.startsWith('/api/his/')) return hisManager(req, res, p);
     if (p.startsWith('/api/k8s/')) return k8sProxy(req, res, req.url);
     if (p === '/api/nodes') {
       const list = await nodes();

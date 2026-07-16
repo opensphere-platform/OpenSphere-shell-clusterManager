@@ -50,6 +50,7 @@ import { MtvProvidersComponent } from './resources/mtv-providers.component';
 import { MtvPlansComponent } from './resources/mtv-plans.component';
 import { PrometheusRulesComponent } from './resources/mon-alerts.component';
 import { ServiceMonitorsComponent } from './resources/mon-targets.component';
+import { HisComponent } from './resources/his.component';
 
 /** 앱 내부 사이드바 네비. requires=이 항목이 요구하는 apiGroup — 클러스터에 실재할 때만 노출(capability-gate, §3.3 실구현만). */
 export interface NavItem { id: string; label: string; component: Type<any>; requires?: string; }
@@ -57,6 +58,12 @@ export interface NavItem { id: string; label: string; component: Type<any>; requ
 export interface NavGroup { group: string; items: NavItem[]; scope?: 'cluster' | 'vm'; }
 
 export const NAV: NavGroup[] = [
+  {
+    group: 'Host Infrastructure',
+    items: [
+      { id: 'his', label: 'HIS Prerequisites', component: HisComponent },
+    ],
+  },
   {
     group: 'Workloads',
     items: [

@@ -1,0 +1,113 @@
+'use strict';
+
+// HIS is a prerequisite contract, not an OpenSphere extension.  Only entries
+// in this closed catalog may be mutated by Cluster Manager.  Chart versions
+// and payload checksums are also pinned in Dockerfile.
+const HIS_CATALOG = Object.freeze([
+  {
+    id: 'kubernetes-api',
+    displayName: 'Kubernetes API',
+    description: '지원 Kubernetes API와 제어 평면 응답 상태',
+    mode: 'DetectOnly',
+    required: true,
+    probe: 'kubernetesApi',
+  },
+  {
+    id: 'cluster-nodes',
+    displayName: 'Node Runtime',
+    description: '스케줄 가능한 노드와 kubelet Ready 상태',
+    mode: 'DetectOnly',
+    required: true,
+    probe: 'nodes',
+  },
+  {
+    id: 'cluster-network',
+    displayName: 'CNI / Cluster Network',
+    description: '호스트가 제공하는 CNI DaemonSet 준비 상태',
+    mode: 'DetectOnly',
+    required: true,
+    probe: 'cni',
+  },
+  {
+    id: 'cluster-dns',
+    displayName: 'Cluster DNS',
+    description: 'CoreDNS 또는 호환 DNS 서비스 준비 상태',
+    mode: 'DetectOnly',
+    required: true,
+    probe: 'dns',
+  },
+  {
+    id: 'ingress-nginx',
+    displayName: 'Ingress Controller',
+    description: 'IngressClass와 외부 HTTP 진입 경로',
+    mode: 'HelmManaged',
+    required: true,
+    probe: 'ingress',
+    release: 'ingress-nginx',
+    namespace: 'ingress-nginx',
+    chart: '/app/his-charts/ingress-nginx-4.15.1.tgz',
+    chartName: 'ingress-nginx',
+    chartVersion: '4.15.1',
+    appVersion: '1.15.1',
+    source: 'https://kubernetes.github.io/ingress-nginx',
+    values: [],
+    retainedOnDelete: ['Namespace'],
+  },
+  {
+    id: 'cert-manager',
+    displayName: 'Certificate Management',
+    description: '인증서 CRD와 cert-manager 제어기 준비 상태',
+    mode: 'HelmManaged',
+    required: true,
+    probe: 'certManager',
+    release: 'cert-manager',
+    namespace: 'cert-manager',
+    chart: '/app/his-charts/cert-manager-v1.20.0.tgz',
+    chartName: 'cert-manager',
+    chartVersion: 'v1.20.0',
+    appVersion: 'v1.20.0',
+    source: 'oci://quay.io/jetstack/charts/cert-manager',
+    values: ['--set', 'crds.enabled=true'],
+    retainedOnDelete: ['Namespace', 'CustomResourceDefinition', '사용자 Certificate/Issuer 데이터'],
+  },
+  {
+    id: 'metrics-server',
+    displayName: 'Resource Metrics API',
+    description: 'kubectl top과 autoscaling이 소비하는 metrics.k8s.io API',
+    mode: 'HelmManaged',
+    required: true,
+    probe: 'metrics',
+    release: 'metrics-server',
+    namespace: 'kube-system',
+    chart: '/app/his-charts/metrics-server-3.13.1.tgz',
+    chartName: 'metrics-server',
+    chartVersion: '3.13.1',
+    appVersion: '0.8.1',
+    source: 'https://kubernetes-sigs.github.io/metrics-server',
+    values: [],
+    kindValues: ['--values', '/app/his-values/metrics-server-kind.yaml'],
+    retainedOnDelete: [],
+  },
+  {
+    id: 'storage',
+    displayName: 'Storage Provisioning',
+    description: '기본 StorageClass와 동적 provisioner',
+    mode: 'DetectOnly',
+    required: true,
+    probe: 'storage',
+  },
+  {
+    id: 'csi-snapshot',
+    displayName: 'CSI / Volume Snapshot',
+    description: 'CSI Driver와 VolumeSnapshot capability (profile 선택 시 필수)',
+    mode: 'DetectOnly',
+    required: false,
+    probe: 'snapshot',
+  },
+]);
+
+function catalogItem(id) {
+  return HIS_CATALOG.find((item) => item.id === id);
+}
+
+module.exports = { HIS_CATALOG, catalogItem };

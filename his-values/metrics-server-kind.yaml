@@ -1,0 +1,5 @@
+# Docker Desktop/kind kubelets use serving certificates that are not signed by
+# the cluster CA.  This profile is selected only when node names identify the
+# local kind environment; standard clusters retain certificate verification.
+args:
+  - --kubelet-insecure-tls

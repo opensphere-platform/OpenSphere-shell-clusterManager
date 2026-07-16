@@ -272,7 +272,11 @@ async function allStatus(ctx) {
 async function auditRequired(ctx, actor, action, item, reason, resultValue) {
   const response = await fetch(`${ctx.controller}/api/admin/events`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-opensphere-source': 'cluster-manager' },
+    headers: {
+      authorization: `Bearer ${ctx.token()}`,
+      'content-type': 'application/json',
+      'x-opensphere-source': 'cluster-manager',
+    },
     body: JSON.stringify({
       source: 'cluster-manager',
       actor: actor.username,
@@ -392,4 +396,5 @@ module.exports = {
   reasonFrom,
   safeError,
   kubeconfigText,
+  auditRequired,
 };

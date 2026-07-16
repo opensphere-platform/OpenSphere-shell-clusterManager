@@ -14,7 +14,7 @@ spec:
   serviceAccountName: opensphere-cluster-manager
   displayName: "Cluster Manager"
   owner: opensphere-platform
-  version: 1.1.1
+  version: 1.1.2
   description: "OpenSphere cluster inventory, operations and HIS prerequisite management subShell"
   image:
     repository: ghcr.io/opensphere-platform/opensphere-shell-cluster-manager
@@ -24,7 +24,7 @@ spec:
     label: "Cluster Manager"
   manifest:
     path: /plugins/ui-shell.manifest.json
-    sha256: "4d5aab5540d55c5c84b8db37f732c402d7776d60a64caeef65eb41b2d4d85596"
+    sha256: "4538f5a771a784ed3562bb7ddd0b92c67b3f4ba638eb34ba8f898dfceae8f390"
     signaturePath: /plugins/ui-shell.manifest.json.sig
   trust:
     keyId: opensphere-plugins-v1

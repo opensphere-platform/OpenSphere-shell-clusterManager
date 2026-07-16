@@ -185,7 +185,11 @@ async function publishNotify(ev) {
   try {
     await fetch(`${CONTROLLER}/api/admin/events`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-opensphere-source': 'cluster-manager' },
+      headers: {
+        authorization: `Bearer ${tok()}`,
+        'content-type': 'application/json',
+        'x-opensphere-source': 'cluster-manager',
+      },
       body: JSON.stringify({ source: 'cluster-manager', ...ev }),
     });
   } catch (e) { /* 콘솔 알림은 best-effort */ }

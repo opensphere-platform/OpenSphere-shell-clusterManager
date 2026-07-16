@@ -20,6 +20,7 @@ test('mutation reason is mandatory and bounded', () => {
 
 test('safe errors redact bearer tokens', () => {
   assert.equal(safeError(new Error('Bearer secret.value failed')), 'Bearer [redacted] failed');
+  assert.equal(safeError({ code: 401, msg: 'token introspection unavailable' }), 'token introspection unavailable');
 });
 
 test('generated kubeconfig does not disable TLS verification', () => {

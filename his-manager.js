@@ -14,7 +14,7 @@ const HELM_TIMEOUT_MS = 12 * 60 * 1000;
 const activeOperations = new Set();
 
 function safeError(error) {
-  const message = error && (error.safeMessage || error.message || String(error));
+  const message = error && (error.safeMessage || error.message || error.msg || String(error));
   return String(message || 'operation failed').replace(/Bearer\s+[^\s]+/gi, 'Bearer [redacted]').slice(0, 1200);
 }
 

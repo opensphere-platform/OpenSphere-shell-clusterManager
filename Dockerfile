@@ -28,7 +28,7 @@ FROM docker.io/library/node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c
 ARG OS_MODULE_DESCRIPTOR
 ARG OS_MODULE_SIGNATURE
 LABEL org.opencontainers.image.title="OpenSphere Cluster Manager" \
-      org.opencontainers.image.version="1.1.0" \
+      org.opencontainers.image.version="1.1.1" \
       org.opencontainers.image.source="https://github.com/opensphere-platform/OpenSphere-shell-clusterManager" \
       io.opensphere.module.descriptor=$OS_MODULE_DESCRIPTOR \
       io.opensphere.module.descriptor.signature=$OS_MODULE_SIGNATURE \
@@ -47,11 +47,11 @@ RUN chmod 0555 /app/his-values /app/his-charts \
 COPY ui-shell/ /app/plugins/
 COPY --chmod=0644 module-package.json module-package.json.sig /app/plugins/
 COPY --from=build /app/dist/k8s-console-angular/browser /app/www
-# Kanidm(콘솔 IdP) self-signed CA — 쓰기/exec 시 ES256 토큰 in-cluster JWKS(svc:8443) TLS 신뢰용.
-COPY kanidm-ca.crt /etc/kanidm-ca/ca.crt
+# 인증 CA는 이미지에 굽지 않는다. Console Extension Host가 Setup-managed
+# opensphere-console-auth-ca Secret을 /etc/opensphere/auth-ca에 read-only로 마운트한다.
 ENV PLUGINS_DIR=/app/plugins WWW_DIR=/app/www PORT=8080 \
     NODE_EXTRA_CA_CERTS=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
-    KANIDM_CA_PATH=/etc/kanidm-ca/ca.crt \
+    KANIDM_CA_PATH=/etc/opensphere/auth-ca/ca.crt \
     OSP_CONTROLLER=http://opensphere-console-dupa-controller.opensphere-console.svc.cluster.local:8080
 EXPOSE 8080
 USER 1000

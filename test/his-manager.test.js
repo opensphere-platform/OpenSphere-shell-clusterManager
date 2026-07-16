@@ -47,6 +47,8 @@ test('durable audit request authenticates with the managed workload ServiceAccou
     );
     assert.equal(captured.options.headers.authorization, 'Bearer workload-token');
     assert.equal(captured.options.headers['x-opensphere-source'], 'cluster-manager');
+    assert.equal(JSON.parse(captured.options.body).userActor, 'cmars');
+    assert.equal(JSON.parse(captured.options.body).actor, undefined);
   } finally {
     global.fetch = originalFetch;
   }

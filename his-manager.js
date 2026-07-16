@@ -279,7 +279,7 @@ async function auditRequired(ctx, actor, action, item, reason, resultValue) {
     },
     body: JSON.stringify({
       source: 'cluster-manager',
-      actor: actor.username,
+      userActor: actor.username,
       action,
       target: `HIS/${item.id}`,
       result: resultValue,
@@ -365,7 +365,7 @@ function createHisManager(ctx) {
           const args = ['upgrade', '--install', item.release, item.chart, '--namespace', item.namespace, '--create-namespace', '--atomic', '--wait', '--timeout', '10m', '--history-max', '5', ...helmArgs(item, variant)];
           const out = await withKubeconfig(ctx, (env) => command('helm', args, { env }));
           const check = await waitForProbe(ctx, item, (value) => value.state === 'Ready');
-          await ctx.publishNotify({ action: 'HISInstalled', target: `HIS/${item.id}`, result: check.state, reason: `${reason} · ${check.message}` });
+          await ctx.publishNotify({ userActor: actor.username, action: 'HISInstalled', target: `HIS/${item.id}`, result: check.state, reason: `${reason} · ${check.message}` });
           return ctx.jsonRes(res, check.state === 'Ready' ? 200 : 502, { ok: check.state === 'Ready', check, output: out.stdout.slice(-4000) }), true;
         }
         if (pathname === '/api/his/uninstall') {
@@ -375,7 +375,7 @@ function createHisManager(ctx) {
           await auditRequired(ctx, actor, 'HISUninstallRequested', item, reason, 'requested');
           const out = await withKubeconfig(ctx, (env) => command('helm', ['uninstall', item.release, '--namespace', item.namespace, '--wait', '--timeout', '10m'], { env }));
           const check = await waitForProbe(ctx, item, (value) => value.state !== 'Ready', 60000);
-          await ctx.publishNotify({ action: 'HISUninstalled', target: `HIS/${item.id}`, result: 'success', reason: `${reason} · retained=${(item.retainedOnDelete || []).join(',') || 'none'}` });
+          await ctx.publishNotify({ userActor: actor.username, action: 'HISUninstalled', target: `HIS/${item.id}`, result: 'success', reason: `${reason} · retained=${(item.retainedOnDelete || []).join(',') || 'none'}` });
           return ctx.jsonRes(res, 200, { ok: true, check, retained: item.retainedOnDelete || [], output: out.stdout.slice(-4000) }), true;
         }
       } finally {

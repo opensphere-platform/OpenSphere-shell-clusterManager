@@ -287,7 +287,24 @@ import {
                   <strong>데이터 초기화 재배치 필요</strong>
                   <ul><li *ngFor="let target of configPlan.resetTargets">{{ target }}</li></ul>
                   <label><input type="checkbox" clrCheckbox name="resetData" [(ngModel)]="resetData"> 기존 Prometheus·Alertmanager·Grafana 데이터를 삭제하고 새 PVC를 생성합니다.</label>
-                  <input clrInput name="resetConfirmation" [(ngModel)]="resetConfirmation" [placeholder]="state.policy.resetConfirmation" autocomplete="off">
+                  <div class="reset-confirmation-field">
+                    <span class="reset-confirmation-label">삭제 확인 문구</span>
+                    <code class="reset-confirmation-token">{{ state.policy.resetConfirmation }}</code>
+                    <input
+                      clrInput
+                      name="resetConfirmation"
+                      aria-label="삭제 확인 문구 입력"
+                      aria-describedby="reset-confirmation-help"
+                      [(ngModel)]="resetConfirmation"
+                      placeholder="위 확인 문구를 정확히 입력하십시오"
+                      autocomplete="off">
+                    <span
+                      id="reset-confirmation-help"
+                      class="reset-confirmation-help"
+                      [class.ready]="resetConfirmation === state.policy.resetConfirmation">
+                      {{ resetConfirmation === state.policy.resetConfirmation ? '확인 문구가 일치합니다.' : '전체 확인 문구를 정확히 입력해야 운영 구성을 적용할 수 있습니다.' }}
+                    </span>
+                  </div>
                 </div>
               </ng-container>
               <form clrForm clrLayout="vertical">
@@ -347,7 +364,7 @@ import {
     .resource-list { max-height: 16rem; overflow: auto; border: 1px solid #d8d8d8; }
     .resource-list > div { display: grid; grid-template-columns: minmax(16rem, 1fr) minmax(8rem, 0.5fr); padding: 0.3rem 0.5rem; border-bottom: 1px solid #eee; }
     .profile-card { display: grid; grid-template-columns: 8rem 1fr; gap: 0.3rem 0.75rem; padding: 0.65rem; margin-bottom: 0.7rem; border: 1px solid #d8d8d8; background: #fafafa; }
-    .configuration-modal { display: grid; gap: 0.9rem; max-height: 72vh; overflow: auto; padding-right: 0.3rem; }
+    .configuration-modal { display: grid; gap: 0.9rem; max-height: none; overflow: visible; padding-right: 0.3rem; }
     .policy-banner { display: grid; grid-template-columns: minmax(16rem, 1fr) minmax(16rem, 1fr) auto; gap: 0.8rem; align-items: center; padding: 0.7rem; border: 1px solid #9bd3e6; background: #eefaff; }
     .policy-banner > div { display: grid; gap: 0.15rem; }
     .policy-banner span:not(.label) { color: #565656; font-size: 0.65rem; }
@@ -382,7 +399,12 @@ import {
     .change-table th:nth-child(2) { width: 30%; }
     .destructive-confirm { display: grid; gap: 0.4rem; margin: 0.6rem 0; padding: 0.65rem; border: 1px solid #e12200; background: #fff5f2; }
     .destructive-confirm ul { margin: 0 0 0 1.1rem; }
-    .destructive-confirm input[type='text'] { max-width: 22rem; }
+    .reset-confirmation-field { display: grid; gap: 0.3rem; width: min(100%, 36rem); }
+    .reset-confirmation-label { font-size: 0.65rem; font-weight: 600; }
+    .reset-confirmation-token { display: block; width: fit-content; max-width: 100%; padding: 0.25rem 0.4rem; border: 1px solid #c8c8c8; background: #fff; color: #2d4048; font-size: 0.7rem; overflow-wrap: anywhere; }
+    .reset-confirmation-field input[type='text'] { width: 100%; max-width: none; }
+    .reset-confirmation-help { color: #a32100; font-size: 0.62rem; line-height: 1.4; }
+    .reset-confirmation-help.ready { color: #2f6b00; }
     @media (max-width: 1100px) {
       .split-config, .exposure-options, .policy-banner { grid-template-columns: 1fr; }
       .compact-fields, .ingress-fields { grid-template-columns: 1fr 1fr; }

@@ -11,6 +11,13 @@ const HIS_CATALOG = Object.freeze([
     mode: 'DetectOnly',
     required: true,
     probe: 'kubernetesApi',
+    domain: 'Control Plane',
+    compatibility: { kubernetes: '>=1.30.0 <1.37.0', policy: 'OpenSphere tested range' },
+    remediation: {
+      summary: '지원 범위를 벗어난 Kubernetes는 OpenSphere를 변경하기 전에 호스트 제어 평면을 업그레이드하거나 승인된 채널을 선택해야 합니다.',
+      steps: ['API server /readyz와 APIService 오류를 확인합니다.', '호스트 Kubernetes 버전을 지원 범위로 맞춥니다.', '다시 검사하여 API discovery와 RBAC self-check를 통과시킵니다.'],
+      verification: 'Version range, API discovery, APIService, admission webhook, RBAC self-check',
+    },
   },
   {
     id: 'cluster-nodes',
@@ -19,6 +26,13 @@ const HIS_CATALOG = Object.freeze([
     mode: 'DetectOnly',
     required: true,
     probe: 'nodes',
+    domain: 'Compute',
+    compatibility: { kubernetes: 'control-plane ±1 minor', policy: 'kubelet version-skew policy' },
+    remediation: {
+      summary: 'NotReady 또는 pressure가 있는 노드는 호스트 운영자가 kubelet·runtime·disk·PID 문제를 해소해야 합니다.',
+      steps: ['문제 노드의 Conditions, taint와 kubelet/runtime 버전을 확인합니다.', 'Disk/PID/Memory pressure와 clock/runtime 상태를 복구합니다.', '노드 Ready와 스케줄 가능 상태를 다시 검사합니다.'],
+      verification: 'Per-node Ready, pressure, taints, capacity, kubelet/runtime version',
+    },
   },
   {
     id: 'cluster-network',
@@ -27,6 +41,13 @@ const HIS_CATALOG = Object.freeze([
     mode: 'DetectOnly',
     required: true,
     probe: 'cni',
+    domain: 'Network',
+    compatibility: { kubernetes: 'CNI provided by host', policy: 'single healthy primary CNI' },
+    remediation: {
+      summary: 'CNI는 Cluster Manager가 덮어쓰지 않습니다. 호스트 CNI의 DaemonSet·PodCIDR·NetworkPolicy 지원을 복구해야 합니다.',
+      steps: ['CNI DaemonSet의 desired/ready와 이미지를 확인합니다.', '노드 PodCIDR, IP family, NetworkPolicy API를 확인합니다.', '호스트 CNI 절차로 cross-node/egress 통신을 복구한 후 다시 검사합니다.'],
+      verification: 'CNI daemon coverage, PodCIDR assignment, IP families, NetworkPolicy API',
+    },
   },
   {
     id: 'cluster-dns',
@@ -35,6 +56,13 @@ const HIS_CATALOG = Object.freeze([
     mode: 'DetectOnly',
     required: true,
     probe: 'dns',
+    domain: 'DNS',
+    compatibility: { kubernetes: 'cluster.local discovery', policy: 'internal and external resolution' },
+    remediation: {
+      summary: 'CoreDNS 배포·Service·Corefile와 upstream forwarder를 점검하고 내부/외부 실제 질의를 모두 복구해야 합니다.',
+      steps: ['CoreDNS replica와 kube-dns Service를 확인합니다.', 'Corefile forward/cache 설정과 upstream DNS를 점검합니다.', 'kubernetes.default 및 외부 FQDN 질의를 재검증합니다.'],
+      verification: 'Deployment, Service, Corefile, internal/external DNS resolution and latency',
+    },
   },
   {
     id: 'ingress-nginx',
@@ -52,6 +80,13 @@ const HIS_CATALOG = Object.freeze([
     source: 'https://kubernetes.github.io/ingress-nginx',
     values: [],
     retainedOnDelete: ['Namespace'],
+    domain: 'Ingress',
+    compatibility: { kubernetes: '>=1.30.0 <1.37.0', policy: 'networking.k8s.io/v1' },
+    remediation: {
+      summary: 'IngressClass·controller·Service listener·TLS 노출 정책을 함께 복구합니다.',
+      steps: ['IngressClass controller 매핑과 controller workload를 확인합니다.', 'Service type, external address와 80/443 listener를 확인합니다.', 'TLS 기본 정책과 실제 endpoint를 검증한 뒤 업그레이드 또는 롤백합니다.'],
+      verification: 'IngressClass, controller replicas, service exposure, endpoints, TLS references',
+    },
   },
   {
     id: 'cert-manager',
@@ -69,6 +104,13 @@ const HIS_CATALOG = Object.freeze([
     source: 'oci://quay.io/jetstack/charts/cert-manager',
     values: ['--set', 'crds.enabled=true'],
     retainedOnDelete: ['Namespace', 'CustomResourceDefinition', '사용자 Certificate/Issuer 데이터'],
+    domain: 'Certificate',
+    compatibility: { kubernetes: '>=1.30.0 <1.37.0', policy: 'cert-manager CRD v1' },
+    remediation: {
+      summary: 'cert-manager 제어기뿐 아니라 실제 Issuer와 Certificate 수명주기를 준비해야 합니다.',
+      steps: ['CRD, webhook, cainjector readiness를 확인합니다.', 'Issuer/ClusterIssuer Ready와 challenge 실패를 복구합니다.', 'Certificate 만료·갱신 상태와 Secret 소유 정책을 재검증합니다.'],
+      verification: 'Controllers, CRDs, issuers, certificates, expiry, orders/challenges',
+    },
   },
   {
     id: 'metrics-server',
@@ -87,6 +129,13 @@ const HIS_CATALOG = Object.freeze([
     values: [],
     kindValues: ['--values', '/app/his-values/metrics-server-kind.yaml'],
     retainedOnDelete: [],
+    domain: 'Metrics',
+    compatibility: { kubernetes: 'metrics.k8s.io/v1beta1', policy: 'all Ready nodes covered' },
+    remediation: {
+      summary: 'APIService Available만으로 끝내지 않고 모든 Ready 노드의 최신 metrics가 수집되어야 합니다.',
+      steps: ['APIService condition과 metrics-server deployment를 확인합니다.', '노드 metrics coverage와 timestamp를 점검합니다.', 'TLS/kubelet 연결 오류를 복구하고 HPA 소비 경로를 재검증합니다.'],
+      verification: 'APIService, deployment, node coverage, freshness, HPA inventory',
+    },
   },
   {
     id: 'kube-prometheus-stack',
@@ -111,6 +160,13 @@ const HIS_CATALOG = Object.freeze([
       exposure: 'ClusterIP only (Ingress disabled)',
     },
     retainedOnDelete: ['Namespace', 'CustomResourceDefinition', 'PersistentVolumeClaim', 'Prometheus/Alertmanager 관측 데이터'],
+    domain: 'Observability',
+    compatibility: { kubernetes: '>=1.30.0 <1.37.0', policy: 'Prometheus Operator CRD v1' },
+    remediation: {
+      summary: '관측 구성요소·영구 저장소·내부 접근 정책·알림 경로를 하나의 관리 revision으로 복구합니다.',
+      steps: ['구성요소, CRD, PVC와 Service 상태를 확인합니다.', '저장소·보존·Grafana 노출 변경 계획을 검토합니다.', 'Helm apply 후 scrape/alert/access 검증을 수행하고 실패 시 이전 revision으로 롤백합니다.'],
+      verification: 'Six components, CRDs, PVCs, ClusterIP exposure, scrape and alert readiness',
+    },
   },
   {
     id: 'storage',
@@ -119,6 +175,13 @@ const HIS_CATALOG = Object.freeze([
     mode: 'DetectOnly',
     required: true,
     probe: 'storage',
+    domain: 'Storage',
+    compatibility: { kubernetes: 'storage.k8s.io/v1', policy: 'default dynamic provisioner required' },
+    remediation: {
+      summary: 'StorageClass 선택은 데이터 수명주기 결정입니다. provisioner·binding·expansion·reclaim·topology를 함께 검토합니다.',
+      steps: ['StorageClass matrix와 기본값 중복을 확인합니다.', '동적 provisioner와 volumeBindingMode/topology를 검증합니다.', 'reclaim Delete와 비확장 class의 데이터 위험을 승인하고 PVC bind canary를 수행합니다.'],
+      verification: 'StorageClass matrix, default uniqueness, PVC inventory, expansion/reclaim/topology risk',
+    },
   },
   {
     id: 'csi-snapshot',
@@ -127,6 +190,13 @@ const HIS_CATALOG = Object.freeze([
     mode: 'DetectOnly',
     required: false,
     probe: 'snapshot',
+    domain: 'Data Protection',
+    compatibility: { kubernetes: 'snapshot.storage.k8s.io/v1', policy: 'CSI driver and snapshot controller required' },
+    remediation: {
+      summary: 'CSI Driver만으로 snapshot capability가 완성되지 않습니다. controller·CRD·class와 restore 경로가 모두 필요합니다.',
+      steps: ['CSIDriver와 controller deployment를 확인합니다.', 'VolumeSnapshot CRD와 VolumeSnapshotClass driver 매핑을 확인합니다.', 'snapshot→restore canary와 topology/access/encryption 정책을 검증합니다.'],
+      verification: 'Drivers, controllers, snapshot CRDs/classes, snapshot inventory, restore canary',
+    },
   },
 ]);
 

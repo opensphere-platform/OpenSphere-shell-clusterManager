@@ -63,6 +63,7 @@ import {
       >
         <clr-dg-cell>
           <strong>{{ item.displayName }}</strong>
+          <span class="domain-badge" *ngIf="item.domain">{{ item.domain }}</span>
           <div class="muted">{{ item.description }}</div>
           <div class="muted" *ngIf="item.chartName">{{ item.chartName }} {{ item.chartVersion }}</div>
         </clr-dg-cell>
@@ -88,6 +89,8 @@ import {
           <ng-container *ngIf="item.mode === 'HelmManaged'; else detectOnly">
             <button class="btn btn-sm btn-outline" type="button" [disabled]="busy() || operationActive(item.operation)" (click)="openPlan(item, 'install')">계획</button>
             <button class="btn btn-sm btn-primary" type="button" [disabled]="busy() || operationActive(item.operation) || !canInstall(item)" (click)="openPlan(item, 'install', true)">설치</button>
+            <button class="btn btn-sm btn-outline" type="button" [disabled]="busy() || operationActive(item.operation) || !item.release?.managed" (click)="openPlan(item, 'upgrade', true)">업그레이드</button>
+            <button class="btn btn-sm btn-outline" type="button" [disabled]="busy() || operationActive(item.operation) || !rollbackAvailable(item)" (click)="openPlan(item, 'rollback', true)">롤백</button>
             <button *ngIf="item.id === 'kube-prometheus-stack'" class="btn btn-sm btn-outline" type="button" [disabled]="busy() || operationActive(item.operation) || !item.release?.managed" (click)="openObservabilityConfiguration()">운영 구성</button>
             <button class="btn btn-sm btn-danger-outline" type="button" [disabled]="busy() || operationActive(item.operation) || !item.release?.managed" (click)="openPlan(item, 'uninstall', true)">삭제</button>
           </ng-container>
@@ -129,6 +132,43 @@ import {
                 <thead><tr><th>Service</th><th>유형</th><th>Cluster IP</th><th>Ports</th></tr></thead>
                 <tbody><tr *ngFor="let service of details.services"><td>{{ service.name }}</td><td>{{ service.type }}</td><td>{{ service.clusterIP }}</td><td>{{ service.ports }}</td></tr></tbody>
               </table>
+              <div class="compatibility-card" *ngIf="details.compatibility as compatibility">
+                <div><span>COMPATIBILITY</span><strong>{{ compatibility.kubernetes }}</strong></div>
+                <p>{{ compatibility.policy }}</p>
+              </div>
+              <div class="fact-grid" *ngIf="details.facts?.length">
+                <article *ngFor="let fact of details.facts" [class.fact-failed]="fact.state === 'Failed'" [class.fact-passed]="fact.state === 'Passed'">
+                  <span>{{ fact.label }}</span><strong>{{ fact.value }}</strong><small>{{ fact.state }}</small>
+                </article>
+              </div>
+              <div class="alert alert-warning compact-alert" *ngIf="details.warnings?.length">
+                <div class="alert-items"><div class="alert-item static"><span class="alert-text"><strong>위험·주의</strong><ul><li *ngFor="let warning of details.warnings">{{ warning }}</li></ul></span></div></div>
+              </div>
+              <div class="security-card" *ngIf="details.security?.length">
+                <strong>보안·노출·데이터 정책</strong><ul><li *ngFor="let policy of details.security">{{ policy }}</li></ul>
+              </div>
+              <section class="diagnostic-table" *ngFor="let table of details.tables">
+                <h4>{{ table.title }}</h4>
+                <div class="table-scroll"><table class="table table-compact">
+                  <thead><tr><th *ngFor="let column of table.columns">{{ column.label }}</th></tr></thead>
+                  <tbody>
+                    <tr *ngFor="let row of table.rows"><td *ngFor="let column of table.columns">{{ row[column.key] || '—' }}</td></tr>
+                    <tr *ngIf="!table.rows.length"><td [attr.colspan]="table.columns.length" class="empty-cell">해당 오류·리소스가 없습니다.</td></tr>
+                  </tbody>
+                </table></div>
+              </section>
+              <section class="canary-section" *ngIf="details.canaries?.length">
+                <h4>Validation canary</h4>
+                <div class="canary-list"><article *ngFor="let canary of details.canaries">
+                  <span class="label" [class.label-success]="canary.state === 'Passed'" [class.label-danger]="canary.state === 'Failed'" [class.label-warning]="canary.state === 'NotRun'">{{ canary.state }}</span>
+                  <div><strong>{{ canary.name }}</strong><p>{{ canary.message }}</p></div>
+                </article></div>
+              </section>
+              <section class="remediation-card" *ngIf="details.remediation as remediation">
+                <p class="eyebrow">REMEDIATION</p><h4>보정 절차</h4><p>{{ remediation.summary }}</p>
+                <ol><li *ngFor="let step of remediation.steps">{{ step }}</li></ol>
+                <div><strong>재검증:</strong> {{ remediation.verification }}</div>
+              </section>
             </section>
           </div>
         </clr-dg-row-detail>
@@ -138,7 +178,7 @@ import {
     </clr-datagrid>
 
     <clr-modal [(clrModalOpen)]="modalOpen" [clrModalClosable]="!busy()" [clrModalSize]="'lg'">
-      <h3 class="modal-title">{{ action() === 'uninstall' ? 'HIS 삭제 확인' : 'HIS 설치 계획' }}</h3>
+      <h3 class="modal-title">{{ actionTitle() }}</h3>
       <div class="modal-body" *ngIf="selected() as item">
         <p><strong>{{ item.displayName }}</strong> · {{ item.chartName }} {{ item.chartVersion }}</p>
         <div *ngIf="planLoading()" class="progress loop"><progress></progress></div>
@@ -164,23 +204,35 @@ import {
           <div class="alert alert-warning" *ngIf="action() === 'uninstall' && p.retainedOnDelete.length">
             <div class="alert-items"><div class="alert-item static"><span class="alert-text">삭제 후 보존: {{ p.retainedOnDelete.join(', ') }}</span></div></div>
           </div>
+          <section *ngIf="action() === 'rollback'" class="history-card">
+            <h4>Helm revision history</h4>
+            <label>롤백 대상 revision
+              <select clrSelect name="rollbackRevision" [(ngModel)]="rollbackRevision">
+                <option value="">선택하십시오</option>
+                <option *ngFor="let entry of rollbackTargets(p, item)" [value]="entry.revision">revision {{ entry.revision }} · {{ entry.status }} · {{ entry.chart }}</option>
+              </select>
+            </label>
+            <table class="table table-compact"><thead><tr><th>Revision</th><th>Status</th><th>Chart</th><th>Updated</th><th>Description</th></tr></thead>
+              <tbody><tr *ngFor="let entry of p.history"><td>{{ entry.revision }}</td><td>{{ entry.status }}</td><td>{{ entry.chart }}</td><td>{{ entry.updated }}</td><td>{{ entry.description }}</td></tr></tbody>
+            </table>
+          </section>
         </div>
         <form clrForm clrLayout="vertical">
           <clr-textarea-container>
             <label>변경 사유</label>
             <textarea clrTextarea name="reason" [(ngModel)]="reason" required minlength="8" maxlength="500" placeholder="승인 근거와 작업 목적(8자 이상)"></textarea>
           </clr-textarea-container>
-          <clr-input-container *ngIf="action() === 'uninstall'">
-            <label>삭제 확인</label>
-            <input clrInput name="confirm" [(ngModel)]="confirm" [placeholder]="item.id" autocomplete="off">
-            <clr-control-helper>{{ item.id }} 를 정확히 입력하십시오.</clr-control-helper>
+          <clr-input-container *ngIf="action() === 'uninstall' || action() === 'rollback'">
+            <label>{{ action() === 'rollback' ? '롤백 확인' : '삭제 확인' }}</label>
+            <input clrInput name="confirm" [(ngModel)]="confirm" [placeholder]="confirmationText(item)" autocomplete="off">
+            <clr-control-helper>{{ confirmationText(item) }} 를 정확히 입력하십시오.</clr-control-helper>
           </clr-input-container>
         </form>
       </div>
       <div class="modal-footer">
         <button class="btn btn-outline" type="button" [disabled]="busy()" (click)="modalOpen = false">취소</button>
-        <button *ngIf="executeRequested()" class="btn" [class.btn-primary]="action() === 'install'" [class.btn-danger]="action() === 'uninstall'" type="button" [disabled]="!readyToExecute()" (click)="execute()">
-          {{ action() === 'install' ? '설치 실행' : '삭제 실행' }}
+        <button *ngIf="executeRequested()" class="btn" [class.btn-primary]="action() !== 'uninstall'" [class.btn-danger]="action() === 'uninstall'" type="button" [disabled]="!readyToExecute()" (click)="execute()">
+          {{ executeButtonLabel() }}
         </button>
       </div>
     </clr-modal>
@@ -343,6 +395,7 @@ import {
     .muted { color: #6f6f6f; font-size: 0.65rem; margin-top: 0.12rem; }
     .required { margin-left: 0.35rem; color: #a32100; font-size: 0.62rem; font-weight: 600; }
     .optional { margin-left: 0.35rem; color: #00567a; font-size: 0.62rem; font-weight: 600; }
+    .domain-badge { display: inline-block; margin-left: 0.4rem; padding: 0.05rem 0.3rem; border: 1px solid #9bd3e6; border-radius: 0.5rem; color: #00567a; font-size: 0.55rem; vertical-align: middle; }
     .detail { padding: 0.6rem 1rem; line-height: 1.5; }
     .detail-summary { display: grid; gap: 0.2rem; margin-bottom: 0.7rem; }
     .operation-inline { color: #00567a; font-size: 0.62rem; font-weight: 600; margin-top: 0.2rem; }
@@ -358,12 +411,39 @@ import {
     .component-table th:nth-child(3), .component-table th:nth-child(4) { width: 10%; }
     .image-cell { overflow-wrap: anywhere; font-size: 0.62rem; }
     .resource-health { display: flex; gap: 1rem; padding: 0.4rem 0; font-weight: 600; }
+    .compatibility-card { display: flex; justify-content: space-between; gap: 1rem; margin: 0.8rem 0; padding: 0.6rem 0.75rem; border: 1px solid #9bd3e6; background: #eefaff; }
+    .compatibility-card > div { display: grid; gap: 0.15rem; }
+    .compatibility-card span { color: #4c6fff; font-size: 0.56rem; font-weight: 700; letter-spacing: 0.07em; }
+    .compatibility-card p { margin: 0; color: #565656; }
+    .fact-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: 0.55rem; margin: 0.75rem 0; }
+    .fact-grid article { display: grid; gap: 0.15rem; min-height: 4rem; padding: 0.55rem; border: 1px solid #d8d8d8; background: #fafafa; }
+    .fact-grid article > span { color: #565656; font-size: 0.58rem; }
+    .fact-grid article > strong { overflow-wrap: anywhere; }
+    .fact-grid article > small { color: #6f6f6f; }
+    .fact-grid .fact-passed { border-left: 0.2rem solid #60b515; }
+    .fact-grid .fact-failed { border-left: 0.2rem solid #e12200; background: #fff5f2; }
+    .compact-alert ul, .security-card ul, .remediation-card ol { margin: 0.3rem 0 0 1.15rem; }
+    .security-card, .remediation-card { margin: 0.75rem 0; padding: 0.7rem; border: 1px solid #d8d8d8; background: #fff; }
+    .diagnostic-table { margin: 0.9rem 0; }
+    .diagnostic-table h4 { margin-bottom: 0.3rem; }
+    .table-scroll { max-width: 100%; overflow-x: auto; border: 1px solid #e3e3e3; }
+    .table-scroll table { min-width: 46rem; margin: 0; }
+    .table-scroll td { overflow-wrap: anywhere; }
+    .empty-cell { padding: 0.8rem !important; text-align: center; color: #6f6f6f; }
+    .canary-section { margin: 0.9rem 0; }
+    .canary-list { display: grid; gap: 0.4rem; }
+    .canary-list article { display: grid; grid-template-columns: 4.8rem 1fr; gap: 0.55rem; align-items: start; padding: 0.5rem; border-bottom: 1px solid #eee; }
+    .canary-list p { margin: 0.1rem 0 0; color: #565656; }
+    .remediation-card { border-left: 0.2rem solid #4c6fff; }
+    .remediation-card h4 { margin: 0.1rem 0 0.25rem; }
     .plan-meta { display: grid; grid-template-columns: 9rem 1fr; gap: 0.35rem 0.8rem; margin: 0.8rem 0; }
     .plan-meta dt { font-weight: 600; }
     .plan-meta dd { margin: 0; }
     .resource-list { max-height: 16rem; overflow: auto; border: 1px solid #d8d8d8; }
     .resource-list > div { display: grid; grid-template-columns: minmax(16rem, 1fr) minmax(8rem, 0.5fr); padding: 0.3rem 0.5rem; border-bottom: 1px solid #eee; }
     .profile-card { display: grid; grid-template-columns: 8rem 1fr; gap: 0.3rem 0.75rem; padding: 0.65rem; margin-bottom: 0.7rem; border: 1px solid #d8d8d8; background: #fafafa; }
+    .history-card { margin: 0.75rem 0; padding: 0.65rem; border: 1px solid #d8d8d8; background: #fafafa; }
+    .history-card label { display: grid; grid-template-columns: 10rem minmax(14rem, 1fr); gap: 0.5rem; align-items: center; font-weight: 600; }
     .configuration-modal { display: grid; gap: 0.9rem; max-height: none; overflow: visible; padding-right: 0.3rem; }
     .policy-banner { display: grid; grid-template-columns: minmax(16rem, 1fr) minmax(16rem, 1fr) auto; gap: 0.8rem; align-items: center; padding: 0.7rem; border: 1px solid #9bd3e6; background: #eefaff; }
     .policy-banner > div { display: grid; gap: 0.15rem; }
@@ -411,6 +491,7 @@ import {
     @media (max-width: 1100px) {
       .split-config, .exposure-options, .policy-banner { grid-template-columns: 1fr; }
       .compact-fields, .ingress-fields { grid-template-columns: 1fr 1fr; }
+      .compatibility-card { display: grid; }
     }
     textarea { min-height: 5rem; }
   `],
@@ -420,7 +501,7 @@ export class HisComponent implements OnInit, OnDestroy {
   readonly status = signal<HisStatus | null>(null);
   readonly selected = signal<HisItem | null>(null);
   readonly plan = signal<HisPlan | null>(null);
-  readonly action = signal<'install' | 'uninstall'>('install');
+  readonly action = signal<'install' | 'upgrade' | 'rollback' | 'uninstall'>('install');
   readonly executeRequested = signal(false);
   readonly loading = signal(false);
   readonly planLoading = signal(false);
@@ -438,6 +519,7 @@ export class HisComponent implements OnInit, OnDestroy {
   configurationModalOpen = false;
   reason = '';
   confirm = '';
+  rollbackRevision = '';
   allowedCidrsText = '';
   configurationReason = '';
   resetData = false;
@@ -461,7 +543,12 @@ export class HisComponent implements OnInit, OnDestroy {
       this.error.set('');
     }
     this.his.status().subscribe({
-      next: (status) => { this.status.set(status); this.loading.set(false); },
+      next: (status) => {
+        const prior = new Map((this.status()?.items || []).map((item) => [item.id, item]));
+        const items = status.items.map((item) => Object.assign(prior.get(item.id) || {}, item));
+        this.status.set({ ...status, items });
+        this.loading.set(false);
+      },
       error: (error) => { if (showLoading) this.error.set(this.message(error)); this.loading.set(false); },
     });
   }
@@ -481,10 +568,13 @@ export class HisComponent implements OnInit, OnDestroy {
     });
   }
   operationActive(operation?: HisOperation | null): boolean {
-    return !!operation && ['Queued', 'Recovering', 'Installing', 'Configuring', 'Migrating', 'Validating', 'Uninstalling'].includes(operation.phase);
+    return !!operation && ['Queued', 'Recovering', 'Installing', 'Upgrading', 'RollingBack', 'Configuring', 'Migrating', 'Validating', 'Uninstalling'].includes(operation.phase);
   }
   operationLabel(operation: HisOperation): string {
-    return operation.action === 'install' ? '설치' : operation.action === 'configure' ? '운영 구성' : '삭제';
+    return operation.action === 'install' ? '설치'
+      : operation.action === 'upgrade' ? '업그레이드'
+        : operation.action === 'rollback' ? '롤백'
+          : operation.action === 'configure' ? '운영 구성' : '삭제';
   }
   canInstall(item: HisItem): boolean {
     if (item.mode !== 'HelmManaged') return false;
@@ -494,13 +584,18 @@ export class HisComponent implements OnInit, OnDestroy {
     return item.check.state !== 'Ready' || !!item.release?.managed;
   }
 
-  openPlan(item: HisItem, action: 'install' | 'uninstall', execute = false): void {
+  rollbackAvailable(item: HisItem): boolean {
+    return Boolean(item.release?.managed && Number(item.release.revision) >= 2);
+  }
+
+  openPlan(item: HisItem, action: 'install' | 'upgrade' | 'rollback' | 'uninstall', execute = false): void {
     this.selected.set(item);
     this.action.set(action);
     this.executeRequested.set(execute);
     this.plan.set(null);
     this.reason = '';
     this.confirm = '';
+    this.rollbackRevision = '';
     this.error.set('');
     this.modalOpen = true;
     this.planLoading.set(true);
@@ -513,7 +608,29 @@ export class HisComponent implements OnInit, OnDestroy {
   readyToExecute(): boolean {
     const item = this.selected();
     if (!item || !this.plan() || this.busy() || this.reason.trim().length < 8) return false;
-    return this.action() === 'install' || this.confirm === item.id;
+    if (this.action() === 'install' || this.action() === 'upgrade') return true;
+    if (this.action() === 'rollback') return !!this.rollbackRevision && this.confirm === `${item.id}:${this.rollbackRevision}`;
+    return this.confirm === item.id;
+  }
+
+  actionTitle(): string {
+    return this.action() === 'uninstall' ? 'HIS 삭제 확인'
+      : this.action() === 'upgrade' ? 'HIS 업그레이드 계획'
+        : this.action() === 'rollback' ? 'HIS revision 롤백' : 'HIS 설치 계획';
+  }
+
+  executeButtonLabel(): string {
+    return this.action() === 'install' ? '설치 실행'
+      : this.action() === 'upgrade' ? '업그레이드 실행'
+        : this.action() === 'rollback' ? '롤백 실행' : '삭제 실행';
+  }
+
+  rollbackTargets(plan: HisPlan, item: HisItem): HisPlan['history'] {
+    return plan.history.filter((entry) => entry.revision < Number(item.release?.revision || 0));
+  }
+
+  confirmationText(item: HisItem): string {
+    return this.action() === 'rollback' ? `${item.id}:${this.rollbackRevision || '<revision>'}` : item.id;
   }
 
   execute(): void {
@@ -523,12 +640,14 @@ export class HisComponent implements OnInit, OnDestroy {
     this.error.set('');
     const request = this.action() === 'install'
       ? this.his.install(item.id, this.reason.trim())
-      : this.his.uninstall(item.id, this.reason.trim(), this.confirm);
+      : this.action() === 'upgrade' ? this.his.upgrade(item.id, this.reason.trim())
+        : this.action() === 'rollback' ? this.his.rollback(item.id, Number(this.rollbackRevision), this.reason.trim(), this.confirm)
+          : this.his.uninstall(item.id, this.reason.trim(), this.confirm);
     request.subscribe({
       next: (response) => {
         this.busy.set(false);
         this.modalOpen = false;
-        this.notice.set(`${item.displayName} ${this.action() === 'install' ? '설치' : '삭제'} 작업이 등록되었습니다. 작업 ID: ${response.operation.id}`);
+        this.notice.set(`${item.displayName} ${this.operationLabel(response.operation)} 작업이 등록되었습니다. 작업 ID: ${response.operation.id}`);
         this.load();
       },
       error: (error) => { this.busy.set(false); this.error.set(this.message(error)); },

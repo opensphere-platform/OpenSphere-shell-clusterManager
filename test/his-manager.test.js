@@ -13,6 +13,10 @@ const {
   auditRequired,
   operationResourceName,
   operationActive,
+  parseKubernetesVersion,
+  compareVersions,
+  kubernetesVersionSupported,
+  diagnosticDetails,
   renderedResources,
   recoverableHelmCleanupError,
   stuckReleaseRecoveryStrategy,
@@ -32,6 +36,35 @@ test('HIS catalog keeps PFS/plugin concepts outside the prerequisite catalog', (
   assert.equal(observability.required, false);
   assert.equal(observability.profile, 'Observability');
   assert.equal(observability.chartVersion, '86.0.1');
+  for (const item of HIS_CATALOG) {
+    assert.ok(item.domain, `${item.id} must declare its operational domain`);
+    assert.ok(item.compatibility?.kubernetes, `${item.id} must declare compatibility`);
+    assert.ok(item.remediation?.steps?.length >= 3, `${item.id} must declare actionable remediation`);
+    assert.ok(item.remediation?.verification, `${item.id} must declare re-validation evidence`);
+  }
+});
+
+test('Kubernetes compatibility range is explicit and boundary-safe', () => {
+  assert.deepEqual(parseKubernetesVersion('v1.36.1+k3s1'), [1, 36, 1]);
+  assert.equal(compareVersions('1.30.0', '1.30.0'), 0);
+  assert.equal(compareVersions('1.36.1', '1.37.0'), -1);
+  assert.equal(kubernetesVersionSupported('v1.30.0'), true);
+  assert.equal(kubernetesVersionSupported('v1.36.99'), true);
+  assert.equal(kubernetesVersionSupported('v1.37.0'), false);
+  assert.equal(kubernetesVersionSupported('v1.29.9'), false);
+});
+
+test('diagnostic contract preserves characteristic facts, evidence and canaries', () => {
+  const details = diagnosticDetails({
+    facts: [{ label: 'Ready nodes', value: '4/4', state: 'Passed' }],
+    tables: [{ title: 'Nodes', columns: [{ key: 'name', label: 'Node' }], rows: [{ name: 'worker-1' }] }],
+    warnings: ['local storage'],
+    security: ['ClusterIP only'],
+    canaries: [{ name: 'read path', state: 'Passed', message: 'ok' }],
+  });
+  assert.equal(details.facts[0].value, '4/4');
+  assert.equal(details.tables[0].rows[0].name, 'worker-1');
+  assert.equal(details.canaries[0].state, 'Passed');
 });
 
 test('mutation reason is mandatory and bounded', () => {
@@ -55,6 +88,8 @@ test('HIS operations use bounded Kubernetes names and reject stale heartbeats', 
   assert.equal(operationResourceName('kube-prometheus-stack'), 'opensphere-his-operation-kube-prometheus-stack');
   assert.ok(operationResourceName('X'.repeat(100)).length <= 63);
   assert.equal(operationActive({ phase: 'Installing', updatedAt: new Date().toISOString() }), true);
+  assert.equal(operationActive({ phase: 'Upgrading', updatedAt: new Date().toISOString() }), true);
+  assert.equal(operationActive({ phase: 'RollingBack', updatedAt: new Date().toISOString() }), true);
   assert.equal(operationActive({ phase: 'Installing', updatedAt: new Date(Date.now() - 120000).toISOString() }), false);
   assert.equal(operationActive({ phase: 'Ready', updatedAt: new Date().toISOString() }), false);
 });

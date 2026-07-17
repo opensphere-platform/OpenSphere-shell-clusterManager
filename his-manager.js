@@ -3,6 +3,7 @@
 const fs = require('fs');
 const os = require('os');
 const net = require('net');
+const dns = require('dns').promises;
 const path = require('path');
 const { spawn } = require('child_process');
 const yaml = require('js-yaml');
@@ -14,7 +15,7 @@ const MAX_OUTPUT = 1024 * 1024;
 const HELM_TIMEOUT_MS = 12 * 60 * 1000;
 const OPERATION_NAMESPACE = process.env.HIS_OPERATION_NAMESPACE || process.env.POD_NAMESPACE || 'opensphere-console';
 const OPERATION_STALE_MS = 60 * 1000;
-const ACTIVE_OPERATION_PHASES = new Set(['Queued', 'Recovering', 'Installing', 'Configuring', 'Migrating', 'Validating', 'Uninstalling']);
+const ACTIVE_OPERATION_PHASES = new Set(['Queued', 'Recovering', 'Installing', 'Upgrading', 'RollingBack', 'Configuring', 'Migrating', 'Validating', 'Uninstalling']);
 const OBSERVABILITY_ITEM_ID = 'kube-prometheus-stack';
 const OBSERVABILITY_CONFIG_NAME = 'opensphere-his-config-kube-prometheus-stack';
 const OBSERVABILITY_RESET_CONFIRMATION = 'RESET OBSERVABILITY DATA';
@@ -407,60 +408,294 @@ function result(state, reason, message, observedVersion = '', details = undefine
   };
 }
 
+function parseKubernetesVersion(value) {
+  const match = /^v?(\d+)\.(\d+)(?:\.(\d+))?/.exec(String(value || '').trim());
+  return match ? [Number(match[1]), Number(match[2]), Number(match[3] || 0)] : null;
+}
+
+function compareVersions(left, right) {
+  const a = Array.isArray(left) ? left : parseKubernetesVersion(left);
+  const b = Array.isArray(right) ? right : parseKubernetesVersion(right);
+  if (!a || !b) return Number.NaN;
+  for (let index = 0; index < 3; index += 1) {
+    if (a[index] !== b[index]) return a[index] > b[index] ? 1 : -1;
+  }
+  return 0;
+}
+
+function kubernetesVersionSupported(value, minimum = '1.30.0', maximumExclusive = '1.37.0') {
+  return compareVersions(value, minimum) >= 0 && compareVersions(value, maximumExclusive) < 0;
+}
+
+function diagnosticDetails({ facts = [], tables = [], warnings = [], security = [], canaries = [], evidence = [] } = {}) {
+  return { facts, tables, warnings, security, canaries, evidence };
+}
+
+function condition(resource, type) {
+  return (resource?.status?.conditions || []).find((item) => item.type === type);
+}
+
+function containerImages(resource) {
+  return (resource?.spec?.template?.spec?.containers || []).map((item) => item.image).filter(Boolean).join(', ');
+}
+
+function addressOfService(service) {
+  const ingress = service?.status?.loadBalancer?.ingress || [];
+  return ingress.map((item) => item.ip || item.hostname).filter(Boolean).join(', ') || service?.spec?.externalIPs?.join(', ') || '';
+}
+
+function timedDnsLookup(hostname) {
+  const startedAt = Date.now();
+  return Promise.race([
+    dns.lookup(hostname).then((answer) => ({ state: 'Passed', message: `${answer.address} · ${Date.now() - startedAt}ms` })),
+    new Promise((resolve) => setTimeout(() => resolve({ state: 'Failed', message: '3초 안에 응답하지 않았습니다.' }), 3000)),
+  ]).catch((error) => ({ state: 'Failed', message: safeError(error) }));
+}
+
 async function probe(ctx, name) {
   if (name === 'kubernetesApi') {
-    const version = await k8s(ctx, '/version');
-    return result('Ready', 'ApiReachable', 'Kubernetes API가 응답합니다.', version.gitVersion || '');
+    const [version, groups, apiServices, validatingWebhooks, mutatingWebhooks] = await Promise.all([
+      k8s(ctx, '/version'),
+      k8s(ctx, '/apis'),
+      k8sListOrEmpty(ctx, '/apis/apiregistration.k8s.io/v1/apiservices'),
+      k8sListOrEmpty(ctx, '/apis/admissionregistration.k8s.io/v1/validatingwebhookconfigurations'),
+      k8sListOrEmpty(ctx, '/apis/admissionregistration.k8s.io/v1/mutatingwebhookconfigurations'),
+    ]);
+    let accessReview = null;
+    try {
+      accessReview = await k8sRequest(ctx, '/apis/authorization.k8s.io/v1/selfsubjectaccessreviews', {
+        method: 'POST',
+        body: { apiVersion: 'authorization.k8s.io/v1', kind: 'SelfSubjectAccessReview', spec: { resourceAttributes: { verb: 'list', resource: 'nodes' } } },
+      });
+    } catch (error) { accessReview = { status: { allowed: false, reason: safeError(error) } }; }
+    const gitVersion = version.gitVersion || '';
+    const supported = kubernetesVersionSupported(gitVersion);
+    const unavailable = (apiServices.items || []).filter((item) => condition(item, 'Available')?.status === 'False');
+    const details = diagnosticDetails({
+      facts: [
+        { label: 'Kubernetes version', value: gitVersion, state: supported ? 'Passed' : 'Failed' },
+        { label: '지원 범위', value: '>=1.30.0 <1.37.0', state: supported ? 'Passed' : 'Failed' },
+        { label: 'API groups', value: String((groups.groups || []).length), state: 'Info' },
+        { label: 'RBAC node list', value: accessReview?.status?.allowed ? 'Allowed' : accessReview?.status?.reason || 'Denied', state: accessReview?.status?.allowed ? 'Passed' : 'Failed' },
+      ],
+      tables: [{
+        title: 'Unavailable APIService',
+        columns: [{ key: 'name', label: 'APIService' }, { key: 'reason', label: 'Reason' }, { key: 'message', label: 'Message' }],
+        rows: unavailable.map((item) => ({ name: item.metadata?.name || '', reason: condition(item, 'Available')?.reason || '', message: condition(item, 'Available')?.message || '' })),
+      }],
+      warnings: supported ? [] : [`${gitVersion}은 OpenSphere 지원 범위 밖입니다.`],
+      security: [`ValidatingWebhook ${validatingWebhooks.items?.length || 0}개 · MutatingWebhook ${mutatingWebhooks.items?.length || 0}개`],
+      canaries: [
+        { name: 'API discovery', state: (groups.groups || []).length ? 'Passed' : 'Failed', message: `${(groups.groups || []).length}개 API group 발견` },
+        { name: 'RBAC self-check', state: accessReview?.status?.allowed ? 'Passed' : 'Failed', message: accessReview?.status?.reason || 'nodes list 권한 검증' },
+      ],
+      evidence: unavailable.slice(0, 10).map((item) => ({ name: item.metadata?.name || '', state: 'Failed', message: condition(item, 'Available')?.message || '' })),
+    });
+    if (!supported) return result('Blocked', 'UnsupportedKubernetesVersion', `${gitVersion}은 지원 범위 >=1.30.0 <1.37.0에 포함되지 않습니다.`, gitVersion, details);
+    if (!accessReview?.status?.allowed || unavailable.length) return result('Degraded', 'ApiControlDegraded', `API는 응답하지만 RBAC 또는 APIService ${unavailable.length}개가 준비되지 않았습니다.`, gitVersion, details);
+    return result('Ready', 'ApiCompatible', `Kubernetes ${gitVersion} API discovery와 RBAC self-check가 정상입니다.`, gitVersion, details);
   }
   if (name === 'nodes') {
     const list = await k8s(ctx, '/api/v1/nodes');
     const nodes = list.items || [];
     const ready = nodes.filter((node) => (node.status?.conditions || []).some((c) => c.type === 'Ready' && c.status === 'True'));
-    return ready.length === nodes.length && nodes.length
-      ? result('Ready', 'NodesReady', `${ready.length}/${nodes.length}개 노드가 Ready입니다.`, nodes[0]?.status?.nodeInfo?.kubeletVersion || '')
-      : result('Blocked', 'NodeNotReady', `${ready.length}/${nodes.length}개 노드만 Ready입니다.`);
+    const rows = nodes.map((node) => {
+      const pressures = ['MemoryPressure', 'DiskPressure', 'PIDPressure'].filter((type) => condition(node, type)?.status === 'True');
+      return {
+        name: node.metadata?.name || '',
+        ready: condition(node, 'Ready')?.status || 'Unknown',
+        pressure: pressures.join(', ') || 'None',
+        schedulable: node.spec?.unschedulable ? 'No' : 'Yes',
+        taints: (node.spec?.taints || []).map((taint) => `${taint.key}:${taint.effect}`).join(', ') || 'None',
+        kubelet: node.status?.nodeInfo?.kubeletVersion || '',
+        runtime: node.status?.nodeInfo?.containerRuntimeVersion || '',
+        cpu: node.status?.allocatable?.cpu || '',
+        memory: node.status?.allocatable?.memory || '',
+      };
+    });
+    const pressured = rows.filter((row) => row.pressure !== 'None');
+    const details = diagnosticDetails({
+      facts: [
+        { label: 'Ready nodes', value: `${ready.length}/${nodes.length}`, state: ready.length === nodes.length && nodes.length ? 'Passed' : 'Failed' },
+        { label: 'Pressure-free', value: `${nodes.length - pressured.length}/${nodes.length}`, state: pressured.length ? 'Failed' : 'Passed' },
+        { label: 'Kubelet versions', value: [...new Set(rows.map((row) => row.kubelet))].join(', '), state: 'Info' },
+        { label: 'Container runtimes', value: [...new Set(rows.map((row) => row.runtime))].join(', '), state: 'Info' },
+      ],
+      tables: [{ title: 'Node conditions and capacity', columns: [
+        { key: 'name', label: 'Node' }, { key: 'ready', label: 'Ready' }, { key: 'pressure', label: 'Pressure' }, { key: 'schedulable', label: 'Schedulable' },
+        { key: 'kubelet', label: 'Kubelet' }, { key: 'runtime', label: 'Runtime' }, { key: 'cpu', label: 'CPU' }, { key: 'memory', label: 'Memory' }, { key: 'taints', label: 'Taints' },
+      ], rows }],
+      warnings: pressured.map((row) => `${row.name}: ${row.pressure}`),
+      canaries: [{ name: 'Node readiness', state: ready.length === nodes.length && nodes.length ? 'Passed' : 'Failed', message: `${ready.length}/${nodes.length} Ready` }],
+    });
+    if (!nodes.length || ready.length !== nodes.length) return result('Blocked', 'NodeNotReady', `${ready.length}/${nodes.length}개 노드만 Ready입니다.`, rows[0]?.kubelet || '', details);
+    if (pressured.length) return result('Degraded', 'NodePressure', `${pressured.length}개 노드에 resource pressure가 있습니다.`, rows[0]?.kubelet || '', details);
+    return result('Ready', 'NodesHealthy', `${ready.length}/${nodes.length}개 노드가 Ready이며 pressure가 없습니다.`, rows[0]?.kubelet || '', details);
   }
   if (name === 'cni') {
-    const list = await k8s(ctx, '/apis/apps/v1/namespaces/kube-system/daemonsets');
+    const [list, nodeList, networkingApi] = await Promise.all([
+      k8s(ctx, '/apis/apps/v1/namespaces/kube-system/daemonsets'),
+      k8s(ctx, '/api/v1/nodes'),
+      k8s(ctx, '/apis/networking.k8s.io/v1'),
+    ]);
     const candidates = (list.items || []).filter((ds) => /kindnet|calico|cilium|weave|flannel|canal|antrea/i.test(ds.metadata?.name || ''));
     const ready = candidates.find(readyDaemonSet);
-    return ready
-      ? result('Ready', 'CniReady', `${ready.metadata.name} CNI가 모든 대상 노드에서 Ready입니다.`, ready.metadata?.labels?.['app.kubernetes.io/version'] || '')
-      : result('Blocked', 'CniMissing', 'Ready 상태의 CNI DaemonSet을 찾지 못했습니다.');
+    const nodes = nodeList.items || [];
+    const withoutPodCidr = nodes.filter((node) => !node.spec?.podCIDR && !(node.spec?.podCIDRs || []).length);
+    const rows = candidates.map((ds) => ({
+      name: ds.metadata?.name || '', desired: String(ds.status?.desiredNumberScheduled || 0), ready: String(ds.status?.numberReady || 0),
+      image: containerImages(ds), selector: Object.entries(ds.spec?.selector?.matchLabels || {}).map(([key, value]) => `${key}=${value}`).join(','),
+    }));
+    const families = [...new Set(nodes.flatMap((node) => node.spec?.podCIDRs || (node.spec?.podCIDR ? [node.spec.podCIDR] : [])).map((cidr) => cidr.includes(':') ? 'IPv6' : 'IPv4'))];
+    const networkPolicy = (networkingApi.resources || []).some((resource) => resource.name === 'networkpolicies');
+    const details = diagnosticDetails({
+      facts: [
+        { label: 'Primary CNI', value: ready?.metadata?.name || 'Not ready', state: ready ? 'Passed' : 'Failed' },
+        { label: 'PodCIDR assignment', value: `${nodes.length - withoutPodCidr.length}/${nodes.length}`, state: withoutPodCidr.length ? 'Failed' : 'Passed' },
+        { label: 'IP families', value: families.join(', ') || 'Unknown', state: 'Info' },
+        { label: 'NetworkPolicy API', value: networkPolicy ? 'Supported' : 'Missing', state: networkPolicy ? 'Passed' : 'Failed' },
+        { label: 'MTU', value: 'CNI runtime configuration에서 확인 필요', state: 'NotRun' },
+      ],
+      tables: [{ title: 'CNI daemon coverage', columns: [{ key: 'name', label: 'DaemonSet' }, { key: 'desired', label: 'Desired' }, { key: 'ready', label: 'Ready' }, { key: 'image', label: 'Image' }, { key: 'selector', label: 'Selector' }], rows }],
+      warnings: withoutPodCidr.map((node) => `${node.metadata?.name}: PodCIDR 없음`),
+      canaries: [
+        { name: 'Daemon coverage', state: ready ? 'Passed' : 'Failed', message: ready ? `${ready.status?.numberReady}/${ready.status?.desiredNumberScheduled}` : 'Ready CNI 없음' },
+        { name: 'Cross-node / egress traffic', state: 'NotRun', message: '쓰기 없는 정기 검사에서는 실행하지 않음; 승인된 synthetic canary 필요' },
+      ],
+    });
+    if (!ready) return result('Blocked', 'CniMissing', 'Ready 상태의 CNI DaemonSet을 찾지 못했습니다.', '', details);
+    if (withoutPodCidr.length || !networkPolicy) return result('Degraded', 'CniContractPartial', `${ready.metadata.name}은 Ready지만 PodCIDR 또는 NetworkPolicy 계약이 불완전합니다.`, containerImages(ready), details);
+    return result('Ready', 'CniReady', `${ready.metadata.name} CNI가 모든 대상 노드에서 Ready이며 PodCIDR이 할당되었습니다.`, containerImages(ready), details);
   }
   if (name === 'dns') {
-    const deployments = await k8s(ctx, '/apis/apps/v1/namespaces/kube-system/deployments');
-    const services = await k8s(ctx, '/api/v1/namespaces/kube-system/services');
+    const [deployments, services, configMaps, internalLookup, externalLookup] = await Promise.all([
+      k8s(ctx, '/apis/apps/v1/namespaces/kube-system/deployments'),
+      k8s(ctx, '/api/v1/namespaces/kube-system/services'),
+      k8s(ctx, '/api/v1/namespaces/kube-system/configmaps'),
+      timedDnsLookup('kubernetes.default.svc.cluster.local'),
+      timedDnsLookup('registry.k8s.io'),
+    ]);
     const dns = (deployments.items || []).find((d) => /coredns|kube-dns/i.test(d.metadata?.name || ''));
     const svc = (services.items || []).find((s) => /kube-dns|coredns/i.test(s.metadata?.name || ''));
-    return dns && svc && availableDeployment(dns)
-      ? result('Ready', 'DnsReady', `${dns.metadata.name} Deployment와 ${svc.metadata.name} Service가 Ready입니다.`, dns.spec?.template?.spec?.containers?.[0]?.image || '')
-      : result('Blocked', 'DnsMissing', '호환 DNS Deployment 또는 Service가 준비되지 않았습니다.');
+    const config = (configMaps.items || []).find((item) => /coredns|kube-dns/i.test(item.metadata?.name || ''));
+    const corefile = config?.data?.Corefile || '';
+    const details = diagnosticDetails({
+      facts: [
+        { label: 'DNS deployment', value: dns ? `${dns.status?.availableReplicas || 0}/${dns.spec?.replicas || 1}` : 'Missing', state: dns && availableDeployment(dns) ? 'Passed' : 'Failed' },
+        { label: 'DNS service', value: svc ? `${svc.metadata?.name} · ${svc.spec?.clusterIP}` : 'Missing', state: svc ? 'Passed' : 'Failed' },
+        { label: 'Forwarder', value: /forward\s+\.\s+([^\n]+)/.exec(corefile)?.[1]?.trim() || 'Not detected', state: corefile ? 'Info' : 'Failed' },
+        { label: 'Cache', value: /\bcache\b/.test(corefile) ? 'Enabled' : 'Not detected', state: /\bcache\b/.test(corefile) ? 'Passed' : 'Info' },
+      ],
+      tables: [{ title: 'DNS endpoints', columns: [{ key: 'name', label: 'Service' }, { key: 'clusterIP', label: 'Cluster IP' }, { key: 'ports', label: 'Ports' }], rows: svc ? [{ name: svc.metadata?.name || '', clusterIP: svc.spec?.clusterIP || '', ports: (svc.spec?.ports || []).map((port) => `${port.protocol}/${port.port}`).join(', ') }] : [] }],
+      warnings: !corefile ? ['CoreDNS Corefile을 찾지 못했습니다.'] : [],
+      canaries: [
+        { name: 'Internal service resolution', ...internalLookup },
+        { name: 'External upstream resolution', ...externalLookup },
+      ],
+    });
+    if (!dns || !svc || !availableDeployment(dns) || internalLookup.state !== 'Passed') return result('Blocked', 'DnsResolutionFailed', 'Cluster DNS 구성 또는 kubernetes.default 실제 질의가 실패했습니다.', containerImages(dns), details);
+    if (externalLookup.state !== 'Passed') return result('Degraded', 'DnsUpstreamFailed', '내부 DNS는 정상이나 외부 upstream 질의가 실패했습니다.', containerImages(dns), details);
+    return result('Ready', 'DnsResolutionReady', `${dns.metadata.name} ${dns.status?.availableReplicas || 0}/${dns.spec?.replicas || 1}와 내부·외부 실제 질의가 정상입니다.`, containerImages(dns), details);
   }
   if (name === 'ingress') {
-    const list = await k8s(ctx, '/apis/networking.k8s.io/v1/ingressclasses');
-    const items = list.items || [];
-    return items.length
-      ? result('Ready', 'IngressClassReady', `IngressClass ${items.map((x) => x.metadata?.name).join(', ')}가 준비되었습니다.`, items[0]?.spec?.controller || '')
-      : result('Blocked', 'IngressClassMissing', 'IngressClass가 없습니다. 승인된 Ingress Controller를 설치하십시오.');
+    const [classes, deployments, services, endpointSlices, ingresses] = await Promise.all([
+      k8s(ctx, '/apis/networking.k8s.io/v1/ingressclasses'),
+      k8sListOrEmpty(ctx, '/apis/apps/v1/namespaces/ingress-nginx/deployments'),
+      k8sListOrEmpty(ctx, '/api/v1/namespaces/ingress-nginx/services'),
+      k8sListOrEmpty(ctx, '/apis/discovery.k8s.io/v1/namespaces/ingress-nginx/endpointslices'),
+      k8sListOrEmpty(ctx, '/apis/networking.k8s.io/v1/ingresses'),
+    ]);
+    const classItems = classes.items || [];
+    const controller = (deployments.items || []).find((item) => /ingress.*controller/i.test(item.metadata?.name || ''));
+    const controllerServices = (services.items || []).filter((item) => /ingress.*controller/i.test(item.metadata?.name || ''));
+    const readyEndpoints = (endpointSlices.items || []).flatMap((slice) => slice.endpoints || []).filter((endpoint) => endpoint.conditions?.ready !== false).length;
+    const tlsIngresses = (ingresses.items || []).filter((item) => (item.spec?.tls || []).length).length;
+    const rows = controllerServices.map((service) => ({ name: service.metadata?.name || '', type: service.spec?.type || 'ClusterIP', clusterIP: service.spec?.clusterIP || '', external: addressOfService(service) || 'None', listeners: (service.spec?.ports || []).map((port) => `${port.name || ''}:${port.port}->${port.targetPort}`).join(', ') }));
+    const externallyExposed = rows.some((row) => ['LoadBalancer', 'NodePort'].includes(row.type));
+    const details = diagnosticDetails({
+      facts: [
+        { label: 'IngressClass', value: classItems.map((item) => `${item.metadata?.name} (${item.spec?.controller})`).join(', ') || 'Missing', state: classItems.length ? 'Passed' : 'Failed' },
+        { label: 'Controller', value: controller ? `${controller.status?.availableReplicas || 0}/${controller.spec?.replicas || 1}` : 'Missing', state: controller && availableDeployment(controller) ? 'Passed' : 'Failed' },
+        { label: 'Ready endpoints', value: String(readyEndpoints), state: readyEndpoints ? 'Passed' : 'Failed' },
+        { label: 'TLS Ingress references', value: `${tlsIngresses}/${ingresses.items?.length || 0}`, state: 'Info' },
+      ],
+      tables: [{ title: 'Ingress service exposure', columns: [{ key: 'name', label: 'Service' }, { key: 'type', label: 'Type' }, { key: 'clusterIP', label: 'Cluster IP' }, { key: 'external', label: 'External address' }, { key: 'listeners', label: 'Listeners' }], rows }],
+      warnings: externallyExposed && !tlsIngresses ? ['외부 listener가 있으나 TLS를 참조하는 Ingress가 없습니다.'] : [],
+      security: [externallyExposed ? '외부 진입 경로 존재: TLS·OIDC·allowlist 정책을 서비스별로 검증하십시오.' : 'ClusterIP 내부 경로만 발견'],
+      canaries: [{ name: 'Controller endpoint', state: readyEndpoints ? 'Passed' : 'Failed', message: `${readyEndpoints}개 ready endpoint` }, { name: 'Host/TLS reachability', state: 'NotRun', message: '실제 hostname과 승인된 인증서가 필요한 on-demand 검증' }],
+    });
+    if (!classItems.length || !controller || !availableDeployment(controller) || !readyEndpoints) return result('Blocked', 'IngressControlMissing', 'IngressClass·controller·endpoint 계약이 준비되지 않았습니다.', containerImages(controller), details);
+    if (externallyExposed && !tlsIngresses) return result('Degraded', 'IngressTlsPolicyMissing', 'Controller는 Ready이나 외부 listener에 TLS 참조가 없습니다.', containerImages(controller), details);
+    return result('Ready', 'IngressPathReady', `IngressClass ${classItems.map((item) => item.metadata?.name).join(', ')}와 ${readyEndpoints}개 endpoint가 준비되었습니다.`, containerImages(controller), details);
   }
   if (name === 'certManager') {
-    let crd = false;
-    try { await k8s(ctx, '/apis/apiextensions.k8s.io/v1/customresourcedefinitions/certificates.cert-manager.io'); crd = true; } catch (e) { if (e.code !== 404) throw e; }
-    let deployments = [];
-    try { deployments = (await k8s(ctx, '/apis/apps/v1/namespaces/cert-manager/deployments')).items || []; } catch (e) { if (e.code !== 404) throw e; }
+    const [crdList, deploymentList, issuers, clusterIssuers, certificates, challenges, orders] = await Promise.all([
+      k8sListOrEmpty(ctx, '/apis/apiextensions.k8s.io/v1/customresourcedefinitions'),
+      k8sListOrEmpty(ctx, '/apis/apps/v1/namespaces/cert-manager/deployments'),
+      k8sListOrEmpty(ctx, '/apis/cert-manager.io/v1/issuers'),
+      k8sListOrEmpty(ctx, '/apis/cert-manager.io/v1/clusterissuers'),
+      k8sListOrEmpty(ctx, '/apis/cert-manager.io/v1/certificates'),
+      k8sListOrEmpty(ctx, '/apis/acme.cert-manager.io/v1/challenges'),
+      k8sListOrEmpty(ctx, '/apis/acme.cert-manager.io/v1/orders'),
+    ]);
+    const certCrds = (crdList.items || []).filter((item) => /cert-manager\.io$/.test(item.spec?.group || ''));
+    const crd = certCrds.some((item) => item.metadata?.name === 'certificates.cert-manager.io');
+    const deployments = deploymentList.items || [];
     const allReady = deployments.length >= 3 && deployments.every(availableDeployment);
-    if (crd && allReady) return result('Ready', 'CertManagerReady', 'cert-manager CRD와 제어기가 Ready입니다.', deployments[0]?.spec?.template?.spec?.containers?.[0]?.image || '');
-    if (crd || deployments.length) return result('Degraded', 'CertManagerPartial', 'cert-manager 일부 리소스만 존재합니다. 충돌 여부를 먼저 점검하십시오.');
-    return result('Blocked', 'CertManagerMissing', 'cert-manager capability가 없습니다.');
+    const issuerItems = [...(issuers.items || []), ...(clusterIssuers.items || [])];
+    const readyIssuers = issuerItems.filter((item) => condition(item, 'Ready')?.status === 'True');
+    const certItems = certificates.items || [];
+    const unreadyCerts = certItems.filter((item) => condition(item, 'Ready')?.status !== 'True');
+    const rows = certItems.map((item) => ({ namespace: item.metadata?.namespace || 'cluster', name: item.metadata?.name || '', ready: condition(item, 'Ready')?.status || 'Unknown', notAfter: item.status?.notAfter || '', renewalTime: item.status?.renewalTime || '', secret: item.spec?.secretName || '', issuer: `${item.spec?.issuerRef?.kind || 'Issuer'}/${item.spec?.issuerRef?.name || ''}` }));
+    const details = diagnosticDetails({
+      facts: [
+        { label: 'Controllers', value: `${deployments.filter(availableDeployment).length}/${deployments.length}`, state: allReady ? 'Passed' : 'Failed' },
+        { label: 'cert-manager CRDs', value: String(certCrds.length), state: crd ? 'Passed' : 'Failed' },
+        { label: 'Ready issuers', value: `${readyIssuers.length}/${issuerItems.length}`, state: readyIssuers.length ? 'Passed' : 'Failed' },
+        { label: 'Ready certificates', value: `${certItems.length - unreadyCerts.length}/${certItems.length}`, state: unreadyCerts.length ? 'Failed' : 'Passed' },
+        { label: 'ACME failures', value: `Challenge ${(challenges.items || []).filter((item) => item.status?.state === 'invalid').length} · Order ${(orders.items || []).filter((item) => item.status?.state === 'invalid').length}`, state: 'Info' },
+      ],
+      tables: [{ title: 'Certificate lifecycle', columns: [{ key: 'namespace', label: 'Namespace' }, { key: 'name', label: 'Certificate' }, { key: 'ready', label: 'Ready' }, { key: 'notAfter', label: 'Expires' }, { key: 'renewalTime', label: 'Renewal' }, { key: 'secret', label: 'Secret' }, { key: 'issuer', label: 'Issuer' }], rows }],
+      warnings: !issuerItems.length ? ['Issuer/ClusterIssuer가 없어 인증서를 발급할 수 없습니다.'] : unreadyCerts.map((item) => `${item.metadata?.namespace}/${item.metadata?.name}: ${condition(item, 'Ready')?.message || 'Not Ready'}`),
+      security: ['Certificate Secret은 애플리케이션 namespace에 유지하며 Cluster Manager가 비밀 값을 읽거나 표시하지 않습니다.'],
+      canaries: [{ name: 'Webhook and controllers', state: allReady ? 'Passed' : 'Failed', message: `${deployments.filter(availableDeployment).length}/${deployments.length}` }, { name: 'Issuer readiness', state: readyIssuers.length ? 'Passed' : 'Failed', message: `${readyIssuers.length}/${issuerItems.length}` }],
+    });
+    const observed = deployments.map(containerImages).filter(Boolean).join(', ');
+    if (!crd || !allReady) return result(crd || deployments.length ? 'Degraded' : 'Blocked', crd || deployments.length ? 'CertManagerPartial' : 'CertManagerMissing', crd || deployments.length ? 'cert-manager 일부 리소스만 준비되었습니다.' : 'cert-manager capability가 없습니다.', observed, details);
+    if (!readyIssuers.length || unreadyCerts.length) return result('Degraded', !readyIssuers.length ? 'IssuerMissing' : 'CertificateNotReady', `제어기는 Ready이나 Issuer ${readyIssuers.length}/${issuerItems.length}, Certificate ${certItems.length - unreadyCerts.length}/${certItems.length}입니다.`, observed, details);
+    return result('Ready', 'CertificateLifecycleReady', `cert-manager 제어기와 Issuer ${readyIssuers.length}/${issuerItems.length}가 Ready입니다.`, observed, details);
   }
   if (name === 'metrics') {
     try {
-      const api = await k8s(ctx, '/apis/apiregistration.k8s.io/v1/apiservices/v1beta1.metrics.k8s.io');
+      const [api, nodes, metrics, deployments, hpas] = await Promise.all([
+        k8s(ctx, '/apis/apiregistration.k8s.io/v1/apiservices/v1beta1.metrics.k8s.io'),
+        k8s(ctx, '/api/v1/nodes'),
+        k8sListOrEmpty(ctx, '/apis/metrics.k8s.io/v1beta1/nodes'),
+        k8sListOrEmpty(ctx, '/apis/apps/v1/namespaces/kube-system/deployments'),
+        k8sListOrEmpty(ctx, '/apis/autoscaling/v2/horizontalpodautoscalers'),
+      ]);
       const ready = (api.status?.conditions || []).some((c) => c.type === 'Available' && c.status === 'True');
-      return ready
-        ? result('Ready', 'MetricsApiReady', 'metrics.k8s.io APIService가 Available입니다.', api.spec?.version || '')
-        : result('Degraded', 'MetricsApiUnavailable', 'metrics.k8s.io APIService가 존재하지만 Available이 아닙니다.');
+      const readyNodes = (nodes.items || []).filter((node) => condition(node, 'Ready')?.status === 'True');
+      const metricsItems = metrics.items || [];
+      const deployment = (deployments.items || []).find((item) => /metrics-server/i.test(item.metadata?.name || ''));
+      const oldestAge = metricsItems.length ? Math.max(...metricsItems.map((item) => Math.max(0, Date.now() - Date.parse(item.timestamp || new Date(0).toISOString())))) : Number.POSITIVE_INFINITY;
+      const coverage = readyNodes.length ? metricsItems.length / readyNodes.length : 0;
+      const rows = metricsItems.map((item) => ({ node: item.metadata?.name || '', cpu: item.usage?.cpu || '', memory: item.usage?.memory || '', timestamp: item.timestamp || '', window: item.window || '' }));
+      const details = diagnosticDetails({
+        facts: [
+          { label: 'APIService', value: condition(api, 'Available')?.status || 'Unknown', state: ready ? 'Passed' : 'Failed' },
+          { label: 'Node coverage', value: `${metricsItems.length}/${readyNodes.length}`, state: coverage >= 1 ? 'Passed' : 'Failed' },
+          { label: 'Oldest sample', value: Number.isFinite(oldestAge) ? `${Math.round(oldestAge / 1000)}s` : 'No samples', state: oldestAge <= 180000 ? 'Passed' : 'Failed' },
+          { label: 'HPA objects', value: String(hpas.items?.length || 0), state: 'Info' },
+        ],
+        tables: [{ title: 'Node resource metrics', columns: [{ key: 'node', label: 'Node' }, { key: 'cpu', label: 'CPU' }, { key: 'memory', label: 'Memory' }, { key: 'timestamp', label: 'Timestamp' }, { key: 'window', label: 'Window' }], rows }],
+        warnings: coverage < 1 ? [`Ready 노드 중 ${readyNodes.length - metricsItems.length}개가 metrics에 없습니다.`] : [],
+        security: [containerImages(deployment) || 'metrics-server image unavailable'],
+        canaries: [{ name: 'kubectl top equivalent', state: ready && coverage >= 1 && oldestAge <= 180000 ? 'Passed' : 'Failed', message: `${metricsItems.length}/${readyNodes.length} nodes · oldest ${Number.isFinite(oldestAge) ? Math.round(oldestAge / 1000) : '∞'}s` }, { name: 'HPA read path', state: ready ? 'Passed' : 'Failed', message: `${hpas.items?.length || 0} HPA inventory readable` }],
+      });
+      if (!ready) return result('Degraded', 'MetricsApiUnavailable', 'metrics.k8s.io APIService가 존재하지만 Available이 아닙니다.', api.spec?.version || '', details);
+      if (coverage < 1 || oldestAge > 180000) return result('Degraded', 'MetricsCoverageIncomplete', `Metrics API는 Available이나 노드 coverage/freshness가 부족합니다.`, api.spec?.version || '', details);
+      return result('Ready', 'MetricsCoverageReady', `metrics.k8s.io가 Ready 노드 ${metricsItems.length}/${readyNodes.length}개를 최신 상태로 제공합니다.`, api.spec?.version || '', details);
     } catch (e) {
       if (e.code === 404) return result('Blocked', 'MetricsApiMissing', 'metrics.k8s.io APIService가 없습니다.');
       throw e;
@@ -552,6 +787,19 @@ async function probe(ctx, name) {
         clusterIP: service.spec?.clusterIP || '',
         ports: (service.spec?.ports || []).map((port) => `${port.name || port.port}:${port.port}`).join(', '),
       })),
+      facts: [
+        { label: 'Ready components', value: `${ready.length}/${components.length}`, state: ready.length === components.length ? 'Passed' : 'Failed' },
+        { label: 'Ready CRDs', value: `${crdChecks.filter(Boolean).length}/${crdNames.length}`, state: crdsReady ? 'Passed' : 'Failed' },
+        { label: 'Persistent volumes', value: `${pvcList.items?.length || 0}`, state: pvcList.items?.length ? 'Passed' : 'Failed' },
+        { label: 'External exposure', value: (serviceList.items || []).some((service) => ['LoadBalancer', 'NodePort'].includes(service.spec?.type)) ? 'Detected' : 'ClusterIP only', state: (serviceList.items || []).some((service) => ['LoadBalancer', 'NodePort'].includes(service.spec?.type)) ? 'Failed' : 'Passed' },
+      ],
+      warnings: (pvcList.items || []).filter((pvc) => pvc.status?.phase !== 'Bound').map((pvc) => `${pvc.metadata?.name}: ${pvc.status?.phase || 'Pending'}`),
+      security: ['Prometheus와 Alertmanager 직접 외부 공개 금지 · Grafana만 승인된 TLS/OIDC Ingress 허용'],
+      canaries: [
+        { name: 'Component readiness', state: ready.length === components.length ? 'Passed' : 'Failed', message: `${ready.length}/${components.length}` },
+        { name: 'Scrape/alert delivery', state: 'NotRun', message: 'on-demand synthetic alert canary가 필요합니다.' },
+      ],
+      tables: [],
     };
     if (crdsReady && ready.length === components.length) {
       const namespaces = [...new Set(components.map((component) => component.item?.metadata?.namespace).filter(Boolean))];
@@ -564,21 +812,67 @@ async function probe(ctx, name) {
     return result('Blocked', 'ObservabilityMissing', '공유 kube-prometheus-stack이 없습니다. Observability profile에서 선택 설치할 수 있습니다.', '', details);
   }
   if (name === 'storage') {
-    const list = await k8s(ctx, '/apis/storage.k8s.io/v1/storageclasses');
+    const [list, pvcs, pvs] = await Promise.all([
+      k8s(ctx, '/apis/storage.k8s.io/v1/storageclasses'),
+      k8sListOrEmpty(ctx, '/api/v1/persistentvolumeclaims'),
+      k8sListOrEmpty(ctx, '/api/v1/persistentvolumes'),
+    ]);
     const items = list.items || [];
     const defaults = items.filter((x) => x.metadata?.annotations?.['storageclass.kubernetes.io/is-default-class'] === 'true');
-    if (!items.length) return result('Blocked', 'StorageClassMissing', 'StorageClass가 없습니다.');
-    return defaults.length
-      ? result('Ready', 'StorageClassReady', `기본 StorageClass ${defaults[0].metadata.name}가 준비되었습니다.`, defaults[0].provisioner || '')
-      : result('Degraded', 'DefaultStorageClassMissing', `${items.length}개 StorageClass가 있으나 기본값이 없습니다.`, items[0].provisioner || '');
+    const rows = items.map((item) => ({ name: item.metadata?.name || '', default: defaults.includes(item) ? 'Yes' : 'No', provisioner: item.provisioner || '', binding: item.volumeBindingMode || 'Immediate', expansion: item.allowVolumeExpansion ? 'Yes' : 'No', reclaim: item.reclaimPolicy || 'Delete', parameters: Object.entries(item.parameters || {}).map(([key, value]) => `${key}=${value}`).join(', ') || 'None' }));
+    const pendingPvcs = (pvcs.items || []).filter((pvc) => pvc.status?.phase !== 'Bound');
+    const localDelete = rows.filter((row) => /local-path|hostpath/i.test(row.provisioner) && row.reclaim === 'Delete');
+    const details = diagnosticDetails({
+      facts: [
+        { label: 'StorageClasses', value: String(items.length), state: items.length ? 'Passed' : 'Failed' },
+        { label: 'Default class', value: defaults.map((item) => item.metadata?.name).join(', ') || 'Missing', state: defaults.length === 1 ? 'Passed' : 'Failed' },
+        { label: 'PVC Bound', value: `${(pvcs.items?.length || 0) - pendingPvcs.length}/${pvcs.items?.length || 0}`, state: pendingPvcs.length ? 'Failed' : 'Passed' },
+        { label: 'PersistentVolumes', value: String(pvs.items?.length || 0), state: 'Info' },
+      ],
+      tables: [{ title: 'StorageClass capability matrix', columns: [{ key: 'name', label: 'StorageClass' }, { key: 'default', label: 'Default' }, { key: 'provisioner', label: 'Provisioner' }, { key: 'binding', label: 'Binding' }, { key: 'expansion', label: 'Expansion' }, { key: 'reclaim', label: 'Reclaim' }, { key: 'parameters', label: 'Parameters' }], rows }],
+      warnings: [
+        ...localDelete.map((row) => `${row.name}: 노드 로컬 저장소 + reclaim Delete는 운영 내구 저장소로 권장하지 않습니다.`),
+        ...pendingPvcs.map((pvc) => `${pvc.metadata?.namespace}/${pvc.metadata?.name}: ${pvc.status?.phase || 'Pending'}`),
+      ],
+      security: ['StorageClass 변경은 기존 PVC spec을 변경하지 않습니다. class migration은 명시적 데이터 재배치가 필요합니다.'],
+      canaries: [{ name: 'PVC inventory', state: pendingPvcs.length ? 'Failed' : 'Passed', message: `${pendingPvcs.length}개 unbound PVC` }, { name: 'Dynamic provision/bind', state: 'NotRun', message: '승인된 on-demand PVC canary가 필요합니다.' }],
+    });
+    if (!items.length) return result('Blocked', 'StorageClassMissing', 'StorageClass가 없습니다.', '', details);
+    if (defaults.length !== 1 || pendingPvcs.length) return result('Degraded', defaults.length ? 'StorageContractDegraded' : 'DefaultStorageClassMissing', `StorageClass ${items.length}개, 기본값 ${defaults.length}개, unbound PVC ${pendingPvcs.length}개입니다.`, defaults[0]?.provisioner || items[0]?.provisioner || '', details);
+    return result('Ready', 'StorageClassReady', `기본 StorageClass ${defaults[0].metadata.name}와 PVC ${(pvcs.items?.length || 0) - pendingPvcs.length}/${pvcs.items?.length || 0}개가 준비되었습니다.`, defaults[0].provisioner || '', details);
   }
   if (name === 'snapshot') {
-    const drivers = await k8s(ctx, '/apis/storage.k8s.io/v1/csidrivers');
-    let classes = [];
-    try { classes = (await k8s(ctx, '/apis/snapshot.storage.k8s.io/v1/volumesnapshotclasses')).items || []; } catch (e) { if (e.code !== 404) throw e; }
-    if ((drivers.items || []).length && classes.length) return result('Ready', 'SnapshotReady', 'CSI Driver와 VolumeSnapshotClass가 준비되었습니다.');
-    if ((drivers.items || []).length) return result('Degraded', 'SnapshotClassMissing', 'CSI Driver는 있으나 VolumeSnapshotClass가 없습니다.');
-    return result('Degraded', 'CsiDriverMissing', 'CSI Driver/VolumeSnapshot capability가 없습니다. 선택 profile에서 요구할 때 설치가 필요합니다.');
+    const [drivers, classes, crds, deployments, snapshots] = await Promise.all([
+      k8sListOrEmpty(ctx, '/apis/storage.k8s.io/v1/csidrivers'),
+      k8sListOrEmpty(ctx, '/apis/snapshot.storage.k8s.io/v1/volumesnapshotclasses'),
+      k8sListOrEmpty(ctx, '/apis/apiextensions.k8s.io/v1/customresourcedefinitions'),
+      k8sListOrEmpty(ctx, '/apis/apps/v1/deployments'),
+      k8sListOrEmpty(ctx, '/apis/snapshot.storage.k8s.io/v1/volumesnapshots'),
+    ]);
+    const driverItems = drivers.items || [];
+    const classItems = classes.items || [];
+    const snapshotCrds = (crds.items || []).filter((item) => item.spec?.group === 'snapshot.storage.k8s.io');
+    const controllers = (deployments.items || []).filter((item) => /snapshot-controller|csi.*controller/i.test(item.metadata?.name || ''));
+    const rows = driverItems.map((item) => ({ name: item.metadata?.name || '', attachRequired: String(item.spec?.attachRequired ?? true), podInfo: String(item.spec?.podInfoOnMount ?? false), fsGroupPolicy: item.spec?.fsGroupPolicy || '', modes: (item.spec?.volumeLifecycleModes || []).join(', '), tokenRequests: String(item.spec?.tokenRequests?.length || 0) }));
+    const details = diagnosticDetails({
+      facts: [
+        { label: 'CSI drivers', value: String(driverItems.length), state: driverItems.length ? 'Passed' : 'Failed' },
+        { label: 'Snapshot CRDs', value: `${snapshotCrds.length}/3`, state: snapshotCrds.length >= 3 ? 'Passed' : 'Failed' },
+        { label: 'Snapshot classes', value: String(classItems.length), state: classItems.length ? 'Passed' : 'Failed' },
+        { label: 'Controller deployments', value: `${controllers.filter(availableDeployment).length}/${controllers.length}`, state: controllers.length && controllers.every(availableDeployment) ? 'Passed' : 'Failed' },
+        { label: 'VolumeSnapshots', value: String(snapshots.items?.length || 0), state: 'Info' },
+      ],
+      tables: [
+        { title: 'CSI driver capabilities', columns: [{ key: 'name', label: 'Driver' }, { key: 'attachRequired', label: 'Attach' }, { key: 'podInfo', label: 'Pod info' }, { key: 'fsGroupPolicy', label: 'FSGroup' }, { key: 'modes', label: 'Lifecycle modes' }, { key: 'tokenRequests', label: 'Token requests' }], rows },
+        { title: 'VolumeSnapshotClass mapping', columns: [{ key: 'name', label: 'Class' }, { key: 'driver', label: 'Driver' }, { key: 'deletionPolicy', label: 'Deletion policy' }], rows: classItems.map((item) => ({ name: item.metadata?.name || '', driver: item.driver || '', deletionPolicy: item.deletionPolicy || '' })) },
+      ],
+      warnings: !driverItems.length ? ['호스트가 CSI driver를 제공하지 않습니다. local-path provisioner만으로 snapshot을 제공할 수 없습니다.'] : !classItems.length ? ['CSI driver는 있으나 VolumeSnapshotClass가 없습니다.'] : [],
+      security: ['Snapshot deletionPolicy와 restore 대상 StorageClass는 데이터 보존·암호화 정책과 함께 승인해야 합니다.'],
+      canaries: [{ name: 'Snapshot API contract', state: driverItems.length && classItems.length && snapshotCrds.length >= 3 ? 'Passed' : 'Failed', message: `${driverItems.length} drivers · ${classItems.length} classes · ${snapshotCrds.length} CRDs` }, { name: 'Snapshot → restore', state: 'NotRun', message: '승인된 on-demand 데이터 보호 canary가 필요합니다.' }],
+    });
+    const complete = driverItems.length && classItems.length && snapshotCrds.length >= 3 && controllers.length && controllers.every(availableDeployment);
+    if (complete) return result('Ready', 'SnapshotReady', 'CSI driver·snapshot controller·CRD·VolumeSnapshotClass가 준비되었습니다.', driverItems.map((item) => item.metadata?.name).join(', '), details);
+    return result('Degraded', driverItems.length ? 'SnapshotContractPartial' : 'CsiDriverMissing', `CSI ${driverItems.length}개, SnapshotClass ${classItems.length}개, CRD ${snapshotCrds.length}/3, controller ${controllers.filter(availableDeployment).length}/${controllers.length}입니다.`, driverItems.map((item) => item.metadata?.name).join(', '), details);
   }
   throw new Error(`unknown probe: ${name}`);
 }
@@ -616,6 +910,24 @@ async function helmStatus(ctx, item) {
   } catch (e) {
     if (/release: not found|not found/i.test(e.safeMessage || e.message || '')) return { managed: false, status: 'not-installed', revision: 0 };
     throw e;
+  }
+}
+
+async function helmHistory(ctx, item) {
+  if (item.mode !== 'HelmManaged') return [];
+  try {
+    const out = await withKubeconfig(ctx, (env) => command('helm', ['history', item.release, '--namespace', item.namespace, '--output', 'json', '--max', '10'], { env, timeoutMs: 30000 }));
+    return JSON.parse(out.stdout || '[]').map((entry) => ({
+      revision: Number(entry.revision || 0),
+      updated: entry.updated || '',
+      status: entry.status || 'unknown',
+      chart: entry.chart || '',
+      appVersion: entry.app_version || '',
+      description: entry.description || '',
+    })).sort((left, right) => right.revision - left.revision);
+  } catch (error) {
+    if (/release: not found|not found/i.test(error.safeMessage || error.message || '')) return [];
+    throw error;
   }
 }
 
@@ -938,7 +1250,7 @@ async function observabilityConfiguration(ctx) {
   };
 }
 
-async function createOperation(ctx, item, actor, action, reason) {
+async function createOperation(ctx, item, actor, action, reason, extra = {}) {
   const existing = await readOperation(ctx, item.id);
   if (operationActive(existing)) {
     throw Object.assign(new Error(`동일 HIS 항목 작업이 이미 진행 중입니다. 작업 ID: ${existing.id}`), { code: 409 });
@@ -953,7 +1265,9 @@ async function createOperation(ctx, item, actor, action, reason) {
     progress: 5,
     message: action === 'install'
       ? '설치 작업이 대기열에 등록되었습니다.'
-      : action === 'configure' ? '운영 구성 변경이 대기열에 등록되었습니다.' : '삭제 작업이 대기열에 등록되었습니다.',
+      : action === 'upgrade' ? '업그레이드 작업이 대기열에 등록되었습니다.'
+        : action === 'rollback' ? `revision ${extra.targetRevision || ''} 롤백 작업이 대기열에 등록되었습니다.`
+          : action === 'configure' ? '운영 구성 변경이 대기열에 등록되었습니다.' : '삭제 작업이 대기열에 등록되었습니다.',
     error: '',
     actor: actor.username,
     reason,
@@ -961,6 +1275,7 @@ async function createOperation(ctx, item, actor, action, reason) {
     startedAt: now,
     updatedAt: now,
     finishedAt: '',
+    ...extra,
   };
   await writeOperation(ctx, item, operation);
   return operation;
@@ -1034,7 +1349,15 @@ async function itemStatus(ctx, item) {
   try {
     const [check, release, operation] = await Promise.all([probe(ctx, item.probe), helmStatus(ctx, item), readOperation(ctx, item.id)]);
     const ownership = release?.managed ? 'ClusterManager' : check.state === 'Ready' ? 'External' : 'Unmanaged';
-    return { ...item, check, release, operation, ownership, chart: undefined, values: undefined, kindValues: undefined };
+    const enrichedCheck = {
+      ...check,
+      details: {
+        ...(check.details || {}),
+        compatibility: item.compatibility || null,
+        remediation: item.remediation || null,
+      },
+    };
+    return { ...item, check: enrichedCheck, release, operation, ownership, chart: undefined, values: undefined, kindValues: undefined };
   } catch (e) {
     return {
       ...item,
@@ -1132,6 +1455,7 @@ async function plan(ctx, item) {
     summary[resource.kind] = (summary[resource.kind] || 0) + 1;
     return summary;
   }, {});
+  const history = await helmHistory(ctx, item);
   return {
     id: item.id,
     displayName: item.displayName,
@@ -1150,6 +1474,7 @@ async function plan(ctx, item) {
     },
     operationalProfile: item.operationalProfile || null,
     retainedOnDelete: item.retainedOnDelete || [],
+    history,
   };
 }
 
@@ -1297,9 +1622,13 @@ async function executeObservabilityConfiguration(ctx, actor, item, operation, de
 async function executeOperation(ctx, actor, item, operation) {
   let current = operation;
   try {
-    if (operation.action === 'install') {
-      current = await patchOperation(ctx, item, current, { phase: 'Installing', progress: 10, message: '설치 전 상태를 확인하고 있습니다.' });
+    if (operation.action === 'install' || operation.action === 'upgrade') {
+      const upgrading = operation.action === 'upgrade';
+      current = await patchOperation(ctx, item, current, { phase: upgrading ? 'Upgrading' : 'Installing', progress: 10, message: `${upgrading ? '업그레이드' : '설치'} 전 상태를 확인하고 있습니다.` });
       const before = await itemStatus(ctx, item);
+      if (upgrading && !before.release?.managed) {
+        throw Object.assign(new Error('Cluster Manager가 소유한 Helm release만 업그레이드할 수 있습니다.'), { code: 409 });
+      }
       if (before.check.state === 'Ready' && !before.release?.managed) {
         throw Object.assign(new Error('호스트 또는 외부 관리자가 제공한 capability입니다. Cluster Manager가 덮어쓰지 않습니다.'), { code: 409 });
       }
@@ -1310,19 +1639,21 @@ async function executeOperation(ctx, actor, item, operation) {
       current = await recoverStuckRelease(ctx, actor, item, current, before.release, before.check);
       const variant = await clusterVariant(ctx);
       current = await patchOperation(ctx, item, current, {
-        phase: 'Installing',
+        phase: upgrading ? 'Upgrading' : 'Installing',
         progress: 35,
-        message: `Helm ${item.chartName} ${item.chartVersion} 리소스를 적용하고 Ready 상태를 기다리고 있습니다.`,
+        message: `Helm ${item.chartName} ${item.chartVersion} 고정 payload를 ${upgrading ? '업그레이드' : '적용'}하고 Ready 상태를 기다리고 있습니다.`,
         clusterVariant: variant,
       });
       const managedValues = await managedValuesForItem(ctx, item);
       const args = ['upgrade', '--install', item.release, item.chart, '--namespace', item.namespace, '--create-namespace', '--atomic', '--wait', '--timeout', '10m', '--history-max', '5', ...helmArgs(item, variant)];
       const out = await commandWithHeartbeat(ctx, item, current, args, managedValues);
       current = await patchOperation(ctx, item, current, { phase: 'Validating', progress: 88, message: 'Helm 적용이 완료되어 구성요소와 저장소를 검증하고 있습니다.' });
-      const check = await waitForProbe(ctx, item, (value) => value.state === 'Ready');
-      if (check.state !== 'Ready') throw Object.assign(new Error(`설치 후 검증 실패: ${check.message}`), { code: 502 });
-      await auditRequired(ctx, actor, 'HISInstalled', item, operation.reason, 'success');
-      await ctx.publishNotify({ userActor: actor.username, action: 'HISInstalled', target: `HIS/${item.id}`, result: check.state, reason: `${operation.reason} · ${check.message}` });
+      const acceptableDegraded = new Set(['IssuerMissing', 'IngressTlsPolicyMissing']);
+      const check = await waitForProbe(ctx, item, (value) => value.state === 'Ready' || acceptableDegraded.has(value.reason));
+      if (check.state !== 'Ready' && !acceptableDegraded.has(check.reason)) throw Object.assign(new Error(`${upgrading ? '업그레이드' : '설치'} 후 검증 실패: ${check.message}`), { code: 502 });
+      const auditAction = upgrading ? 'HISUpgraded' : 'HISInstalled';
+      await auditRequired(ctx, actor, auditAction, item, operation.reason, `success:${check.state}:${check.reason}`);
+      await ctx.publishNotify({ userActor: actor.username, action: auditAction, target: `HIS/${item.id}`, result: check.state, reason: `${operation.reason} · ${check.message}` });
       current = await patchOperation(ctx, item, current, {
         phase: 'Ready',
         progress: 100,
@@ -1330,6 +1661,20 @@ async function executeOperation(ctx, actor, item, operation) {
         output: out.stdout.slice(-4000),
         error: '',
       });
+      return;
+    }
+
+    if (operation.action === 'rollback') {
+      const targetRevision = Number(operation.targetRevision || 0);
+      current = await patchOperation(ctx, item, current, { phase: 'RollingBack', progress: 20, message: `Helm revision ${targetRevision}으로 롤백하고 있습니다.` });
+      const out = await commandWithHeartbeat(ctx, item, current, ['rollback', item.release, String(targetRevision), '--namespace', item.namespace, '--wait', '--cleanup-on-fail', '--timeout', '10m']);
+      current = await patchOperation(ctx, item, current, { phase: 'Validating', progress: 88, message: '롤백된 revision의 구성요소와 서비스 경로를 재검증하고 있습니다.' });
+      const acceptableDegraded = new Set(['IssuerMissing', 'IngressTlsPolicyMissing']);
+      const check = await waitForProbe(ctx, item, (value) => value.state === 'Ready' || acceptableDegraded.has(value.reason));
+      if (check.state !== 'Ready' && !acceptableDegraded.has(check.reason)) throw Object.assign(new Error(`롤백 후 검증 실패: ${check.message}`), { code: 502 });
+      await auditRequired(ctx, actor, 'HISRolledBack', item, operation.reason, `success:revision=${targetRevision}:${check.state}`);
+      await ctx.publishNotify({ userActor: actor.username, action: 'HISRolledBack', target: `HIS/${item.id}`, result: check.state, reason: `${operation.reason} · revision=${targetRevision} · ${check.message}` });
+      await patchOperation(ctx, item, current, { phase: 'Ready', progress: 100, message: `revision ${targetRevision} 롤백과 검증이 완료되었습니다. ${check.message}`, output: out.stdout.slice(-4000), error: '' });
       return;
     }
 
@@ -1352,10 +1697,13 @@ async function executeOperation(ctx, actor, item, operation) {
     let release = null;
     try { release = await helmStatus(ctx, item); } catch { /* retain the primary failure */ }
     const phase = release?.status === 'uninstalling' ? 'RollbackStalled' : 'Failed';
-    try { await auditRequired(ctx, actor, operation.action === 'install' ? 'HISInstallFailed' : 'HISUninstallFailed', item, operation.reason, message); }
+    const failureAction = operation.action === 'install' ? 'HISInstallFailed'
+      : operation.action === 'upgrade' ? 'HISUpgradeFailed'
+        : operation.action === 'rollback' ? 'HISRollbackFailed' : 'HISUninstallFailed';
+    try { await auditRequired(ctx, actor, failureAction, item, operation.reason, message); }
     catch (auditError) { console.error(`[his-operation] failure audit unavailable id=${operation.id}: ${safeError(auditError)}`); }
     try {
-      await ctx.publishNotify({ userActor: actor.username, action: operation.action === 'install' ? 'HISInstallFailed' : 'HISUninstallFailed', target: `HIS/${item.id}`, result: 'error', reason: `${operation.reason} · ${message}` });
+      await ctx.publishNotify({ userActor: actor.username, action: failureAction, target: `HIS/${item.id}`, result: 'error', reason: `${operation.reason} · ${message}` });
     } catch { /* best effort notification */ }
     await patchOperation(ctx, item, current, {
       phase,
@@ -1415,15 +1763,35 @@ function createHisManager(ctx) {
       }
 
       const reason = reasonFrom(body);
-      const action = pathname === '/api/his/install' ? 'install' : pathname === '/api/his/uninstall' ? 'uninstall' : '';
+      const action = pathname === '/api/his/install' ? 'install'
+        : pathname === '/api/his/upgrade' ? 'upgrade'
+          : pathname === '/api/his/rollback' ? 'rollback'
+            : pathname === '/api/his/uninstall' ? 'uninstall' : '';
       if (!action) throw Object.assign(new Error('not found'), { code: 404 });
+      let operationExtra = {};
+      if (action === 'uninstall' || action === 'upgrade' || action === 'rollback') {
+        const release = await helmStatus(ctx, item);
+        if (!release?.managed) throw Object.assign(new Error('Cluster Manager가 설치한 Helm release만 변경할 수 있습니다.'), { code: 409 });
+      }
       if (action === 'uninstall') {
         if (String(body.confirm || '') !== item.id) throw Object.assign(new Error(`삭제 확인 값으로 '${item.id}'를 입력해야 합니다.`), { code: 400 });
-        const release = await helmStatus(ctx, item);
-        if (!release?.managed) throw Object.assign(new Error('Cluster Manager가 설치한 Helm release가 아니므로 삭제할 수 없습니다.'), { code: 409 });
       }
-      await auditRequired(ctx, actor, action === 'install' ? 'HISInstallRequested' : 'HISUninstallRequested', item, reason, 'requested');
-      const operation = await createOperation(ctx, item, actor, action, reason);
+      if (action === 'rollback') {
+        const targetRevision = Number(body.revision || 0);
+        const release = await helmStatus(ctx, item);
+        const history = await helmHistory(ctx, item);
+        if (!Number.isInteger(targetRevision) || targetRevision < 1 || targetRevision >= Number(release?.revision || 0) || !history.some((entry) => entry.revision === targetRevision)) {
+          throw Object.assign(new Error('현재 revision보다 작은 유효한 Helm history revision을 선택해야 합니다.'), { code: 400 });
+        }
+        const expected = `${item.id}:${targetRevision}`;
+        if (String(body.confirm || '') !== expected) throw Object.assign(new Error(`롤백 확인 값으로 '${expected}'를 입력해야 합니다.`), { code: 400 });
+        operationExtra = { targetRevision };
+      }
+      const requestedAction = action === 'install' ? 'HISInstallRequested'
+        : action === 'upgrade' ? 'HISUpgradeRequested'
+          : action === 'rollback' ? 'HISRollbackRequested' : 'HISUninstallRequested';
+      await auditRequired(ctx, actor, requestedAction, item, reason, action === 'rollback' ? `requested:revision=${operationExtra.targetRevision}` : 'requested');
+      const operation = await createOperation(ctx, item, actor, action, reason, operationExtra);
       ctx.jsonRes(res, 202, { ok: true, operation });
       setImmediate(() => { void executeOperation(ctx, actor, item, operation); });
       return true;
@@ -1449,6 +1817,10 @@ module.exports = {
   auditRequired,
   operationResourceName,
   operationActive,
+  parseKubernetesVersion,
+  compareVersions,
+  kubernetesVersionSupported,
+  diagnosticDetails,
   renderedResources,
   recoverableHelmCleanupError,
   stuckReleaseRecoveryStrategy,

@@ -20,8 +20,8 @@ export interface HisOperation {
   id: string;
   itemId: string;
   displayName: string;
-  action: 'install' | 'uninstall' | 'configure';
-  phase: 'Queued' | 'Recovering' | 'Installing' | 'Configuring' | 'Migrating' | 'Validating' | 'Uninstalling' | 'Ready' | 'Removed' | 'Failed' | 'RollbackStalled';
+  action: 'install' | 'upgrade' | 'rollback' | 'uninstall' | 'configure';
+  phase: 'Queued' | 'Recovering' | 'Installing' | 'Upgrading' | 'RollingBack' | 'Configuring' | 'Migrating' | 'Validating' | 'Uninstalling' | 'Ready' | 'Removed' | 'Failed' | 'RollbackStalled';
   progress: number;
   message: string;
   error: string;
@@ -31,7 +31,21 @@ export interface HisOperation {
   updatedAt: string;
   finishedAt: string;
   releaseStatus?: string;
+  targetRevision?: number;
 }
+
+export type HisEvidenceState = 'Passed' | 'Failed' | 'Info' | 'NotRun' | 'Unsupported';
+
+export interface HisFact { label: string; value: string; state: HisEvidenceState; }
+export interface HisCanary { name: string; state: HisEvidenceState; message: string; }
+export interface HisEvidence { name: string; state: HisEvidenceState; message: string; }
+export interface HisDiagnosticTable {
+  title: string;
+  columns: Array<{ key: string; label: string }>;
+  rows: Array<Record<string, string>>;
+}
+export interface HisCompatibility { kubernetes: string; policy: string; }
+export interface HisRemediation { summary: string; steps: string[]; verification: string; }
 
 export interface HisCheck {
   state: HisState;
@@ -45,6 +59,14 @@ export interface HisCheck {
     crds?: { ready: number; total: number; items: Array<{ name: string; ready: boolean }> };
     pvcs?: Array<{ name: string; phase: string; requested: string; capacity: string; storageClass: string }>;
     services?: Array<{ name: string; type: string; clusterIP: string; ports: string }>;
+    facts?: HisFact[];
+    tables?: HisDiagnosticTable[];
+    warnings?: string[];
+    security?: string[];
+    canaries?: HisCanary[];
+    evidence?: HisEvidence[];
+    compatibility?: HisCompatibility | null;
+    remediation?: HisRemediation | null;
   };
 }
 
@@ -55,6 +77,9 @@ export interface HisItem {
   mode: HisMode;
   required: boolean;
   profile?: string;
+  domain?: string;
+  compatibility?: HisCompatibility;
+  remediation?: HisRemediation;
   chartName?: string;
   chartVersion?: string;
   appVersion?: string;
@@ -98,6 +123,7 @@ export interface HisPlan {
   };
   operationalProfile?: HisItem['operationalProfile'];
   resources: Array<{ apiVersion: string; kind: string; namespace: string; name: string }>;
+  history: Array<{ revision: number; updated: string; status: string; chart: string; appVersion: string; description: string }>;
 }
 
 export type GrafanaExposureMode = 'ClusterInternal' | 'PrivateIngress' | 'PublicIngress';
@@ -190,6 +216,10 @@ export class HisService {
   status(): Observable<HisStatus> { return this.http.get<HisStatus>(this.url('status')); }
   plan(id: string): Observable<HisPlan> { return this.http.post<HisPlan>(this.url('plan'), { id }); }
   install(id: string, reason: string): Observable<{ ok: boolean; operation: HisOperation }> { return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('install'), { id, reason }); }
+  upgrade(id: string, reason: string): Observable<{ ok: boolean; operation: HisOperation }> { return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('upgrade'), { id, reason }); }
+  rollback(id: string, revision: number, reason: string, confirm: string): Observable<{ ok: boolean; operation: HisOperation }> {
+    return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('rollback'), { id, revision, reason, confirm });
+  }
   uninstall(id: string, reason: string, confirm: string): Observable<{ ok: boolean; operation: HisOperation }> {
     return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('uninstall'), { id, reason, confirm });
   }

@@ -553,16 +553,33 @@ async function actorFor(ctx, req, adminRequired) {
   return actor;
 }
 
+function renderedResources(rendered, defaultNamespace) {
+  const clusterScopedKinds = new Set(['CustomResourceDefinition', 'ClusterRole', 'ClusterRoleBinding', 'Namespace', 'APIService', 'IngressClass', 'StorageClass', 'ValidatingWebhookConfiguration', 'MutatingWebhookConfiguration']);
+  const resources = [];
+  for (const document of String(rendered || '').split(/^---\s*$/m)) {
+    // Helm appends chart NOTES to `helm template` output. NOTES are human text,
+    // not Kubernetes YAML, and must never block the executable manifest plan.
+    if (!/(^|\n)apiVersion:\s*\S+/m.test(document) || !/(^|\n)kind:\s*\S+/m.test(document)) continue;
+    const parsed = yaml.load(document);
+    const documents = Array.isArray(parsed?.items) && parsed.kind === 'List' ? parsed.items : [parsed];
+    for (const doc of documents) {
+      if (!doc || typeof doc !== 'object' || !doc.kind) continue;
+      resources.push({
+        apiVersion: doc.apiVersion || '',
+        kind: doc.kind,
+        namespace: doc.metadata?.namespace || (clusterScopedKinds.has(doc.kind) ? 'cluster-scoped' : defaultNamespace),
+        name: doc.metadata?.name || '',
+      });
+    }
+  }
+  return resources;
+}
+
 async function plan(ctx, item) {
   const variant = await clusterVariant(ctx);
   const args = ['template', item.release, item.chart, '--namespace', item.namespace, '--include-crds', ...helmArgs(item, variant)];
   const out = await withKubeconfig(ctx, (env) => command('helm', args, { env, timeoutMs: 120000 }));
-  const resources = [];
-  const clusterScopedKinds = new Set(['CustomResourceDefinition', 'ClusterRole', 'ClusterRoleBinding', 'Namespace', 'APIService', 'IngressClass', 'StorageClass', 'ValidatingWebhookConfiguration', 'MutatingWebhookConfiguration']);
-  yaml.loadAll(out.stdout, (doc) => {
-    if (!doc || typeof doc !== 'object' || !doc.kind) return;
-    resources.push({ apiVersion: doc.apiVersion || '', kind: doc.kind, namespace: doc.metadata?.namespace || (clusterScopedKinds.has(doc.kind) ? 'cluster-scoped' : item.namespace), name: doc.metadata?.name || '' });
-  });
+  const resources = renderedResources(out.stdout, item.namespace);
   const byKind = resources.reduce((summary, resource) => {
     summary[resource.kind] = (summary[resource.kind] || 0) + 1;
     return summary;
@@ -746,4 +763,5 @@ module.exports = {
   auditRequired,
   operationResourceName,
   operationActive,
+  renderedResources,
 };

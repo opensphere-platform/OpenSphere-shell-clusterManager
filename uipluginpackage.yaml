@@ -3,7 +3,7 @@ apiVersion: plugins.opensphere.io/v1alpha1
 kind: UIPluginPackage
 metadata:
   name: cluster-manager
-  namespace: opensphere-system
+  namespace: opensphere-console
   labels:
     opensphere.io/source: oci
 spec:
@@ -14,17 +14,17 @@ spec:
   serviceAccountName: opensphere-cluster-manager
   displayName: "Cluster Manager"
   owner: opensphere-platform
-  version: 1.2.2
+  version: 1.2.3
   description: "OpenSphere Kubernetes, external Ceph Storage, and HIS management views"
   image:
     repository: ghcr.io/opensphere-platform/opensphere-shell-cluster-manager
-    digest: sha256:a86124074f4881b13caa9a92986a1a580d67e61ee40332706a5921913e27ff5d
+    digest: sha256:2cde52f6ae8a96188f1dc7d6061489cae088543cd8b774b9d6d8c5c1e3605193
   nav:
     band: "운영 Operate"
     label: "Cluster Manager"
   manifest:
     path: /plugins/ui-shell.manifest.json
-    sha256: "4a1556b3962a62a2f48d359e2ee5d50d2ce8a76ff5f618eb03a3d2c082803ed0"
+    sha256: "a2bca8e15638fca537dfc2e896c0f3930aefeea8cdcac81550f4a1844ecaf4a9"
     signaturePath: /plugins/ui-shell.manifest.json.sig
   trust:
     keyId: opensphere-plugins-v1

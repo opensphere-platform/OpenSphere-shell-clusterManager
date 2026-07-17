@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { HIS_CATALOG, catalogItem } = require('../his-catalog');
-const { reasonFrom, safeError, kubeconfigText, auditRequired, operationResourceName, operationActive } = require('../his-manager');
+const { reasonFrom, safeError, kubeconfigText, auditRequired, operationResourceName, operationActive, renderedResources } = require('../his-manager');
 
 test('HIS catalog keeps PFS/plugin concepts outside the prerequisite catalog', () => {
   assert.ok(HIS_CATALOG.some((item) => item.mode === 'DetectOnly'));
@@ -40,6 +40,23 @@ test('HIS operations use bounded Kubernetes names and reject stale heartbeats', 
   assert.equal(operationActive({ phase: 'Installing', updatedAt: new Date().toISOString() }), true);
   assert.equal(operationActive({ phase: 'Installing', updatedAt: new Date(Date.now() - 120000).toISOString() }), false);
   assert.equal(operationActive({ phase: 'Ready', updatedAt: new Date().toISOString() }), false);
+});
+
+test('Helm NOTES text is excluded from the executable resource plan', () => {
+  const rendered = `---
+# Source: chart/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+---
+You need to explicitly call out to that shell.
+items: ----------------------------------------
+type: string
+`;
+  assert.deepEqual(renderedResources(rendered, 'monitoring'), [{
+    apiVersion: 'v1', kind: 'Service', namespace: 'monitoring', name: 'grafana',
+  }]);
 });
 
 test('durable audit request authenticates with the managed workload ServiceAccount token', async () => {

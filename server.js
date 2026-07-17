@@ -29,7 +29,7 @@ const SA = '/var/run/secrets/kubernetes.io/serviceaccount';
 const APISERVER = 'https://kubernetes.default.svc';
 const tok = () => fs.readFileSync(`${SA}/token`, 'utf8').trim();
 
-// ── 쓰기 인가: 호출자 토큰을 검증 → Impersonate-User (SA 광범위 write 금지) ──
+// ── Console 신원 검증 ──
 // Kanidm 콘솔 id_token(ES256) 전용 — cutover 완료, 레거시 Keycloak RS256 dual-accept 경로는 제거됨.
 const { createPublicKey, verify: cryptoVerify } = require('crypto');
 // Console 자격의 최종 발급자는 opensphere-console-auth BFF다. Kanidm core는 upstream
@@ -143,9 +143,6 @@ async function verifyToken(idToken) {
   // 권한 판단은 서명 당시 claim이 아니라 live introspection의 현재 그룹에서만 도출한다.
   return { username: c.preferred_username || c.sub || 'unknown', groups: (state.groups || []).map(shortGroup) };
 }
-const readBody = (req) => new Promise((resolve, reject) => {
-  const ch = []; req.on('data', (c) => ch.push(c)); req.on('end', () => resolve(Buffer.concat(ch))); req.on('error', reject);
-});
 const jsonRes = (res, code, obj) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
 
 const MIME = {
@@ -230,8 +227,23 @@ function serveFrom(root, rel, res) {
 }
 
 // 제네릭 K8s API 프록시: /api/k8s/<표준 K8s 경로> → APISERVER.
-// 읽기(GET): SA 토큰(+토큰 있으면 사용자 임퍼소네이션). 쓰기(POST/PUT/PATCH/DELETE): 토큰 JWKS 검증 필수
-// → Impersonate-User로 사용자 본인 RBAC 인가(SA 광범위 write 금지). secrets 전면 차단. 쓰기는 감사 로그.
+// 읽기(GET): Console 자격을 fail-closed로 검증한 뒤 전용 ServiceAccount의 고정 읽기 권한으로 수행한다.
+// 범용 쓰기: 차단한다. 변경은 live 관리자 검증·계획·감사를 갖춘 /api/his/* 승인 경로만 사용한다.
+// ServiceAccount에 users/groups impersonate 권한을 부여하지 않는 것이 permissionProfile의 보안 계약이다.
+async function authorizeK8sProxyRequest(req, isWrite, verifier = verifyToken) {
+  let actor;
+  try { actor = await verifier(requestToken(req)); }
+  catch (e) { throw { code: e.code || 401, msg: e.msg || 'unauthorized' }; }
+  if (isWrite) {
+    throw { code: 403, msg: 'generic Kubernetes mutations are disabled; use an approved HIS action' };
+  }
+  return actor;
+}
+
+function buildK8sReadHeaders(serviceAccountToken) {
+  return { Authorization: `Bearer ${serviceAccountToken}`, Accept: 'application/json' };
+}
+
 async function k8sProxy(req, res, rawUrl) {
   // 보안: 원시 경로 정규식 매칭은 URL 인코딩(sec%72ets)으로 우회됨 → 디코드 후 세그먼트 정확 매칭.
   const qIdx = rawUrl.indexOf('?');
@@ -251,29 +263,12 @@ async function k8sProxy(req, res, rawUrl) {
   if (segs.includes('serviceaccounts') && last === 'token') return jsonRes(res, 403, { error: 'token subresource blocked by policy' });
 
   const isWrite = WRITE_METHODS.has(req.method);
-  const idToken = requestToken(req); // 셸이 실어 보낸 Keycloak 토큰
-  // 헤더는 새로 구성 — 클라이언트의 Impersonate-*/Authorization은 절대 전달하지 않음(위조 차단)
-  const headers = { Authorization: `Bearer ${tok()}`, Accept: 'application/json' };
-  let actor = null;
-
-  if (isWrite) {
-    try { actor = await verifyToken(idToken); }
-    catch (e) { return jsonRes(res, e.code || 401, { error: e.msg || 'unauthorized' }); }
-    headers['Impersonate-User'] = actor.username;
-    const ct = req.headers['content-type'];
-    if (ct) headers['Content-Type'] = ct;
-  } else if (idToken) {
-    // 읽기: 토큰이 있으면 사용자 임퍼소네이션(per-user RBAC). 검증 실패 시 SA 읽기로 폴백.
-    try { actor = await verifyToken(idToken); headers['Impersonate-User'] = actor.username; } catch { actor = null; }
-  }
-
-  const body = isWrite ? await readBody(req) : undefined;
-  // 검증된 토큰의 groups → Impersonate-Group(그룹 기반 RBAC). 배열로 주면 http가 그룹마다 '별도'
-  // 헤더 라인으로 전송(K8s 요구). undici fetch는 동명 헤더를 콤마 결합해 단일 그룹명으로 오인시키므로
-  // 업스트림은 https.request 사용. 그룹은 JWKS 검증 클레임이라 위조 불가(클라 Impersonate-* 미전달).
-  if (actor && Array.isArray(actor.groups) && actor.groups.length) {
-    headers['Impersonate-Group'] = [...actor.groups, 'system:authenticated'];
-  }
+  // 클라이언트의 Authorization/Impersonate-*는 업스트림에 전달하지 않는다.
+  // 인증 실패를 ServiceAccount 조회로 폴백하지 않고 즉시 종료한다.
+  let actor;
+  try { actor = await authorizeK8sProxyRequest(req, isWrite); }
+  catch (e) { return jsonRes(res, e.code || 401, { error: e.msg || 'unauthorized' }); }
+  const headers = buildK8sReadHeaders(tok());
   // 업스트림은 검증된 디코드 경로 + 원형 쿼리로 재구성(원시 sub 그대로 전달 금지)
   const u = new URL(`${APISERVER}${pathOnly}${rawQuery}`);
   const up = await new Promise((resolve, reject) => {
@@ -282,10 +277,9 @@ async function k8sProxy(req, res, rawUrl) {
       pres.on('end', () => resolve({ status: pres.statusCode, ct: pres.headers['content-type'], text: Buffer.concat(ch).toString('utf8') }));
     });
     preq.on('error', reject);
-    if (body && body.length) preq.write(body);
     preq.end();
   });
-  if (isWrite) console.log(`[audit] user=${actor && actor.username} groups=${JSON.stringify((actor && actor.groups) || [])} verb=${req.method} path=${pathOnly} status=${up.status} ${new Date().toISOString()}`);
+  console.log(`[access] user=${actor.username} verb=${req.method} path=${pathOnly} status=${up.status} ${new Date().toISOString()}`);
   res.writeHead(up.status, { 'content-type': up.ct || 'application/json', 'cache-control': 'no-store' });
   res.end(up.text);
 }
@@ -395,5 +389,5 @@ if (require.main === module) {
     setInterval(nodeHealthPublish, 60000);
   });
 } else {
-  module.exports = { assertClaims, assertManagedTokenActive };
+  module.exports = { assertClaims, assertManagedTokenActive, authorizeK8sProxyRequest, buildK8sReadHeaders };
 }

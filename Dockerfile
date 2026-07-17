@@ -28,7 +28,7 @@ FROM docker.io/library/node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c
 ARG OS_MODULE_DESCRIPTOR
 ARG OS_MODULE_SIGNATURE
 LABEL org.opencontainers.image.title="OpenSphere Cluster Manager" \
-      org.opencontainers.image.version="1.1.4" \
+      org.opencontainers.image.version="1.1.5" \
       org.opencontainers.image.source="https://github.com/opensphere-platform/OpenSphere-shell-clusterManager" \
       io.opensphere.module.descriptor=$OS_MODULE_DESCRIPTOR \
       io.opensphere.module.descriptor.signature=$OS_MODULE_SIGNATURE \

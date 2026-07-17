@@ -191,6 +191,7 @@ const HIS_CATALOG = Object.freeze([
     description: 'CSI Driver와 VolumeSnapshot capability (profile 선택 시 필수)',
     mode: 'DetectOnly',
     required: false,
+    profile: 'Data Protection',
     probe: 'snapshot',
     domain: 'Data Protection',
     compatibility: { kubernetes: 'snapshot.storage.k8s.io/v1', policy: 'CSI driver and snapshot controller required' },

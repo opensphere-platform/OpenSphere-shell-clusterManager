@@ -22,6 +22,8 @@ const {
   stuckReleaseRecoveryStrategy,
   releaseLifecycleAction,
   ingressDefaultCertificateRef,
+  evaluateProfiles,
+  evaluateStackStatus,
   validateObservabilityConfig,
   observabilityValues,
   observabilityPvcComponent,
@@ -38,12 +40,39 @@ test('HIS catalog keeps PFS/plugin concepts outside the prerequisite catalog', (
   assert.equal(observability.required, false);
   assert.equal(observability.profile, 'Observability');
   assert.equal(observability.chartVersion, '86.0.1');
+  const dataProtection = catalogItem('csi-snapshot');
+  assert.equal(dataProtection.required, false);
+  assert.equal(dataProtection.profile, 'Data Protection');
   for (const item of HIS_CATALOG) {
     assert.ok(item.domain, `${item.id} must declare its operational domain`);
     assert.ok(item.compatibility?.kubernetes, `${item.id} must declare compatibility`);
     assert.ok(item.remediation?.steps?.length >= 3, `${item.id} must declare actionable remediation`);
     assert.ok(item.remediation?.verification, `${item.id} must declare re-validation evidence`);
   }
+});
+
+test('optional profiles gate HIS only when explicitly selected or backed by a managed release', () => {
+  const items = [
+    { id: 'kube-prometheus-stack', profile: 'Observability', release: { managed: true }, check: { state: 'Ready' } },
+    { id: 'csi-snapshot', profile: 'Data Protection', release: null, check: { state: 'Degraded' } },
+  ];
+  const inferred = evaluateProfiles(items, new Set());
+  assert.deepEqual(inferred.find((profile) => profile.name === 'Observability'), {
+    name: 'Observability', selected: true, selectionSource: 'ManagedRelease', state: 'Ready', ready: 1, total: 1, itemIds: ['kube-prometheus-stack'],
+  });
+  assert.deepEqual(inferred.find((profile) => profile.name === 'Data Protection'), {
+    name: 'Data Protection', selected: false, selectionSource: 'None', state: 'NotSelected', ready: 0, total: 1, itemIds: ['csi-snapshot'],
+  });
+  const selected = evaluateProfiles(items, new Set(['Data Protection']));
+  assert.equal(selected.find((profile) => profile.name === 'Data Protection').state, 'Degraded');
+  assert.equal(selected.find((profile) => profile.name === 'Data Protection').selectionSource, 'Explicit');
+  const core = [{ id: 'storage', required: true, check: { state: 'Ready' } }, ...items];
+  const baseStack = evaluateStackStatus(core, inferred);
+  assert.equal(baseStack.state, 'Ready');
+  assert.equal(baseStack.summary.selectedProfilesReady, 1);
+  const protectedStack = evaluateStackStatus(core, selected);
+  assert.equal(protectedStack.state, 'Degraded');
+  assert.equal(protectedStack.items.find((item) => item.id === 'csi-snapshot').effectiveRequired, true);
 });
 
 test('Kubernetes compatibility range is explicit and boundary-safe', () => {

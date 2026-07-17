@@ -18,6 +18,7 @@ const OPERATION_STALE_MS = 60 * 1000;
 const ACTIVE_OPERATION_PHASES = new Set(['Queued', 'Recovering', 'Installing', 'Upgrading', 'RollingBack', 'Configuring', 'Migrating', 'Validating', 'Uninstalling']);
 const OBSERVABILITY_ITEM_ID = 'kube-prometheus-stack';
 const OBSERVABILITY_CONFIG_NAME = 'opensphere-his-config-kube-prometheus-stack';
+const PROFILE_SELECTION_CONFIG_NAME = 'opensphere-his-profile-selection';
 const OBSERVABILITY_RESET_CONFIRMATION = 'RESET OBSERVABILITY DATA';
 const OBSERVABILITY_PUBLIC_CONFIRMATION = 'ENABLE PUBLIC GRAFANA';
 const OIDC_SECRET_KEYS = Object.freeze([
@@ -1013,6 +1014,53 @@ async function readObservabilityConfig(ctx) {
   catch (error) { throw Object.assign(new Error(`저장된 Observability 구성이 손상되었습니다: ${safeError(error)}`), { code: 500 }); }
 }
 
+function knownProfileNames() {
+  return [...new Set(HIS_CATALOG.map((item) => item.profile).filter(Boolean))].sort();
+}
+
+async function readProfileSelection(ctx) {
+  const cm = await k8sOrNull(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/configmaps/${PROFILE_SELECTION_CONFIG_NAME}`);
+  if (!cm?.data?.profiles) return new Set();
+  try {
+    const stored = JSON.parse(cm.data.profiles);
+    if (!Array.isArray(stored) || stored.some((entry) => typeof entry !== 'string')) throw new Error('profiles must be a string array');
+    const known = new Set(knownProfileNames());
+    return new Set(stored.filter((profile) => known.has(profile)));
+  } catch (error) {
+    throw Object.assign(new Error(`저장된 HIS profile 선택 구성이 손상되었습니다: ${safeError(error)}`), { code: 500 });
+  }
+}
+
+async function writeProfileSelection(ctx, actor, selectedProfiles, reason) {
+  const existing = await k8sOrNull(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/configmaps/${PROFILE_SELECTION_CONFIG_NAME}`);
+  const known = new Set(knownProfileNames());
+  const profiles = [...new Set([...selectedProfiles].filter((profile) => known.has(profile)))].sort();
+  const body = {
+    apiVersion: 'v1',
+    kind: 'ConfigMap',
+    metadata: {
+      name: PROFILE_SELECTION_CONFIG_NAME,
+      namespace: OPERATION_NAMESPACE,
+      ...(existing?.metadata?.resourceVersion ? { resourceVersion: existing.metadata.resourceVersion } : {}),
+      labels: {
+        'app.kubernetes.io/managed-by': 'opensphere-cluster-manager',
+        'opensphere.io/his-configuration': 'profile-selection',
+      },
+    },
+    data: {
+      profiles: JSON.stringify(profiles),
+      updatedAt: new Date().toISOString(),
+      updatedBy: actor.username,
+      reason,
+    },
+  };
+  const apiPath = existing
+    ? `/api/v1/namespaces/${OPERATION_NAMESPACE}/configmaps/${PROFILE_SELECTION_CONFIG_NAME}`
+    : `/api/v1/namespaces/${OPERATION_NAMESPACE}/configmaps`;
+  await k8sRequest(ctx, apiPath, { method: existing ? 'PUT' : 'POST', body });
+  return new Set(profiles);
+}
+
 async function writeObservabilityConfig(ctx, actor, config, reason) {
   const existing = await k8sOrNull(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/configmaps/${OBSERVABILITY_CONFIG_NAME}`);
   const body = {
@@ -1413,14 +1461,102 @@ async function itemStatus(ctx, item) {
   }
 }
 
-async function allStatus(ctx) {
-  const items = [];
-  for (const item of HIS_CATALOG) items.push(await itemStatus(ctx, item));
-  const required = items.filter((item) => item.required);
+function evaluateProfiles(items, explicitProfiles = new Set()) {
+  return knownProfileNames().map((name) => {
+    const profileItems = items.filter((item) => item.profile === name);
+    const managedRelease = profileItems.some((item) => item.release?.managed);
+    const explicit = explicitProfiles.has(name);
+    const selected = explicit || managedRelease;
+    const state = !selected
+      ? 'NotSelected'
+      : profileItems.some((item) => item.check.state === 'Blocked')
+        ? 'Blocked'
+        : profileItems.some((item) => item.check.state === 'Degraded') ? 'Degraded' : 'Ready';
+    return {
+      name,
+      selected,
+      selectionSource: explicit ? 'Explicit' : managedRelease ? 'ManagedRelease' : 'None',
+      state,
+      ready: profileItems.filter((item) => item.check.state === 'Ready').length,
+      total: profileItems.length,
+      itemIds: profileItems.map((item) => item.id),
+    };
+  });
+}
+
+function evaluateStackStatus(items, profiles) {
+  const profileMap = new Map(profiles.map((profile) => [profile.name, profile]));
+  const enrichedItems = items.map((item) => {
+    const profileSelected = Boolean(item.profile && profileMap.get(item.profile)?.selected);
+    return { ...item, profileSelected, effectiveRequired: item.required || profileSelected };
+  });
+  const required = enrichedItems.filter((item) => item.effectiveRequired);
   const state = required.some((item) => item.check.state === 'Blocked')
     ? 'Blocked'
     : required.some((item) => item.check.state === 'Degraded') ? 'Degraded' : 'Ready';
-  return { stack: 'HIS', state, checkedAt: new Date().toISOString(), items };
+  const core = enrichedItems.filter((item) => item.required);
+  const selectedProfiles = profiles.filter((profile) => profile.selected);
+  return {
+    state,
+    items: enrichedItems,
+    summary: {
+      coreReady: core.filter((item) => item.check.state === 'Ready').length,
+      coreTotal: core.length,
+      selectedProfilesReady: selectedProfiles.filter((profile) => profile.state === 'Ready').length,
+      selectedProfilesTotal: selectedProfiles.length,
+    },
+  };
+}
+
+async function allStatus(ctx) {
+  const items = [];
+  for (const item of HIS_CATALOG) items.push(await itemStatus(ctx, item));
+  const explicitProfiles = await readProfileSelection(ctx);
+  const profiles = evaluateProfiles(items, explicitProfiles);
+  const evaluated = evaluateStackStatus(items, profiles);
+  return {
+    stack: 'HIS',
+    state: evaluated.state,
+    checkedAt: new Date().toISOString(),
+    items: evaluated.items,
+    profiles,
+    summary: evaluated.summary,
+  };
+}
+
+async function setProfileSelection(ctx, actor, body) {
+  const profile = String(body?.profile || '').trim();
+  const selected = body?.selected;
+  if (!knownProfileNames().includes(profile)) throw Object.assign(new Error('승인되지 않은 HIS profile입니다.'), { code: 404 });
+  if (typeof selected !== 'boolean') throw Object.assign(new Error('profile selected 값은 boolean이어야 합니다.'), { code: 400 });
+  const reason = reasonFrom(body);
+  const profileItems = HIS_CATALOG.filter((item) => item.profile === profile);
+  if (!selected) {
+    const releases = await Promise.all(profileItems.filter((item) => item.mode === 'HelmManaged').map((item) => helmStatus(ctx, item)));
+    if (releases.some((release) => release?.managed)) {
+      throw Object.assign(new Error('설치된 profile은 먼저 해당 HelmManaged 항목을 삭제해야 선택 해제할 수 있습니다.'), { code: 409 });
+    }
+  }
+  const previous = await readProfileSelection(ctx);
+  const next = new Set(previous);
+  if (selected) next.add(profile); else next.delete(profile);
+  const auditItem = { id: `profile/${profile.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`, displayName: profile };
+  await auditRequired(ctx, actor, 'HISProfileSelectionRequested', auditItem, reason, selected ? 'selected' : 'deselected');
+  await writeProfileSelection(ctx, actor, next, reason);
+  try {
+    await auditRequired(ctx, actor, 'HISProfileSelectionChanged', auditItem, reason, selected ? 'selected' : 'deselected');
+  } catch (error) {
+    await writeProfileSelection(ctx, actor, previous, `rollback: ${reason}`);
+    throw error;
+  }
+  await ctx.publishNotify({
+    userActor: actor.username,
+    action: 'HISProfileSelectionChanged',
+    target: `HIS/Profile/${profile}`,
+    result: selected ? 'selected' : 'deselected',
+    reason,
+  });
+  return allStatus(ctx);
 }
 
 async function auditRequired(ctx, actor, action, item, reason, resultValue) {
@@ -1778,6 +1914,9 @@ function createHisManager(ctx) {
       if (req.method !== 'POST') throw Object.assign(new Error('method not allowed'), { code: 405 });
       const body = await readJson(req);
       const actor = await actorFor(ctx, req, true);
+      if (pathname === '/api/his/profiles') {
+        return ctx.jsonRes(res, 200, await setProfileSelection(ctx, actor, body)), true;
+      }
       const item = assertManagedItem(body);
 
       if (pathname === '/api/his/plan') {
@@ -1885,6 +2024,8 @@ module.exports = {
   stuckReleaseRecoveryStrategy,
   releaseLifecycleAction,
   ingressDefaultCertificateRef,
+  evaluateProfiles,
+  evaluateStackStatus,
   validateObservabilityConfig,
   observabilityValues,
   observabilityPvcComponent,

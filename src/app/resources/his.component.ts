@@ -45,9 +45,19 @@ type HisMutationAction = 'install' | 'upgrade' | 'recover' | 'rollback' | 'unins
 
     <section class="summary" *ngIf="status() as s">
       <span class="label" [class.label-success]="s.state === 'Ready'" [class.label-danger]="s.state === 'Blocked'" [class.label-warning]="s.state === 'Degraded'">HIS Core {{ s.state }}</span>
-      <span>필수 {{ requiredReady(s) }}/{{ requiredTotal(s) }} Ready</span>
-      <span>선택 {{ optionalReady(s) }}/{{ optionalTotal(s) }} Ready</span>
+      <span>Core {{ s.summary.coreReady }}/{{ s.summary.coreTotal }} Ready</span>
+      <span>활성 profile {{ s.summary.selectedProfilesReady }}/{{ s.summary.selectedProfilesTotal }} Ready</span>
       <span>검사 {{ s.checkedAt | date:'yyyy-MM-dd HH:mm:ss' }}</span>
+    </section>
+
+    <section class="profile-summary" *ngIf="status() as s" aria-label="HIS profiles">
+      <article *ngFor="let profile of s.profiles" [class.profile-selected]="profile.selected">
+        <div>
+          <strong>{{ profile.name }}</strong>
+          <span>{{ profile.selected ? '활성 요구조건' : '미선택' }} · {{ profile.ready }}/{{ profile.total }} capability Ready</span>
+        </div>
+        <span class="label" [class.label-success]="profile.state === 'Ready'" [class.label-warning]="profile.state === 'Degraded'" [class.label-danger]="profile.state === 'Blocked'">{{ profile.state }}</span>
+      </article>
     </section>
 
     <clr-datagrid [clrDgLoading]="loading()" *ngIf="status() as s">
@@ -73,7 +83,7 @@ type HisMutationAction = 'install' | 'upgrade' | 'recover' | 'rollback' | 'unins
         <clr-dg-cell>
           <span class="label" [class.label-info]="item.mode === 'HelmManaged'">{{ item.mode }}</span>
           <span *ngIf="item.required" class="required">필수</span>
-          <span *ngIf="!item.required && item.profile" class="optional">선택 · {{ item.profile }}</span>
+          <span *ngIf="!item.required && item.profile" class="optional">{{ item.profileSelected ? '활성 profile' : '선택 가능' }} · {{ item.profile }}</span>
         </clr-dg-cell>
         <clr-dg-cell>
           <span class="label" [class.label-success]="item.check.state === 'Ready'" [class.label-danger]="item.check.state === 'Blocked'" [class.label-warning]="item.check.state === 'Degraded'">{{ item.check.state }}</span>
@@ -99,7 +109,12 @@ type HisMutationAction = 'install' | 'upgrade' | 'recover' | 'rollback' | 'unins
             <button *ngIf="item.id === 'kube-prometheus-stack'" class="btn btn-sm btn-outline" type="button" [disabled]="busy() || operationActive(item.operation) || releaseLifecycle(item) !== 'upgrade'" (click)="openObservabilityConfiguration()">운영 구성</button>
             <button class="btn btn-sm btn-danger-outline" type="button" [disabled]="busy() || operationActive(item.operation) || !item.release?.managed" (click)="openPlan(item, 'uninstall', true)">삭제</button>
           </ng-container>
-          <ng-template #detectOnly><span class="muted">호스트 제공 · 진단만</span></ng-template>
+          <ng-template #detectOnly>
+            <span class="muted">호스트 제공 · 진단만</span>
+            <button *ngIf="item.profile" class="btn btn-sm btn-outline profile-action" type="button" [disabled]="busy()" (click)="openProfileSelection(item)">
+              {{ item.profileSelected ? 'profile 해제' : '요구조건으로 선택' }}
+            </button>
+          </ng-template>
         </clr-dg-cell>
         <clr-dg-row-detail *clrIfExpanded>
           <div class="detail">
@@ -377,6 +392,31 @@ type HisMutationAction = 'install' | 'upgrade' | 'recover' | 'rollback' | 'unins
         <button class="btn btn-primary" type="button" [disabled]="!configurationReadyToApply()" (click)="applyObservabilityConfiguration()">운영 구성 적용</button>
       </div>
     </clr-modal>
+
+    <clr-modal [(clrModalOpen)]="profileModalOpen" [clrModalSize]="'md'" [clrModalClosable]="!profileBusy()">
+      <h3 class="modal-title">HIS profile 요구조건 변경</h3>
+      <div class="modal-body" *ngIf="profileTarget() as item">
+        <div class="alert" [class.alert-warning]="!item.profileSelected" [class.alert-info]="item.profileSelected">
+          <div class="alert-items"><div class="alert-item static"><span class="alert-text">
+            <strong>{{ item.profile }}</strong> profile을 {{ item.profileSelected ? '선택 해제' : '필수 요구조건으로 선택' }}합니다.
+            선택하면 profile capability가 준비되지 않은 동안 HIS 전체 상태가 Ready가 될 수 없습니다.
+          </span></div></div>
+        </div>
+        <p *ngIf="item.mode === 'DetectOnly'" class="muted">이 capability는 Cluster Manager가 임의 설치하지 않습니다. 선택 후 호스트 공급자 절차로 준비하고 다시 검사하십시오.</p>
+        <form clrForm clrLayout="vertical">
+          <clr-textarea-container>
+            <label>변경 사유</label>
+            <textarea clrTextarea name="profileReason" [(ngModel)]="profileReason" required minlength="8" maxlength="500" placeholder="profile 적용 목적과 승인 근거(8자 이상)"></textarea>
+          </clr-textarea-container>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" type="button" [disabled]="profileBusy()" (click)="profileModalOpen = false">취소</button>
+        <button class="btn btn-primary" type="button" [disabled]="profileBusy() || profileReason.trim().length < 8" (click)="applyProfileSelection()">
+          {{ profileTarget()?.profileSelected ? 'profile 해제' : '요구조건으로 선택' }}
+        </button>
+      </div>
+    </clr-modal>
   `,
   styles: [`
     :host { display: block; }
@@ -397,9 +437,15 @@ type HisMutationAction = 'install' | 'upgrade' | 'recover' | 'rollback' | 'unins
     .his-head p { margin: 0; max-width: 62rem; color: #565656; line-height: 1.5; }
     .eyebrow { color: #4c6fff !important; font-size: 0.65rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
     .summary { display: flex; align-items: center; gap: 0.75rem; padding: 0.55rem 0; color: #565656; font-size: 0.72rem; }
+    .profile-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr)); gap: 0.55rem; margin: 0 0 0.7rem; }
+    .profile-summary article { display: flex; justify-content: space-between; gap: 0.75rem; align-items: center; padding: 0.55rem 0.65rem; border: 1px solid #d8d8d8; background: #fafafa; }
+    .profile-summary article.profile-selected { border-left: 0.2rem solid #4c6fff; background: #f5f7ff; }
+    .profile-summary article > div { display: grid; gap: 0.15rem; }
+    .profile-summary article span:not(.label) { color: #6f6f6f; font-size: 0.62rem; }
     .muted { color: #6f6f6f; font-size: 0.65rem; margin-top: 0.12rem; }
     .required { margin-left: 0.35rem; color: #a32100; font-size: 0.62rem; font-weight: 600; }
     .optional { margin-left: 0.35rem; color: #00567a; font-size: 0.62rem; font-weight: 600; }
+    .profile-action { display: block; margin: 0.3rem 0 0; }
     .domain-badge { display: inline-block; margin-left: 0.4rem; padding: 0.05rem 0.3rem; border: 1px solid #9bd3e6; border-radius: 0.5rem; color: #00567a; font-size: 0.55rem; vertical-align: middle; }
     .detail { padding: 0.6rem 1rem; line-height: 1.5; }
     .detail-summary { display: grid; gap: 0.2rem; margin-bottom: 0.7rem; }
@@ -520,8 +566,11 @@ export class HisComponent implements OnInit, OnDestroy {
   readonly configurationLoading = signal(false);
   readonly configurationPlanning = signal(false);
   readonly configurationBusy = signal(false);
+  readonly profileTarget = signal<HisItem | null>(null);
+  readonly profileBusy = signal(false);
   modalOpen = false;
   configurationModalOpen = false;
+  profileModalOpen = false;
   reason = '';
   confirm = '';
   rollbackRevision = '';
@@ -530,6 +579,7 @@ export class HisComponent implements OnInit, OnDestroy {
   resetData = false;
   resetConfirmation = '';
   publicConfirmation = '';
+  profileReason = '';
   private configurationFingerprint = '';
   private pollTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -562,6 +612,28 @@ export class HisComponent implements OnInit, OnDestroy {
   requiredReady(status: HisStatus): number { return status.items.filter((item) => item.required && item.check.state === 'Ready').length; }
   optionalTotal(status: HisStatus): number { return status.items.filter((item) => !item.required).length; }
   optionalReady(status: HisStatus): number { return status.items.filter((item) => !item.required && item.check.state === 'Ready').length; }
+  openProfileSelection(item: HisItem): void {
+    this.profileTarget.set(item);
+    this.profileReason = '';
+    this.error.set('');
+    this.profileModalOpen = true;
+  }
+
+  applyProfileSelection(): void {
+    const item = this.profileTarget();
+    if (!item?.profile || this.profileBusy() || this.profileReason.trim().length < 8) return;
+    this.profileBusy.set(true);
+    this.error.set('');
+    this.his.setProfile(item.profile, !item.profileSelected, this.profileReason.trim()).subscribe({
+      next: (status) => {
+        this.status.set(status);
+        this.profileBusy.set(false);
+        this.profileModalOpen = false;
+        this.notice.set(`${item.profile} profile이 ${item.profileSelected ? '선택 해제' : '필수 요구조건으로 선택'}되었습니다.`);
+      },
+      error: (error) => { this.error.set(this.message(error)); this.profileBusy.set(false); },
+    });
+  }
   isExpanded(itemId: string): boolean { return this.expandedItems().has(itemId); }
   setExpanded(itemId: string, expanded: boolean): void {
     this.expandedItems.update((current) => {

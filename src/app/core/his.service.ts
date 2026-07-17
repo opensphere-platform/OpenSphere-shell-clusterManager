@@ -77,6 +77,8 @@ export interface HisItem {
   mode: HisMode;
   required: boolean;
   profile?: string;
+  profileSelected?: boolean;
+  effectiveRequired?: boolean;
   domain?: string;
   compatibility?: HisCompatibility;
   remediation?: HisRemediation;
@@ -103,6 +105,23 @@ export interface HisStatus {
   state: HisState;
   checkedAt: string;
   items: HisItem[];
+  profiles: HisProfileStatus[];
+  summary: {
+    coreReady: number;
+    coreTotal: number;
+    selectedProfilesReady: number;
+    selectedProfilesTotal: number;
+  };
+}
+
+export interface HisProfileStatus {
+  name: string;
+  selected: boolean;
+  selectionSource: 'Explicit' | 'ManagedRelease' | 'None';
+  state: HisState | 'NotSelected';
+  ready: number;
+  total: number;
+  itemIds: string[];
 }
 
 export interface HisPlan {
@@ -214,6 +233,9 @@ export class HisService {
   private url(path: string): string { return `${this.base()}/api/his/${path}`; }
 
   status(): Observable<HisStatus> { return this.http.get<HisStatus>(this.url('status')); }
+  setProfile(profile: string, selected: boolean, reason: string): Observable<HisStatus> {
+    return this.http.post<HisStatus>(this.url('profiles'), { profile, selected, reason });
+  }
   plan(id: string): Observable<HisPlan> { return this.http.post<HisPlan>(this.url('plan'), { id }); }
   install(id: string, reason: string): Observable<{ ok: boolean; operation: HisOperation }> { return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('install'), { id, reason }); }
   upgrade(id: string, reason: string): Observable<{ ok: boolean; operation: HisOperation }> { return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('upgrade'), { id, reason }); }

@@ -456,8 +456,23 @@ function evaluateStorageContract(storageClasses = [], csiDrivers = [], pvcs = []
 }
 
 function validationCanaryName(itemId) {
-  return itemId === 'storage' ? 'Dynamic provision/bind'
-    : itemId === 'csi-snapshot' ? 'Snapshot → restore' : '';
+  return itemId === 'cluster-network' ? 'Cross-node / egress traffic'
+    : itemId === 'cluster-dns' ? 'Node-wide DNS resolution'
+      : itemId === OBSERVABILITY_ITEM_ID ? 'Scrape/alert delivery'
+        : itemId === 'storage' ? 'Dynamic provision/bind'
+          : itemId === 'csi-snapshot' ? 'Snapshot → restore' : '';
+}
+
+function runtimeContractFingerprint(kind, resources = [], facts = []) {
+  const normalized = resources.filter(Boolean).map((resource) => ({
+    kind: resource.kind || '',
+    namespace: resource.metadata?.namespace || '',
+    name: resource.metadata?.name || '',
+    uid: resource.metadata?.uid || '',
+    generation: Number(resource.metadata?.generation || 0),
+    images: containerImages(resource),
+  })).sort((left, right) => `${left.kind}/${left.namespace}/${left.name}`.localeCompare(`${right.kind}/${right.namespace}/${right.name}`));
+  return JSON.stringify([kind, normalized, facts]);
 }
 
 function storageContractFingerprint(storageClass) {
@@ -484,7 +499,7 @@ function applyValidationOperation(check, operation, itemId) {
   const state = operation.phase === 'Ready' && matches ? 'Passed' : operation.phase === 'Failed' ? 'Failed' : 'NotRun';
   const message = operation.phase === 'Ready' && matches
     ? `${operation.message} (${operation.finishedAt || operation.updatedAt})`
-    : operation.phase === 'Ready' ? '검증 후 StorageClass/CSI 계약이 변경되어 재검증이 필요합니다.'
+    : operation.phase === 'Ready' ? '검증 후 HIS 기능 계약이 변경되어 재검증이 필요합니다.'
       : operation.phase === 'Failed' ? operation.error || operation.message : `${operation.message} · 작업 ${operation.id}`;
   return {
     ...check,
@@ -496,8 +511,14 @@ function applyValidationOperation(check, operation, itemId) {
 }
 
 function gateValidationReadiness(check, operation, itemId) {
-  const eligible = (itemId === 'storage' && check.reason === 'CsiStorageReady')
-    || (itemId === 'csi-snapshot' && check.reason === 'SnapshotReady');
+  const eligibleReasons = {
+    'cluster-network': 'CniReady',
+    'cluster-dns': 'DnsResolutionReady',
+    [OBSERVABILITY_ITEM_ID]: 'ObservabilityReady',
+    storage: 'CsiStorageReady',
+    'csi-snapshot': 'SnapshotReady',
+  };
+  const eligible = eligibleReasons[itemId] === check.reason;
   const enriched = applyValidationOperation(check, operation, itemId);
   if (!eligible) return enriched;
   const matches = operation?.action === 'validate'
@@ -507,14 +528,17 @@ function gateValidationReadiness(check, operation, itemId) {
   if (matches) return enriched;
   const running = operation?.action === 'validate' && operationActive(operation);
   const failed = operation?.action === 'validate' && operation.phase === 'Failed';
-  const domain = itemId === 'storage' ? 'Storage' : 'DataProtection';
+  const domain = itemId === 'cluster-network' ? 'Network'
+    : itemId === 'cluster-dns' ? 'Dns'
+      : itemId === OBSERVABILITY_ITEM_ID ? 'Observability'
+        : itemId === 'storage' ? 'Storage' : 'DataProtection';
   return {
     ...enriched,
     state: 'Degraded',
     reason: `${domain}Canary${running ? 'Running' : failed ? 'Failed' : 'Required'}`,
-    message: running ? '승인된 실제 데이터 경로 검증이 진행 중입니다.'
-      : failed ? `실제 데이터 경로 검증에 실패했습니다: ${operation.error || operation.message}`
-        : '객체 계약은 준비되었지만 현재 계약에 대한 실제 데이터 경로 검증이 필요합니다.',
+    message: running ? '승인된 실제 기능 경로 검증이 진행 중입니다.'
+      : failed ? `실제 기능 경로 검증에 실패했습니다: ${operation.error || operation.message}`
+        : '객체 계약은 준비되었지만 현재 계약에 대한 실제 기능 경로 검증이 필요합니다.',
   };
 }
 
@@ -670,6 +694,9 @@ async function probe(ctx, name) {
         { name: 'Cross-node / egress traffic', state: 'NotRun', message: '쓰기 없는 정기 검사에서는 실행하지 않음; 승인된 synthetic canary 필요' },
       ],
     });
+    details.validationFingerprint = runtimeContractFingerprint('cluster-network', candidates, nodes.map((node) => [
+      node.metadata?.uid || '', node.metadata?.name || '', node.spec?.podCIDR || '', node.spec?.podCIDRs || [], Boolean(node.spec?.unschedulable),
+    ]));
     if (!ready) return result('Blocked', 'CniMissing', 'Ready 상태의 CNI DaemonSet을 찾지 못했습니다.', '', details);
     if (withoutPodCidr.length || !networkPolicy) return result('Degraded', 'CniContractPartial', `${ready.metadata.name}은 Ready지만 PodCIDR 또는 NetworkPolicy 계약이 불완전합니다.`, containerImages(ready), details);
     return result('Ready', 'CniReady', `${ready.metadata.name} CNI가 모든 대상 노드에서 Ready이며 PodCIDR이 할당되었습니다.`, containerImages(ready), details);
@@ -698,8 +725,13 @@ async function probe(ctx, name) {
       canaries: [
         { name: 'Internal service resolution', ...internalLookup },
         { name: 'External upstream resolution', ...externalLookup },
+        { name: 'Node-wide DNS resolution', state: 'NotRun', message: '모든 Ready 노드에서 승인된 synthetic DNS canary가 필요합니다.' },
       ],
     });
+    details.validationFingerprint = runtimeContractFingerprint('cluster-dns', [dns, svc], [
+      corefile,
+      ...((await k8s(ctx, '/api/v1/nodes')).items || []).map((node) => [node.metadata?.uid || '', node.metadata?.name || '', Boolean(node.spec?.unschedulable)]),
+    ]);
     if (!dns || !svc || !availableDeployment(dns) || internalLookup.state !== 'Passed') return result('Blocked', 'DnsResolutionFailed', 'Cluster DNS 구성 또는 kubernetes.default 실제 질의가 실패했습니다.', containerImages(dns), details);
     if (externalLookup.state !== 'Passed') return result('Degraded', 'DnsUpstreamFailed', '내부 DNS는 정상이나 외부 upstream 질의가 실패했습니다.', containerImages(dns), details);
     return result('Ready', 'DnsResolutionReady', `${dns.metadata.name} ${dns.status?.availableReplicas || 0}/${dns.spec?.replicas || 1}와 내부·외부 실제 질의가 정상입니다.`, containerImages(dns), details);
@@ -912,6 +944,10 @@ async function probe(ctx, name) {
       ],
       tables: [],
     };
+    details.validationFingerprint = runtimeContractFingerprint('observability', components.map((component) => component.item), [
+      ...crdNames.map((name, index) => [name, crdChecks[index]]),
+      ...(serviceList.items || []).map((service) => [service.metadata?.uid || '', service.metadata?.name || '', service.spec?.clusterIP || '', (service.spec?.ports || []).map((port) => port.port)]),
+    ]);
     if (crdsReady && ready.length === components.length) {
       const namespaces = [...new Set(components.map((component) => component.item?.metadata?.namespace).filter(Boolean))];
       return result('Ready', 'ObservabilityReady', `공유 관측 스택 ${ready.length}/${components.length}개 구성요소가 Ready입니다. (${namespaces.join(', ')})`, observedVersion, details);
@@ -1838,6 +1874,173 @@ async function currentRuntimeImage(ctx) {
   return image;
 }
 
+function syntheticPod(name, image, script, options = {}) {
+  const labels = {
+    'app.kubernetes.io/managed-by': 'opensphere-cluster-manager',
+    'opensphere.io/his-canary': options.domain || 'runtime',
+    ...(options.labels || {}),
+  };
+  const container = {
+    name: 'probe', image, imagePullPolicy: 'IfNotPresent', command: ['node', '-e'], args: [script],
+    securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, runAsNonRoot: true, runAsUser: 1000, capabilities: { drop: ['ALL'] } },
+    resources: { requests: { cpu: '5m', memory: '12Mi' }, limits: { cpu: '100m', memory: '64Mi' } },
+    ...(options.ports?.length ? { ports: options.ports } : {}),
+    ...(options.readinessPath ? { readinessProbe: { httpGet: { path: options.readinessPath, port: options.ports?.[0]?.name || options.ports?.[0]?.containerPort }, periodSeconds: 1, timeoutSeconds: 1, failureThreshold: 20 } } : {}),
+  };
+  return {
+    apiVersion: 'v1', kind: 'Pod', metadata: { name, namespace: OPERATION_NAMESPACE, labels },
+    spec: {
+      restartPolicy: 'Never', automountServiceAccountToken: false, enableServiceLinks: false,
+      securityContext: { seccompProfile: { type: 'RuntimeDefault' } },
+      ...(options.nodeName ? { nodeSelector: { 'kubernetes.io/hostname': options.nodeName } } : {}),
+      ...(options.nodeName ? { tolerations: [{ operator: 'Exists', effect: 'NoSchedule' }, { operator: 'Exists', effect: 'NoExecute' }] } : {}),
+      containers: [container],
+    },
+  };
+}
+
+function syntheticService(name, labels) {
+  return {
+    apiVersion: 'v1', kind: 'Service', metadata: { name, namespace: OPERATION_NAMESPACE, labels: { 'app.kubernetes.io/managed-by': 'opensphere-cluster-manager', ...labels } },
+    spec: { type: 'ClusterIP', selector: labels, ports: [{ name: 'metrics', protocol: 'TCP', port: 8080, targetPort: 'metrics' }] },
+  };
+}
+
+function syntheticDenyPolicy(name, labels) {
+  return {
+    apiVersion: 'networking.k8s.io/v1', kind: 'NetworkPolicy', metadata: { name, namespace: OPERATION_NAMESPACE, labels: { 'app.kubernetes.io/managed-by': 'opensphere-cluster-manager' } },
+    spec: { podSelector: { matchLabels: labels }, policyTypes: ['Ingress'], ingress: [] },
+  };
+}
+
+async function waitForCanaryPodReady(ctx, name, timeoutMs = 60000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const pod = await k8sOrNull(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/pods/${encodeURIComponent(name)}`);
+    if (pod?.status?.phase === 'Failed') throw Object.assign(new Error(`검증 서버 Pod ${name}가 실패했습니다: ${pod.status?.message || pod.status?.reason || 'unknown'}`), { code: 502 });
+    if (pod?.status?.phase === 'Running' && condition(pod, 'Ready')?.status === 'True') return pod;
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  throw Object.assign(new Error(`검증 서버 Pod ${name} Ready 대기 시간이 초과되었습니다.`), { code: 504 });
+}
+
+async function readySchedulableNodes(ctx) {
+  const list = await k8s(ctx, '/api/v1/nodes');
+  return (list.items || []).filter((node) => !node.spec?.unschedulable && condition(node, 'Ready')?.status === 'True');
+}
+
+async function runtimeCanaryPrerequisites(ctx, item) {
+  const check = await probe(ctx, item.probe);
+  const eligibleReasons = {
+    'cluster-network': 'CniReady',
+    'cluster-dns': 'DnsResolutionReady',
+    [OBSERVABILITY_ITEM_ID]: 'ObservabilityReady',
+  };
+  if (check.reason !== eligibleReasons[item.id] || !check.details?.validationFingerprint) {
+    throw Object.assign(new Error(`${item.displayName} 객체 계약이 준비되지 않아 실제 기능 검증을 실행할 수 없습니다: ${check.message}`), { code: 409 });
+  }
+  const nodes = item.id === OBSERVABILITY_ITEM_ID ? [] : await readySchedulableNodes(ctx);
+  if (item.id === 'cluster-network' && nodes.length < 2) throw Object.assign(new Error('cross-node 검증에는 서로 다른 Ready·schedulable 노드가 2개 이상 필요합니다.'), { code: 409 });
+  if (item.id === 'cluster-dns' && !nodes.length) throw Object.assign(new Error('DNS 검증을 실행할 Ready·schedulable 노드가 없습니다.'), { code: 409 });
+  return { fingerprint: check.details.validationFingerprint, nodes };
+}
+
+async function runNetworkCanary(ctx, prerequisites) {
+  const image = await currentRuntimeImage(ctx);
+  const base = canaryResourceName('network');
+  const serverName = `${base}-server`.slice(0, 63);
+  const serviceName = `${base}-service`.slice(0, 63);
+  const clientName = `${base}-client`.slice(0, 63);
+  const deniedName = `${base}-denied`.slice(0, 63);
+  const policyName = `${base}-deny`.slice(0, 63);
+  const instanceLabels = { 'opensphere.io/canary-instance': base };
+  const serviceHost = `${serviceName}.${OPERATION_NAMESPACE}.svc.cluster.local`;
+  const serverScript = "require('http').createServer((request,response)=>{response.writeHead(200,{'content-type':'text/plain'});response.end('opensphere-his-network-canary');}).listen(8080,'0.0.0.0');";
+  const positiveScript = `const dns=require('dns').promises; (async()=>{const internal=await fetch(${JSON.stringify(`http://${serviceHost}:8080`)},{signal:AbortSignal.timeout(10000)});if((await internal.text()).trim()!=='opensphere-his-network-canary')throw new Error('cross-node payload mismatch');await dns.lookup('registry.k8s.io');const external=await fetch('https://registry.k8s.io/v2/',{signal:AbortSignal.timeout(15000)});if(external.status>=500)throw new Error('egress status '+external.status);})().catch(error=>{console.error(error);process.exit(1)});`;
+  const deniedScript = `(async()=>{try{await fetch(${JSON.stringify(`http://${serviceHost}:8080`)},{signal:AbortSignal.timeout(5000)});throw new Error('NetworkPolicy deny가 적용되지 않았습니다.');}catch(error){if(String(error.message).includes('적용되지'))throw error;}})().catch(error=>{console.error(error);process.exit(1)});`;
+  try {
+    await k8sRequest(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/pods`, { method: 'POST', body: syntheticPod(serverName, image, serverScript, { domain: 'network', labels: instanceLabels, nodeName: prerequisites.nodes[0].metadata.name, ports: [{ name: 'metrics', containerPort: 8080 }], readinessPath: '/' }) });
+    await k8sRequest(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/services`, { method: 'POST', body: syntheticService(serviceName, instanceLabels) });
+    await waitForCanaryPodReady(ctx, serverName);
+    await k8sRequest(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/pods`, { method: 'POST', body: syntheticPod(clientName, image, positiveScript, { domain: 'network', nodeName: prerequisites.nodes[1].metadata.name }) });
+    await waitForCanaryPod(ctx, clientName, 90000);
+    await k8sRequest(ctx, `/apis/networking.k8s.io/v1/namespaces/${OPERATION_NAMESPACE}/networkpolicies`, { method: 'POST', body: syntheticDenyPolicy(policyName, instanceLabels) });
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    await k8sRequest(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/pods`, { method: 'POST', body: syntheticPod(deniedName, image, deniedScript, { domain: 'network', nodeName: prerequisites.nodes[1].metadata.name }) });
+    await waitForCanaryPod(ctx, deniedName, 60000);
+    return { message: `서로 다른 노드 ${prerequisites.nodes[0].metadata.name}→${prerequisites.nodes[1].metadata.name} Service 통신, 외부 egress와 NetworkPolicy deny를 검증했습니다.` };
+  } finally {
+    for (const name of [deniedName, clientName, serverName]) await deleteIfPresent(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/pods/${encodeURIComponent(name)}`).catch(() => false);
+    await deleteIfPresent(ctx, `/apis/networking.k8s.io/v1/namespaces/${OPERATION_NAMESPACE}/networkpolicies/${encodeURIComponent(policyName)}`).catch(() => false);
+    await deleteIfPresent(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/services/${encodeURIComponent(serviceName)}`).catch(() => false);
+  }
+}
+
+async function runDnsCanary(ctx, prerequisites) {
+  const image = await currentRuntimeImage(ctx);
+  const base = canaryResourceName('dns');
+  const names = prerequisites.nodes.map((node, index) => `${base}-${index}`.slice(0, 63));
+  const script = "const dns=require('dns').promises;(async()=>{for(const host of ['kubernetes.default.svc.cluster.local','registry.k8s.io']){for(let i=0;i<3;i+=1){await Promise.race([dns.lookup(host),new Promise((_,reject)=>setTimeout(()=>reject(new Error(host+' timeout')),5000))]);}}})().catch(error=>{console.error(error);process.exit(1)});";
+  try {
+    await Promise.all(prerequisites.nodes.map((node, index) => k8sRequest(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/pods`, {
+      method: 'POST', body: syntheticPod(names[index], image, script, { domain: 'dns', nodeName: node.metadata.name }),
+    })));
+    await Promise.all(names.map((name) => waitForCanaryPod(ctx, name, 90000)));
+    return { message: `${prerequisites.nodes.length}개 Ready 노드 모두에서 cluster.local과 외부 upstream DNS 질의를 각각 3회 통과했습니다.` };
+  } finally {
+    for (const name of names) await deleteIfPresent(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/pods/${encodeURIComponent(name)}`).catch(() => false);
+  }
+}
+
+async function waitForHttpJson(url, accepted, timeoutMs = 180000) {
+  const deadline = Date.now() + timeoutMs;
+  let last = '';
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(5000) });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const value = await response.json();
+      if (accepted(value)) return value;
+      last = JSON.stringify(value).slice(0, 500);
+    } catch (error) { last = safeError(error); }
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+  }
+  throw Object.assign(new Error(`관측 canary 응답 대기 시간이 초과되었습니다: ${last}`), { code: 504 });
+}
+
+async function runObservabilityCanary(ctx) {
+  const image = await currentRuntimeImage(ctx);
+  const base = canaryResourceName('observe');
+  const podName = `${base}-metrics`.slice(0, 63);
+  const serviceName = `${base}-metrics`.slice(0, 63);
+  const monitorName = `${base}-monitor`.slice(0, 63);
+  const ruleName = `${base}-rule`.slice(0, 63);
+  const instanceLabels = { 'opensphere.io/canary-instance': base };
+  const metricScript = `require('http').createServer((request,response)=>{response.writeHead(200,{'content-type':request.url==='/metrics'?'text/plain; version=0.0.4':'text/plain'});response.end(request.url==='/metrics'?${JSON.stringify(`# HELP opensphere_his_canary OpenSphere HIS synthetic metric\n# TYPE opensphere_his_canary gauge\nopensphere_his_canary{instance_id="${base}"} 1\n`)}:'ok');}).listen(8080,'0.0.0.0');`;
+  try {
+    await k8sRequest(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/pods`, { method: 'POST', body: syntheticPod(podName, image, metricScript, { domain: 'observability', labels: instanceLabels, ports: [{ name: 'metrics', containerPort: 8080 }], readinessPath: '/' }) });
+    await k8sRequest(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/services`, { method: 'POST', body: syntheticService(serviceName, instanceLabels) });
+    await waitForCanaryPodReady(ctx, podName);
+    await k8sRequest(ctx, '/apis/monitoring.coreos.com/v1/namespaces/monitoring/servicemonitors', { method: 'POST', body: {
+      apiVersion: 'monitoring.coreos.com/v1', kind: 'ServiceMonitor', metadata: { name: monitorName, namespace: 'monitoring', labels: { 'app.kubernetes.io/managed-by': 'opensphere-cluster-manager', release: 'kube-prometheus-stack' } },
+      spec: { namespaceSelector: { matchNames: [OPERATION_NAMESPACE] }, selector: { matchLabels: instanceLabels }, endpoints: [{ port: 'metrics', path: '/metrics', interval: '5s', scrapeTimeout: '3s' }] },
+    } });
+    await k8sRequest(ctx, '/apis/monitoring.coreos.com/v1/namespaces/monitoring/prometheusrules', { method: 'POST', body: {
+      apiVersion: 'monitoring.coreos.com/v1', kind: 'PrometheusRule', metadata: { name: ruleName, namespace: 'monitoring', labels: { 'app.kubernetes.io/managed-by': 'opensphere-cluster-manager', release: 'kube-prometheus-stack' } },
+      spec: { groups: [{ name: `opensphere-his-canary-${base}`, interval: '5s', rules: [{ alert: 'OpenSphereHISCanary', expr: `opensphere_his_canary{instance_id="${base}"} == 1`, for: '0m', labels: { severity: 'none', opensphere_canary_id: base }, annotations: { summary: 'OpenSphere HIS synthetic alert' } }] }] },
+    } });
+    const query = encodeURIComponent(`opensphere_his_canary{instance_id="${base}"}`);
+    await waitForHttpJson(`http://kube-prometheus-stack-prometheus.monitoring.svc:9090/api/v1/query?query=${query}`, (value) => value.status === 'success' && (value.data?.result || []).some((entry) => entry.metric?.instance_id === base));
+    await waitForHttpJson('http://kube-prometheus-stack-alertmanager.monitoring.svc:9093/api/v2/alerts', (value) => Array.isArray(value) && value.some((alert) => alert.labels?.alertname === 'OpenSphereHISCanary' && alert.labels?.opensphere_canary_id === base && alert.status?.state === 'active'));
+    return { message: `synthetic metric ${base}의 ServiceMonitor scrape, Prometheus rule 평가와 Alertmanager 전달을 통과했습니다.` };
+  } finally {
+    await deleteIfPresent(ctx, `/apis/monitoring.coreos.com/v1/namespaces/monitoring/prometheusrules/${encodeURIComponent(ruleName)}`).catch(() => false);
+    await deleteIfPresent(ctx, `/apis/monitoring.coreos.com/v1/namespaces/monitoring/servicemonitors/${encodeURIComponent(monitorName)}`).catch(() => false);
+    await deleteIfPresent(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/services/${encodeURIComponent(serviceName)}`).catch(() => false);
+    await deleteIfPresent(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/pods/${encodeURIComponent(podName)}`).catch(() => false);
+  }
+}
+
 function canaryPvc(name, storageClassName, dataSource = null) {
   return {
     apiVersion: 'v1', kind: 'PersistentVolumeClaim',
@@ -1980,10 +2183,17 @@ async function runSnapshotRestoreCanary(ctx, prerequisites = null) {
 async function executeCanaryValidation(ctx, actor, item, operation) {
   let current = operation;
   try {
-    current = await patchOperation(ctx, item, current, { phase: 'Validating', progress: 15, message: '격리된 임시 리소스로 실제 데이터 경로를 검증하고 있습니다.' });
-    const prerequisites = await storageCanaryPrerequisites(ctx, item.id === 'csi-snapshot');
-    current = await patchOperation(ctx, item, current, { validationFingerprint: prerequisites.fingerprint, progress: 25, message: '현재 StorageClass/CSI 계약 지문을 고정하고 임시 데이터 경로를 생성하고 있습니다.' });
-    const outcome = item.id === 'storage' ? await runStorageBindCanary(ctx, prerequisites) : await runSnapshotRestoreCanary(ctx, prerequisites);
+    current = await patchOperation(ctx, item, current, { phase: 'Validating', progress: 15, message: '격리된 임시 리소스로 실제 기능 경로를 검증하고 있습니다.' });
+    const storageValidation = ['storage', 'csi-snapshot'].includes(item.id);
+    const prerequisites = storageValidation
+      ? await storageCanaryPrerequisites(ctx, item.id === 'csi-snapshot')
+      : await runtimeCanaryPrerequisites(ctx, item);
+    current = await patchOperation(ctx, item, current, { validationFingerprint: prerequisites.fingerprint, progress: 25, message: '현재 HIS 기능 계약 지문을 고정하고 synthetic 검증 리소스를 생성하고 있습니다.' });
+    const outcome = item.id === 'cluster-network' ? await runNetworkCanary(ctx, prerequisites)
+      : item.id === 'cluster-dns' ? await runDnsCanary(ctx, prerequisites)
+        : item.id === OBSERVABILITY_ITEM_ID ? await runObservabilityCanary(ctx)
+          : item.id === 'storage' ? await runStorageBindCanary(ctx, prerequisites)
+            : await runSnapshotRestoreCanary(ctx, prerequisites);
     await auditRequired(ctx, actor, 'HISCanaryValidated', item, operation.reason, `success:${outcome.message}`);
     await ctx.publishNotify({ userActor: actor.username, action: 'HISCanaryValidated', target: `HIS/${item.id}`, result: 'success', reason: `${operation.reason} · ${outcome.message}` });
     await patchOperation(ctx, item, current, { phase: 'Ready', progress: 100, message: outcome.message, error: '' });
@@ -1993,7 +2203,7 @@ async function executeCanaryValidation(ctx, actor, item, operation) {
     catch (auditError) { console.error(`[his-canary] failure audit unavailable id=${operation.id}: ${safeError(auditError)}`); }
     try { await ctx.publishNotify({ userActor: actor.username, action: 'HISCanaryValidationFailed', target: `HIS/${item.id}`, result: 'error', reason: `${operation.reason} · ${message}` }); }
     catch { /* best effort notification */ }
-    await patchOperation(ctx, item, current, { phase: 'Failed', progress: 100, message: '실제 데이터 경로 검증에 실패했습니다.', error: message });
+    await patchOperation(ctx, item, current, { phase: 'Failed', progress: 100, message: '실제 기능 경로 검증에 실패했습니다.', error: message });
   }
 }
 
@@ -2191,7 +2401,7 @@ function createHisManager(ctx) {
       }
       if (pathname === '/api/his/validate') {
         const item = catalogItem(String(body?.id || ''));
-        if (!item || !['storage', 'csi-snapshot'].includes(item.id)) throw Object.assign(new Error('실검증을 지원하지 않는 HIS 항목입니다.'), { code: 404 });
+        if (!item || !['cluster-network', 'cluster-dns', OBSERVABILITY_ITEM_ID, 'storage', 'csi-snapshot'].includes(item.id)) throw Object.assign(new Error('실검증을 지원하지 않는 HIS 항목입니다.'), { code: 404 });
         const reason = reasonFrom(body);
         await auditRequired(ctx, actor, 'HISCanaryValidationRequested', item, reason, 'requested');
         const operation = await createOperation(ctx, item, actor, 'validate', reason);
@@ -2305,8 +2515,12 @@ module.exports = {
   validationCanaryName,
   applyValidationOperation,
   gateValidationReadiness,
+  runtimeContractFingerprint,
   storageContractFingerprint,
   snapshotContractFingerprint,
+  syntheticPod,
+  syntheticService,
+  syntheticDenyPolicy,
   canaryPvc,
   canaryPod,
   renderedResources,

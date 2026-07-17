@@ -21,9 +21,13 @@ const {
   validationCanaryName,
   applyValidationOperation,
   gateValidationReadiness,
+  runtimeContractFingerprint,
   storageContractFingerprint,
   canaryPvc,
   canaryPod,
+  syntheticPod,
+  syntheticService,
+  syntheticDenyPolicy,
   renderedResources,
   recoverableHelmCleanupError,
   stuckReleaseRecoveryStrategy,
@@ -146,6 +150,45 @@ test('completed validation operations replace only their matching canary evidenc
   const stale = gateValidationReadiness(changed, operation, 'storage');
   assert.equal(stale.state, 'Degraded');
   assert.equal(stale.details.canaries[1].state, 'NotRun');
+});
+
+test('network, DNS and observability readiness is gated by matching synthetic validation evidence', () => {
+  const cases = [
+    ['cluster-network', 'CniReady', 'Cross-node / egress traffic', 'NetworkCanaryRequired'],
+    ['cluster-dns', 'DnsResolutionReady', 'Node-wide DNS resolution', 'DnsCanaryRequired'],
+    ['kube-prometheus-stack', 'ObservabilityReady', 'Scrape/alert delivery', 'ObservabilityCanaryRequired'],
+  ];
+  for (const [id, reason, canaryName, requiredReason] of cases) {
+    const fingerprint = runtimeContractFingerprint(id, [{ kind: 'Deployment', metadata: { uid: `${id}-uid`, name: id, generation: 1 } }], ['contract']);
+    const check = { state: 'Ready', reason, details: { validationFingerprint: fingerprint, canaries: [{ name: canaryName, state: 'NotRun', message: 'pending' }] } };
+    const required = gateValidationReadiness(check, null, id);
+    assert.equal(required.state, 'Degraded');
+    assert.equal(required.reason, requiredReason);
+    const operation = { action: 'validate', phase: 'Ready', message: 'passed', validationFingerprint: fingerprint };
+    const ready = gateValidationReadiness(check, operation, id);
+    assert.equal(ready.state, 'Ready');
+    assert.equal(ready.details.canaries[0].state, 'Passed');
+  }
+});
+
+test('runtime synthetic manifests are bounded, non-privileged and cannot target arbitrary APIs', () => {
+  const pod = syntheticPod('canary', 'example.invalid/cluster-manager@sha256:abc', 'process.exit(0)', {
+    domain: 'network', labels: { 'opensphere.io/canary-instance': 'fixed' }, nodeName: 'worker-1', ports: [{ name: 'metrics', containerPort: 8080 }], readinessPath: '/',
+  });
+  assert.equal(pod.spec.automountServiceAccountToken, false);
+  assert.equal(pod.spec.nodeSelector['kubernetes.io/hostname'], 'worker-1');
+  assert.equal(pod.spec.containers[0].command[0], 'node');
+  assert.equal(pod.spec.containers[0].securityContext.allowPrivilegeEscalation, false);
+  assert.equal(pod.spec.containers[0].securityContext.readOnlyRootFilesystem, true);
+  assert.deepEqual(pod.spec.containers[0].securityContext.capabilities.drop, ['ALL']);
+  const service = syntheticService('canary-service', { 'opensphere.io/canary-instance': 'fixed' });
+  assert.equal(service.spec.type, 'ClusterIP');
+  assert.equal(service.metadata.labels['opensphere.io/canary-instance'], 'fixed');
+  assert.equal(service.spec.ports[0].targetPort, 'metrics');
+  const policy = syntheticDenyPolicy('canary-deny', { 'opensphere.io/canary-instance': 'fixed' });
+  assert.deepEqual(policy.spec.policyTypes, ['Ingress']);
+  assert.deepEqual(policy.spec.ingress, []);
+  assert.deepEqual(policy.spec.podSelector.matchLabels, { 'opensphere.io/canary-instance': 'fixed' });
 });
 
 test('storage canary manifests are bounded, non-privileged and accept no arbitrary workload shape', () => {

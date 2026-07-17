@@ -43,6 +43,15 @@ VolumeSnapshotClass로 snapshot→restore와 데이터 무결성을 검증한다
 검증 성공은 현재 StorageClass/CSI 계약 지문에 결합되므로 class·driver·정책이 바뀌면
 자동으로 무효화되고 재검증 전까지 해당 Core/profile은 `Degraded`로 유지된다.
 
+동일한 계약 지문 기반 검증을 Network·DNS·Observability에도 적용한다. CNI는 서로
+다른 Ready 노드 사이의 ClusterIP Service 통신, 외부 egress, 실제 NetworkPolicy deny를
+검사한다. DNS는 모든 Ready·schedulable 노드에서 `cluster.local`과 외부 upstream을
+반복 질의한다. Shared Observability는 임시 metric endpoint·ServiceMonitor·PrometheusRule을
+만들어 scrape, rule evaluation, Alertmanager 전달을 끝까지 확인한다. 모든 synthetic
+리소스는 현재 Cluster Manager digest, 최소 권한 securityContext, 고정 namespace와
+고정 manifest만 사용하며 성공·실패 후 삭제된다. 검증 계약이 바뀌면 이전 성공은
+무효화되므로 해당 capability는 다시 `실검증`을 통과할 때까지 Ready가 아니다.
+
 공유 가능한 경로는 `/p/cluster-manager/<k8s|ceph|his>/<resource>` 형식입니다.
 
 ## 구조 (루트 Angular 프로젝트 + 배포 배선)

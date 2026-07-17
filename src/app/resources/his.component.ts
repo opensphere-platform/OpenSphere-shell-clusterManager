@@ -107,11 +107,12 @@ type HisMutationAction = 'install' | 'upgrade' | 'recover' | 'rollback' | 'unins
             <span *ngIf="releaseLifecycle(item) === 'blocked'" class="muted">Helm 상태 확인 필요</span>
             <button class="btn btn-sm btn-outline" type="button" [disabled]="busy() || operationActive(item.operation) || !rollbackAvailable(item)" (click)="openPlan(item, 'rollback', true)">롤백</button>
             <button *ngIf="item.id === 'kube-prometheus-stack'" class="btn btn-sm btn-outline" type="button" [disabled]="busy() || operationActive(item.operation) || releaseLifecycle(item) !== 'upgrade'" (click)="openObservabilityConfiguration()">운영 구성</button>
+            <button *ngIf="item.id === 'kube-prometheus-stack'" class="btn btn-sm btn-outline" type="button" [disabled]="busy() || operationActive(item.operation) || !canValidate(item)" (click)="openCanaryValidation(item)">실검증</button>
             <button class="btn btn-sm btn-danger-outline" type="button" [disabled]="busy() || operationActive(item.operation) || !item.release?.managed" (click)="openPlan(item, 'uninstall', true)">삭제</button>
           </ng-container>
           <ng-template #detectOnly>
             <span class="muted">호스트 제공 · 진단만</span>
-            <button *ngIf="item.id === 'storage' || item.id === 'csi-snapshot'" class="btn btn-sm btn-outline profile-action" type="button" [disabled]="busy() || operationActive(item.operation) || !canValidate(item)" (click)="openCanaryValidation(item)">실검증</button>
+            <button *ngIf="['cluster-network', 'cluster-dns', 'storage', 'csi-snapshot'].includes(item.id)" class="btn btn-sm btn-outline profile-action" type="button" [disabled]="busy() || operationActive(item.operation) || !canValidate(item)" (click)="openCanaryValidation(item)">실검증</button>
             <button *ngIf="item.profile" class="btn btn-sm btn-outline profile-action" type="button" [disabled]="busy()" (click)="openProfileSelection(item)">
               {{ item.profileSelected ? 'profile 해제' : '요구조건으로 선택' }}
             </button>
@@ -420,15 +421,16 @@ type HisMutationAction = 'install' | 'upgrade' | 'recover' | 'rollback' | 'unins
     </clr-modal>
 
     <clr-modal [(clrModalOpen)]="canaryModalOpen" [clrModalSize]="'md'" [clrModalClosable]="!canaryBusy()">
-      <h3 class="modal-title">HIS 실제 데이터 경로 검증</h3>
+      <h3 class="modal-title">HIS 실제 기능 경로 검증</h3>
       <div class="modal-body" *ngIf="canaryTarget() as item">
         <div class="alert alert-warning">
           <div class="alert-items"><div class="alert-item static"><span class="alert-text">
-            <strong>{{ item.displayName }}</strong> 검증을 위해 격리된 임시 PVC와 Pod를 생성한 뒤 자동 삭제합니다.
-            Data Protection은 추가로 임시 VolumeSnapshot과 복원 PVC를 사용하며 deletionPolicy=Delete인 class만 허용합니다.
+            <strong>{{ item.displayName }}</strong> 검증을 위해 범위가 고정된 synthetic 리소스를 생성하고 완료 후 자동 삭제합니다.
+            Network는 cross-node·egress·NetworkPolicy, DNS는 모든 Ready 노드, Observability는 scrape·rule·Alertmanager 전달을 검사합니다.
+            Storage/Data Protection은 고정 64Mi PVC 및 deletionPolicy=Delete인 VolumeSnapshot만 사용합니다.
           </span></div></div>
         </div>
-        <p class="muted">고정된 64Mi 요청과 현재 Cluster Manager image만 사용합니다. 임의 image·manifest·StorageClass 입력은 받지 않습니다.</p>
+        <p class="muted">현재 Cluster Manager digest와 서버가 고정한 manifest만 사용합니다. 임의 image·명령·manifest 입력은 받지 않습니다.</p>
         <form clrForm clrLayout="vertical">
           <clr-textarea-container>
             <label>검증 사유</label>
@@ -663,8 +665,14 @@ export class HisComponent implements OnInit, OnDestroy {
     });
   }
   canValidate(item: HisItem): boolean {
-    return item.id === 'storage' ? ['CsiStorageReady', 'StorageCanaryRequired', 'StorageCanaryFailed'].includes(item.check.reason)
-      : item.id === 'csi-snapshot' ? ['SnapshotReady', 'DataProtectionCanaryRequired', 'DataProtectionCanaryFailed'].includes(item.check.reason) : false;
+    const reasons: Record<string, string[]> = {
+      'cluster-network': ['CniReady', 'NetworkCanaryRequired', 'NetworkCanaryFailed'],
+      'cluster-dns': ['DnsResolutionReady', 'DnsCanaryRequired', 'DnsCanaryFailed'],
+      'kube-prometheus-stack': ['ObservabilityReady', 'ObservabilityCanaryRequired', 'ObservabilityCanaryFailed'],
+      storage: ['CsiStorageReady', 'StorageCanaryRequired', 'StorageCanaryFailed'],
+      'csi-snapshot': ['SnapshotReady', 'DataProtectionCanaryRequired', 'DataProtectionCanaryFailed'],
+    };
+    return (reasons[item.id] || []).includes(item.check.reason);
   }
   openCanaryValidation(item: HisItem): void {
     this.canaryTarget.set(item);
@@ -674,14 +682,15 @@ export class HisComponent implements OnInit, OnDestroy {
   }
   runCanaryValidation(): void {
     const item = this.canaryTarget();
-    if (!item || !['storage', 'csi-snapshot'].includes(item.id) || this.canaryBusy() || this.canaryReason.trim().length < 8) return;
+    const ids = ['cluster-network', 'cluster-dns', 'kube-prometheus-stack', 'storage', 'csi-snapshot'] as const;
+    if (!item || !ids.includes(item.id as typeof ids[number]) || this.canaryBusy() || this.canaryReason.trim().length < 8) return;
     this.canaryBusy.set(true);
     this.error.set('');
-    this.his.validate(item.id as 'storage' | 'csi-snapshot', this.canaryReason.trim()).subscribe({
+    this.his.validate(item.id as typeof ids[number], this.canaryReason.trim()).subscribe({
       next: (response) => {
         this.canaryBusy.set(false);
         this.canaryModalOpen = false;
-        this.notice.set(`${item.displayName} 실제 데이터 경로 검증이 시작되었습니다. 작업 ID: ${response.operation.id}`);
+        this.notice.set(`${item.displayName} 실제 기능 경로 검증이 시작되었습니다. 작업 ID: ${response.operation.id}`);
         this.setExpanded(item.id, true);
         this.load();
       },

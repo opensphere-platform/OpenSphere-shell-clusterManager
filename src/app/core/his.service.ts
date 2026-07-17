@@ -237,7 +237,7 @@ export class HisService {
   setProfile(profile: string, selected: boolean, reason: string): Observable<HisStatus> {
     return this.http.post<HisStatus>(this.url('profiles'), { profile, selected, reason });
   }
-  validate(id: 'storage' | 'csi-snapshot', reason: string): Observable<{ ok: boolean; operation: HisOperation }> {
+  validate(id: 'cluster-network' | 'cluster-dns' | 'kube-prometheus-stack' | 'storage' | 'csi-snapshot', reason: string): Observable<{ ok: boolean; operation: HisOperation }> {
     return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('validate'), { id, reason });
   }
   plan(id: string): Observable<HisPlan> { return this.http.post<HisPlan>(this.url('plan'), { id }); }

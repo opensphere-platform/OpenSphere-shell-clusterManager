@@ -46,7 +46,12 @@ import { HisItem, HisOperation, HisPlan, HisService, HisStatus } from '../core/h
       <clr-dg-column>소유권</clr-dg-column>
       <clr-dg-column>작업</clr-dg-column>
 
-      <clr-dg-row *clrDgItems="let item of s.items" [clrDgItem]="item">
+      <clr-dg-row
+        *clrDgItems="let item of s.items"
+        [clrDgItem]="item"
+        [clrDgExpanded]="isExpanded(item.id)"
+        (clrDgExpandedChange)="setExpanded(item.id, $event)"
+      >
         <clr-dg-cell>
           <strong>{{ item.displayName }}</strong>
           <div class="muted">{{ item.description }}</div>
@@ -228,6 +233,7 @@ export class HisComponent implements OnInit, OnDestroy {
   readonly busy = signal(false);
   readonly error = signal('');
   readonly notice = signal('');
+  readonly expandedItems = signal<ReadonlySet<string>>(new Set<string>());
   modalOpen = false;
   reason = '';
   confirm = '';
@@ -257,6 +263,16 @@ export class HisComponent implements OnInit, OnDestroy {
   requiredReady(status: HisStatus): number { return status.items.filter((item) => item.required && item.check.state === 'Ready').length; }
   optionalTotal(status: HisStatus): number { return status.items.filter((item) => !item.required).length; }
   optionalReady(status: HisStatus): number { return status.items.filter((item) => !item.required && item.check.state === 'Ready').length; }
+  isExpanded(itemId: string): boolean { return this.expandedItems().has(itemId); }
+  setExpanded(itemId: string, expanded: boolean): void {
+    this.expandedItems.update((current) => {
+      if (current.has(itemId) === expanded) return current;
+      const next = new Set(current);
+      if (expanded) next.add(itemId);
+      else next.delete(itemId);
+      return next;
+    });
+  }
   operationActive(operation?: HisOperation | null): boolean {
     return !!operation && ['Queued', 'Recovering', 'Installing', 'Validating', 'Uninstalling'].includes(operation.phase);
   }

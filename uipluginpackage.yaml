@@ -18,13 +18,13 @@ spec:
   description: "OpenSphere cluster inventory, operations and HIS prerequisite management subShell"
   image:
     repository: ghcr.io/opensphere-platform/opensphere-shell-cluster-manager
-    digest: sha256:5186efce9a5ce06e35bcfa7cd504456d7b912706bf958ee28771276c9149f517
+    digest: sha256:97e53bb5ef78f729bf4874409f3be320ad6297b62b476ff6c2935108f88b5c73
   nav:
     band: "운영 Operate"
     label: "Cluster Manager"
   manifest:
     path: /plugins/ui-shell.manifest.json
-    sha256: "60c43e14020d0c2c4630cdde514ed68a000fd388f995363e9a6bea6a486e2f36"
+    sha256: "a3aafa5e3480e69fc50321c66fcfa4678b931ef75289873679e56b09a2af9cc4"
     signaturePath: /plugins/ui-shell.manifest.json.sig
   trust:
     keyId: opensphere-plugins-v1

@@ -18,7 +18,7 @@ spec:
   description: "OpenSphere Kubernetes, Ceph Storage, and HIS management views"
   image:
     repository: ghcr.io/opensphere-platform/opensphere-shell-cluster-manager
-    digest: sha256:ae0b729502e68b1d2c3a00f79e8c467560c819a56006cbd6c081308620312609
+    digest: sha256:a0691f78597ecf3cbbebbe44047c234f7289a9e94daf9ad10399044a891b8164
   nav:
     band: "운영 Operate"
     label: "Cluster Manager"

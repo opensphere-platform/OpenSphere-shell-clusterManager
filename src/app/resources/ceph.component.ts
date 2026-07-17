@@ -9,13 +9,13 @@ import { CephPlan, CephService, CephStatus } from '../core/ceph.service';
   standalone: true,
   imports: [CommonModule, FormsModule, ClarityModule],
   template: `
-    <header class="ceph-head">
-      <div>
-        <p class="eyebrow">Kubernetes child storage</p>
+    <header class="cm-ceph-page-head">
+      <div class="cm-ceph-page-head__copy">
+        <p class="cm-ceph-eyebrow">Kubernetes child storage</p>
         <h1>Ceph External Storage</h1>
-        <p>Ceph은 Console에 직접 마운트하지 않습니다. 선택한 Kubernetes 클러스터에 Rook External Mode와 Ceph CSI를 구성하고, Console은 연결 상태와 참조 정보만 관리합니다.</p>
+        <p class="cm-ceph-summary">Ceph은 Console에 직접 마운트하지 않습니다. 선택한 Kubernetes 클러스터에 Rook External Mode와 Ceph CSI를 구성하고, Console은 연결 상태와 참조 정보만 관리합니다.</p>
       </div>
-      <div class="head-actions">
+      <div class="cm-ceph-page-head__actions">
         <button class="btn btn-outline" type="button" [disabled]="loading() || busy()" (click)="load()">다시 검사</button>
         <button class="btn btn-primary" type="button" [disabled]="busy() || status()?.kubernetes?.ready !== true || !!status()?.connection" (click)="openConnect()">외부 Ceph 연결</button>
       </div>
@@ -197,11 +197,27 @@ import { CephPlan, CephService, CephStatus } from '../core/ceph.service';
   `,
   styles: [`
     :host { display: block; }
-    .ceph-head { display: flex; justify-content: space-between; gap: 1.5rem; align-items: flex-start; margin-bottom: 0.9rem; }
-    .ceph-head h1 { margin: 0.15rem 0 0.35rem; color: #2d4048; font-size: 1.45rem; font-weight: 400; line-height: 1.25; }
-    .ceph-head p { margin: 0; max-width: 63rem; color: #565656; line-height: 1.5; }
-    .eyebrow { color: #4c6fff !important; font-size: 0.65rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
-    .head-actions { display: flex; gap: 0.35rem; flex: 0 0 auto; }
+    .cm-ceph-page-head {
+      box-sizing: border-box;
+      display: flex;
+      justify-content: space-between;
+      gap: 1.5rem;
+      align-items: flex-start;
+      width: 100%;
+      height: auto;
+      min-height: 0;
+      margin: 0 0 0.9rem;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      overflow: visible;
+    }
+    .cm-ceph-page-head__copy { min-width: 0; }
+    .cm-ceph-page-head h1 { margin: 0.15rem 0 0.35rem; color: #2d4048; font-size: 1.45rem; font-weight: 400; line-height: 1.25; }
+    .cm-ceph-summary { margin: 0; max-width: 63rem; color: #565656; line-height: 1.5; }
+    .cm-ceph-eyebrow { margin: 0; color: #4c6fff; font-size: 0.65rem; font-weight: 600; line-height: 1.5; letter-spacing: 0.06em; text-transform: uppercase; }
+    .cm-ceph-page-head__actions { display: flex; gap: 0.35rem; flex: 0 0 auto; }
     .dependency, .connection-card, .empty-state { border: 1px solid #d8d8d8; background: #fff; padding: 0.85rem 1rem; margin-bottom: 0.8rem; }
     .dependency-title { display: grid; grid-template-columns: 1.6rem minmax(0, 1fr) auto; gap: 0.6rem; align-items: center; }
     .dependency-title > div { display: flex; flex-direction: column; gap: 0.12rem; }
@@ -227,7 +243,7 @@ import { CephPlan, CephService, CephStatus } from '../core/ceph.service';
     .resource-list > div { display: grid; grid-template-columns: minmax(14rem, 1fr) minmax(8rem, 0.7fr); gap: 0.6rem; padding: 0.3rem 0.5rem; border-bottom: 1px solid #eee; }
     code { font-size: 0.63rem; }
     @media (max-width: 62rem) {
-      .ceph-head, .card-head { flex-direction: column; }
+      .cm-ceph-page-head, .card-head { flex-direction: column; }
       .dependency dl, .connection-meta { grid-template-columns: 1fr; }
       .resource-list > div { grid-template-columns: 1fr; }
     }

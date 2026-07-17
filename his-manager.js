@@ -11,7 +11,9 @@ const ADMIN_GROUP = 'opensphere-console-admins';
 const MAX_BODY = 256 * 1024;
 const MAX_OUTPUT = 1024 * 1024;
 const HELM_TIMEOUT_MS = 12 * 60 * 1000;
-const activeOperations = new Set();
+const OPERATION_NAMESPACE = process.env.HIS_OPERATION_NAMESPACE || process.env.POD_NAMESPACE || 'opensphere-console';
+const OPERATION_STALE_MS = 60 * 1000;
+const ACTIVE_OPERATION_PHASES = new Set(['Queued', 'Recovering', 'Installing', 'Validating', 'Uninstalling']);
 
 function safeError(error) {
   const message = error && (error.safeMessage || error.message || error.msg || String(error));
@@ -110,9 +112,15 @@ async function withKubeconfig(ctx, callback) {
   finally { fs.rmSync(dir, { recursive: true, force: true }); }
 }
 
-async function k8s(ctx, apiPath) {
+async function k8sRequest(ctx, apiPath, options = {}) {
   const response = await fetch(`${ctx.apiServer}${apiPath}`, {
-    headers: { authorization: `Bearer ${ctx.token()}`, accept: 'application/json' },
+    method: options.method || 'GET',
+    headers: {
+      authorization: `Bearer ${ctx.token()}`,
+      accept: 'application/json',
+      ...(options.body ? { 'content-type': options.contentType || 'application/json' } : {}),
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined,
   });
   const text = await response.text();
   let body = {};
@@ -123,6 +131,15 @@ async function k8s(ctx, apiPath) {
     throw error;
   }
   return body;
+}
+
+async function k8s(ctx, apiPath) {
+  return k8sRequest(ctx, apiPath);
+}
+
+async function k8sListOrEmpty(ctx, apiPath) {
+  try { return await k8s(ctx, apiPath); }
+  catch (error) { if (error.code === 404) return { items: [] }; throw error; }
 }
 
 function availableDeployment(deployment) {
@@ -140,8 +157,16 @@ function readyStatefulSet(sts) {
   return Number(sts && sts.status && sts.status.readyReplicas || 0) >= desired;
 }
 
-function result(state, reason, message, observedVersion = '') {
-  return { state, reason, message, observedVersion, retryable: state !== 'Ready', lastCheckedAt: new Date().toISOString() };
+function result(state, reason, message, observedVersion = '', details = undefined) {
+  return {
+    state,
+    reason,
+    message,
+    observedVersion,
+    retryable: state !== 'Ready',
+    lastCheckedAt: new Date().toISOString(),
+    ...(details ? { details } : {}),
+  };
 }
 
 async function probe(ctx, name) {
@@ -205,45 +230,100 @@ async function probe(ctx, name) {
   }
   if (name === 'kubePrometheusStack') {
     const crdNames = [
-      'prometheuses.monitoring.coreos.com',
-      'servicemonitors.monitoring.coreos.com',
+      'alertmanagerconfigs.monitoring.coreos.com',
       'alertmanagers.monitoring.coreos.com',
+      'podmonitors.monitoring.coreos.com',
+      'probes.monitoring.coreos.com',
+      'prometheusagents.monitoring.coreos.com',
+      'prometheuses.monitoring.coreos.com',
+      'prometheusrules.monitoring.coreos.com',
+      'scrapeconfigs.monitoring.coreos.com',
+      'servicemonitors.monitoring.coreos.com',
+      'thanosrulers.monitoring.coreos.com',
     ];
     const crdChecks = await Promise.all(crdNames.map(async (crdName) => {
       try { await k8s(ctx, `/apis/apiextensions.k8s.io/v1/customresourcedefinitions/${crdName}`); return true; }
       catch (e) { if (e.code === 404) return false; throw e; }
     }));
-    const [deployments, statefulsets, daemonsets] = await Promise.all([
-      k8s(ctx, '/apis/apps/v1/deployments'),
-      k8s(ctx, '/apis/apps/v1/statefulsets'),
-      k8s(ctx, '/apis/apps/v1/daemonsets'),
+    const [deployments, statefulsets, daemonsets, pvcList, serviceList] = await Promise.all([
+      k8sListOrEmpty(ctx, '/apis/apps/v1/namespaces/monitoring/deployments'),
+      k8sListOrEmpty(ctx, '/apis/apps/v1/namespaces/monitoring/statefulsets'),
+      k8sListOrEmpty(ctx, '/apis/apps/v1/namespaces/monitoring/daemonsets'),
+      k8sListOrEmpty(ctx, '/api/v1/namespaces/monitoring/persistentvolumeclaims'),
+      k8sListOrEmpty(ctx, '/api/v1/namespaces/monitoring/services'),
     ]);
     const deploymentItems = deployments.items || [];
     const statefulSetItems = statefulsets.items || [];
     const daemonSetItems = daemonsets.items || [];
     const find = (items, pattern) => items.find((item) => pattern.test(item.metadata?.name || ''));
     const components = [
-      { name: 'Prometheus Operator', item: find(deploymentItems, /prometheus.*operator|kube-prometheus-stack-operator/i), ready: availableDeployment },
-      { name: 'Grafana', item: find(deploymentItems, /grafana/i), ready: availableDeployment },
-      { name: 'kube-state-metrics', item: find(deploymentItems, /kube-state-metrics/i), ready: availableDeployment },
-      { name: 'Prometheus', item: find(statefulSetItems, /^prometheus-/i), ready: readyStatefulSet },
-      { name: 'Alertmanager', item: find(statefulSetItems, /^alertmanager-/i), ready: readyStatefulSet },
-      { name: 'node-exporter', item: find(daemonSetItems, /node-exporter/i), ready: readyDaemonSet },
+      { name: 'Prometheus Operator', kind: 'Deployment', item: find(deploymentItems, /prometheus.*operator|kube-prometheus-stack-operator/i), ready: availableDeployment },
+      { name: 'Grafana', kind: 'Deployment', item: find(deploymentItems, /grafana/i), ready: availableDeployment },
+      { name: 'kube-state-metrics', kind: 'Deployment', item: find(deploymentItems, /kube-state-metrics/i), ready: availableDeployment },
+      { name: 'Prometheus', kind: 'StatefulSet', item: find(statefulSetItems, /^prometheus-/i), ready: readyStatefulSet },
+      { name: 'Alertmanager', kind: 'StatefulSet', item: find(statefulSetItems, /^alertmanager-/i), ready: readyStatefulSet },
+      { name: 'node-exporter', kind: 'DaemonSet', item: find(daemonSetItems, /node-exporter/i), ready: readyDaemonSet },
     ];
     const present = components.filter((component) => component.item);
     const ready = components.filter((component) => component.item && component.ready(component.item));
     const crdsReady = crdChecks.every(Boolean);
     const operator = components[0].item;
     const observedVersion = operator?.spec?.template?.spec?.containers?.[0]?.image || '';
+    const componentDetails = components.map((component) => {
+      const resource = component.item;
+      let desired = 0;
+      let readyCount = 0;
+      if (component.kind === 'DaemonSet') {
+        desired = Number(resource?.status?.desiredNumberScheduled || 0);
+        readyCount = Number(resource?.status?.numberReady || 0);
+      } else if (component.kind === 'StatefulSet') {
+        desired = Number(resource?.spec?.replicas || 1);
+        readyCount = Number(resource?.status?.readyReplicas || 0);
+      } else {
+        desired = Number(resource?.spec?.replicas || 1);
+        readyCount = Number(resource?.status?.availableReplicas || 0);
+      }
+      return {
+        name: component.name,
+        kind: component.kind,
+        resourceName: resource?.metadata?.name || '',
+        namespace: resource?.metadata?.namespace || 'monitoring',
+        state: !resource ? 'Missing' : component.ready(resource) ? 'Ready' : 'Pending',
+        desired,
+        ready: readyCount,
+        image: resource?.spec?.template?.spec?.containers?.[0]?.image || '',
+      };
+    });
+    const details = {
+      components: componentDetails,
+      crds: {
+        ready: crdChecks.filter(Boolean).length,
+        total: crdNames.length,
+        items: crdNames.map((crdName, index) => ({ name: crdName, ready: crdChecks[index] })),
+      },
+      pvcs: (pvcList.items || []).map((pvc) => ({
+        name: pvc.metadata?.name || '',
+        phase: pvc.status?.phase || 'Pending',
+        requested: pvc.spec?.resources?.requests?.storage || '',
+        capacity: pvc.status?.capacity?.storage || '',
+        storageClass: pvc.spec?.storageClassName || '',
+      })),
+      services: (serviceList.items || []).filter((service) => /kube-prometheus-stack|prometheus|alertmanager|grafana/i.test(service.metadata?.name || '')).map((service) => ({
+        name: service.metadata?.name || '',
+        type: service.spec?.type || 'ClusterIP',
+        clusterIP: service.spec?.clusterIP || '',
+        ports: (service.spec?.ports || []).map((port) => `${port.name || port.port}:${port.port}`).join(', '),
+      })),
+    };
     if (crdsReady && ready.length === components.length) {
       const namespaces = [...new Set(components.map((component) => component.item?.metadata?.namespace).filter(Boolean))];
-      return result('Ready', 'ObservabilityReady', `공유 관측 스택 ${ready.length}/${components.length}개 구성요소가 Ready입니다. (${namespaces.join(', ')})`, observedVersion);
+      return result('Ready', 'ObservabilityReady', `공유 관측 스택 ${ready.length}/${components.length}개 구성요소가 Ready입니다. (${namespaces.join(', ')})`, observedVersion, details);
     }
     if (crdChecks.some(Boolean) || present.length) {
       const missing = components.filter((component) => !component.item || !component.ready(component.item)).map((component) => component.name);
-      return result('Degraded', 'ObservabilityPartial', `관측 스택 일부만 준비되었습니다. 미준비: ${missing.join(', ') || 'CRD'}`, observedVersion);
+      return result('Degraded', 'ObservabilityPartial', `관측 스택 일부만 준비되었습니다. 미준비: ${missing.join(', ') || 'CRD'}`, observedVersion, details);
     }
-    return result('Blocked', 'ObservabilityMissing', '공유 kube-prometheus-stack이 없습니다. Observability profile에서 선택 설치할 수 있습니다.');
+    return result('Blocked', 'ObservabilityMissing', '공유 kube-prometheus-stack이 없습니다. Observability profile에서 선택 설치할 수 있습니다.', '', details);
   }
   if (name === 'storage') {
     const list = await k8s(ctx, '/apis/storage.k8s.io/v1/storageclasses');
@@ -288,11 +368,128 @@ async function helmStatus(ctx, item) {
   }
 }
 
+function operationResourceName(itemId) {
+  return `opensphere-his-operation-${String(itemId).toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 36)}`;
+}
+
+function operationActive(operation) {
+  if (!operation || !ACTIVE_OPERATION_PHASES.has(operation.phase)) return false;
+  const updated = Date.parse(operation.updatedAt || operation.startedAt || '');
+  return Number.isFinite(updated) && Date.now() - updated < OPERATION_STALE_MS;
+}
+
+async function readOperation(ctx, itemId) {
+  try {
+    const cm = await k8s(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/configmaps/${operationResourceName(itemId)}`);
+    return cm.data?.operation ? JSON.parse(cm.data.operation) : null;
+  } catch (error) {
+    if (error.code === 404) return null;
+    throw error;
+  }
+}
+
+async function writeOperation(ctx, item, operation) {
+  const name = operationResourceName(item.id);
+  let existing = null;
+  try { existing = await k8s(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/configmaps/${name}`); }
+  catch (error) { if (error.code !== 404) throw error; }
+  const body = {
+    apiVersion: 'v1',
+    kind: 'ConfigMap',
+    metadata: {
+      name,
+      namespace: OPERATION_NAMESPACE,
+      ...(existing?.metadata?.resourceVersion ? { resourceVersion: existing.metadata.resourceVersion } : {}),
+      labels: {
+        'app.kubernetes.io/managed-by': 'opensphere-cluster-manager',
+        'opensphere.io/his-operation': item.id,
+      },
+    },
+    data: { operation: JSON.stringify(operation) },
+  };
+  const apiPath = existing
+    ? `/api/v1/namespaces/${OPERATION_NAMESPACE}/configmaps/${name}`
+    : `/api/v1/namespaces/${OPERATION_NAMESPACE}/configmaps`;
+  await k8sRequest(ctx, apiPath, { method: existing ? 'PUT' : 'POST', body });
+  return operation;
+}
+
+async function createOperation(ctx, item, actor, action, reason) {
+  const existing = await readOperation(ctx, item.id);
+  if (operationActive(existing)) {
+    throw Object.assign(new Error(`동일 HIS 항목 작업이 이미 진행 중입니다. 작업 ID: ${existing.id}`), { code: 409 });
+  }
+  const now = new Date().toISOString();
+  const operation = {
+    id: `${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 10)}`,
+    itemId: item.id,
+    displayName: item.displayName,
+    action,
+    phase: 'Queued',
+    progress: 5,
+    message: action === 'install' ? '설치 작업이 대기열에 등록되었습니다.' : '삭제 작업이 대기열에 등록되었습니다.',
+    error: '',
+    actor: actor.username,
+    reason,
+    worker: process.env.HOSTNAME || 'cluster-manager',
+    startedAt: now,
+    updatedAt: now,
+    finishedAt: '',
+  };
+  await writeOperation(ctx, item, operation);
+  return operation;
+}
+
+async function patchOperation(ctx, item, operation, patch) {
+  const next = { ...operation, ...patch, updatedAt: new Date().toISOString() };
+  if (!ACTIVE_OPERATION_PHASES.has(next.phase) && !next.finishedAt) next.finishedAt = next.updatedAt;
+  console.log(`[his-operation] id=${next.id} item=${item.id} action=${next.action} phase=${next.phase} progress=${next.progress} message=${String(next.message || '').replace(/\s+/g, ' ').slice(0, 240)}`);
+  await writeOperation(ctx, item, next);
+  return next;
+}
+
+async function deleteIfPresent(ctx, apiPath) {
+  try { await k8sRequest(ctx, apiPath, { method: 'DELETE' }); return true; }
+  catch (error) { if (error.code === 404) return false; throw error; }
+}
+
+async function recoverStuckRelease(ctx, actor, item, operation, release) {
+  if (!release?.managed || !['uninstalling', 'failed', 'pending-install', 'pending-upgrade', 'pending-rollback'].includes(release.status)) {
+    return operation;
+  }
+  operation = await patchOperation(ctx, item, operation, {
+    phase: 'Recovering',
+    progress: 15,
+    message: `중단된 Helm release(${release.status})를 정리하고 있습니다.`,
+  });
+  await auditRequired(ctx, actor, 'HISRecoveryStarted', item, operation.reason, release.status);
+  try {
+    await withKubeconfig(ctx, (env) => command('helm', ['uninstall', item.release, '--namespace', item.namespace, '--no-hooks', '--wait', '--timeout', '2m'], { env, timeoutMs: 150000 }));
+  } catch (error) {
+    if (!/has no deployed releases|release: not found|not found/i.test(error.safeMessage || error.message || '')) throw error;
+  }
+  const check = await probe(ctx, item.probe);
+  const workloadPresent = (check.details?.components || []).some((component) => component.resourceName);
+  if (workloadPresent) {
+    throw Object.assign(new Error('중단된 release의 워크로드가 남아 있어 자동 복구를 중단했습니다. 세부 운영 상태를 확인하십시오.'), { code: 409 });
+  }
+  const selector = encodeURIComponent(`owner=helm,name=${item.release}`);
+  const secrets = await k8s(ctx, `/api/v1/namespaces/${item.namespace}/secrets?labelSelector=${selector}`);
+  for (const secret of secrets.items || []) {
+    await deleteIfPresent(ctx, `/api/v1/namespaces/${item.namespace}/secrets/${encodeURIComponent(secret.metadata.name)}`);
+  }
+  if (item.id === 'kube-prometheus-stack') {
+    await deleteIfPresent(ctx, `/api/v1/namespaces/${item.namespace}/secrets/kube-prometheus-stack-admission`);
+  }
+  await auditRequired(ctx, actor, 'HISRecoveryCompleted', item, operation.reason, 'success');
+  return patchOperation(ctx, item, operation, { progress: 25, message: '중단된 release 정리가 완료되었습니다.' });
+}
+
 async function itemStatus(ctx, item) {
   try {
-    const [check, release] = await Promise.all([probe(ctx, item.probe), helmStatus(ctx, item)]);
+    const [check, release, operation] = await Promise.all([probe(ctx, item.probe), helmStatus(ctx, item), readOperation(ctx, item.id)]);
     const ownership = release?.managed ? 'ClusterManager' : check.state === 'Ready' ? 'External' : 'Unmanaged';
-    return { ...item, check, release, ownership, chart: undefined, values: undefined, kindValues: undefined };
+    return { ...item, check, release, operation, ownership, chart: undefined, values: undefined, kindValues: undefined };
   } catch (e) {
     return {
       ...item,
@@ -301,6 +498,7 @@ async function itemStatus(ctx, item) {
       kindValues: undefined,
       ownership: 'Unknown',
       release: null,
+      operation: null,
       check: result('Blocked', 'ProbeFailed', safeError(e)),
     };
   }
@@ -357,14 +555,37 @@ async function actorFor(ctx, req, adminRequired) {
 
 async function plan(ctx, item) {
   const variant = await clusterVariant(ctx);
-  const args = ['template', item.release, item.chart, '--namespace', item.namespace, ...helmArgs(item, variant)];
+  const args = ['template', item.release, item.chart, '--namespace', item.namespace, '--include-crds', ...helmArgs(item, variant)];
   const out = await withKubeconfig(ctx, (env) => command('helm', args, { env, timeoutMs: 120000 }));
   const resources = [];
+  const clusterScopedKinds = new Set(['CustomResourceDefinition', 'ClusterRole', 'ClusterRoleBinding', 'Namespace', 'APIService', 'IngressClass', 'StorageClass', 'ValidatingWebhookConfiguration', 'MutatingWebhookConfiguration']);
   yaml.loadAll(out.stdout, (doc) => {
     if (!doc || typeof doc !== 'object' || !doc.kind) return;
-    resources.push({ apiVersion: doc.apiVersion || '', kind: doc.kind, namespace: doc.metadata?.namespace || item.namespace, name: doc.metadata?.name || '' });
+    resources.push({ apiVersion: doc.apiVersion || '', kind: doc.kind, namespace: doc.metadata?.namespace || (clusterScopedKinds.has(doc.kind) ? 'cluster-scoped' : item.namespace), name: doc.metadata?.name || '' });
   });
-  return { id: item.id, displayName: item.displayName, chart: item.chartName, chartVersion: item.chartVersion, namespace: item.namespace, release: item.release, clusterVariant: variant, resources, retainedOnDelete: item.retainedOnDelete || [] };
+  const byKind = resources.reduce((summary, resource) => {
+    summary[resource.kind] = (summary[resource.kind] || 0) + 1;
+    return summary;
+  }, {});
+  return {
+    id: item.id,
+    displayName: item.displayName,
+    chart: item.chartName,
+    chartVersion: item.chartVersion,
+    namespace: item.namespace,
+    release: item.release,
+    clusterVariant: variant,
+    resources,
+    summary: {
+      workloads: (byKind.Deployment || 0) + (byKind.StatefulSet || 0) + (byKind.DaemonSet || 0) + (byKind.Job || 0),
+      services: byKind.Service || 0,
+      persistentVolumeClaims: byKind.PersistentVolumeClaim || 0,
+      customResourceDefinitions: byKind.CustomResourceDefinition || 0,
+      byKind,
+    },
+    operationalProfile: item.operationalProfile || null,
+    retainedOnDelete: item.retainedOnDelete || [],
+  };
 }
 
 async function waitForProbe(ctx, item, wanted, timeoutMs = 120000) {
@@ -376,6 +597,101 @@ async function waitForProbe(ctx, item, wanted, timeoutMs = 120000) {
     await new Promise((resolve) => setTimeout(resolve, 3000));
   }
   return last || result('Blocked', 'ProbeTimeout', '검증 시간이 초과되었습니다.');
+}
+
+async function commandWithHeartbeat(ctx, item, operation, args) {
+  let heartbeatBusy = false;
+  const heartbeat = setInterval(async () => {
+    if (heartbeatBusy) return;
+    heartbeatBusy = true;
+    try {
+      const current = await readOperation(ctx, item.id);
+      if (current?.id === operation.id && operationActive(current)) {
+        await writeOperation(ctx, item, { ...current, updatedAt: new Date().toISOString() });
+      }
+    } catch (error) {
+      console.error(`[his-operation] heartbeat failed id=${operation.id}: ${safeError(error)}`);
+    } finally {
+      heartbeatBusy = false;
+    }
+  }, 5000);
+  try {
+    return await withKubeconfig(ctx, (env) => command('helm', args, { env }));
+  } finally {
+    clearInterval(heartbeat);
+  }
+}
+
+async function executeOperation(ctx, actor, item, operation) {
+  let current = operation;
+  try {
+    if (operation.action === 'install') {
+      current = await patchOperation(ctx, item, current, { phase: 'Installing', progress: 10, message: '설치 전 상태를 확인하고 있습니다.' });
+      const before = await itemStatus(ctx, item);
+      if (before.check.state === 'Ready' && !before.release?.managed) {
+        throw Object.assign(new Error('호스트 또는 외부 관리자가 제공한 capability입니다. Cluster Manager가 덮어쓰지 않습니다.'), { code: 409 });
+      }
+      const componentPresent = (before.check.details?.components || []).some((component) => component.resourceName);
+      if (before.check.state === 'Degraded' && !before.release?.managed && componentPresent) {
+        throw Object.assign(new Error('부분 설치 워크로드가 존재합니다. 충돌을 해소한 뒤 설치하십시오.'), { code: 409 });
+      }
+      current = await recoverStuckRelease(ctx, actor, item, current, before.release);
+      const variant = await clusterVariant(ctx);
+      current = await patchOperation(ctx, item, current, {
+        phase: 'Installing',
+        progress: 35,
+        message: `Helm ${item.chartName} ${item.chartVersion} 리소스를 적용하고 Ready 상태를 기다리고 있습니다.`,
+        clusterVariant: variant,
+      });
+      const args = ['upgrade', '--install', item.release, item.chart, '--namespace', item.namespace, '--create-namespace', '--atomic', '--wait', '--timeout', '10m', '--history-max', '5', ...helmArgs(item, variant)];
+      const out = await commandWithHeartbeat(ctx, item, current, args);
+      current = await patchOperation(ctx, item, current, { phase: 'Validating', progress: 88, message: 'Helm 적용이 완료되어 구성요소와 저장소를 검증하고 있습니다.' });
+      const check = await waitForProbe(ctx, item, (value) => value.state === 'Ready');
+      if (check.state !== 'Ready') throw Object.assign(new Error(`설치 후 검증 실패: ${check.message}`), { code: 502 });
+      await auditRequired(ctx, actor, 'HISInstalled', item, operation.reason, 'success');
+      await ctx.publishNotify({ userActor: actor.username, action: 'HISInstalled', target: `HIS/${item.id}`, result: check.state, reason: `${operation.reason} · ${check.message}` });
+      current = await patchOperation(ctx, item, current, {
+        phase: 'Ready',
+        progress: 100,
+        message: check.message,
+        output: out.stdout.slice(-4000),
+        error: '',
+      });
+      return;
+    }
+
+    current = await patchOperation(ctx, item, current, { phase: 'Uninstalling', progress: 25, message: 'Helm release와 관리 리소스를 삭제하고 있습니다.' });
+    const out = await commandWithHeartbeat(ctx, item, current, ['uninstall', item.release, '--namespace', item.namespace, '--wait', '--timeout', '10m']);
+    current = await patchOperation(ctx, item, current, { phase: 'Validating', progress: 88, message: '삭제 결과와 보존 리소스를 검증하고 있습니다.' });
+    const check = await waitForProbe(ctx, item, (value) => value.state !== 'Ready', 60000);
+    await auditRequired(ctx, actor, 'HISUninstalled', item, operation.reason, 'success');
+    await ctx.publishNotify({ userActor: actor.username, action: 'HISUninstalled', target: `HIS/${item.id}`, result: 'success', reason: `${operation.reason} · retained=${(item.retainedOnDelete || []).join(',') || 'none'}` });
+    await patchOperation(ctx, item, current, {
+      phase: 'Removed',
+      progress: 100,
+      message: `삭제가 완료되었습니다. 보존: ${(item.retainedOnDelete || []).join(', ') || '없음'}`,
+      output: out.stdout.slice(-4000),
+      error: '',
+      check,
+    });
+  } catch (error) {
+    const message = safeError(error);
+    let release = null;
+    try { release = await helmStatus(ctx, item); } catch { /* retain the primary failure */ }
+    const phase = release?.status === 'uninstalling' ? 'RollbackStalled' : 'Failed';
+    try { await auditRequired(ctx, actor, operation.action === 'install' ? 'HISInstallFailed' : 'HISUninstallFailed', item, operation.reason, message); }
+    catch (auditError) { console.error(`[his-operation] failure audit unavailable id=${operation.id}: ${safeError(auditError)}`); }
+    try {
+      await ctx.publishNotify({ userActor: actor.username, action: operation.action === 'install' ? 'HISInstallFailed' : 'HISUninstallFailed', target: `HIS/${item.id}`, result: 'error', reason: `${operation.reason} · ${message}` });
+    } catch { /* best effort notification */ }
+    await patchOperation(ctx, item, current, {
+      phase,
+      progress: 100,
+      message: phase === 'RollbackStalled' ? '설치 실패 후 Helm 롤백이 완료되지 않았습니다.' : 'HIS 작업이 실패했습니다.',
+      error: message,
+      releaseStatus: release?.status || 'unknown',
+    });
+  }
 }
 
 function createHisManager(ctx) {
@@ -396,39 +712,18 @@ function createHisManager(ctx) {
       }
 
       const reason = reasonFrom(body);
-      if (activeOperations.has(item.id)) throw Object.assign(new Error('동일 HIS 항목에 대한 작업이 이미 진행 중입니다.'), { code: 409 });
-      activeOperations.add(item.id);
-      try {
-        if (pathname === '/api/his/install') {
-          const before = await itemStatus(ctx, item);
-          if (before.check.state === 'Ready' && !before.release?.managed) {
-            throw Object.assign(new Error('호스트 또는 외부 관리자가 제공한 capability입니다. Cluster Manager가 덮어쓰지 않습니다.'), { code: 409 });
-          }
-          if (before.check.state === 'Degraded' && !before.release?.managed) {
-            throw Object.assign(new Error('부분 설치 리소스가 존재합니다. 충돌을 해소한 뒤 설치하십시오.'), { code: 409 });
-          }
-          await auditRequired(ctx, actor, 'HISInstallRequested', item, reason, 'requested');
-          const variant = await clusterVariant(ctx);
-          const args = ['upgrade', '--install', item.release, item.chart, '--namespace', item.namespace, '--create-namespace', '--atomic', '--wait', '--timeout', '10m', '--history-max', '5', ...helmArgs(item, variant)];
-          const out = await withKubeconfig(ctx, (env) => command('helm', args, { env }));
-          const check = await waitForProbe(ctx, item, (value) => value.state === 'Ready');
-          await ctx.publishNotify({ userActor: actor.username, action: 'HISInstalled', target: `HIS/${item.id}`, result: check.state, reason: `${reason} · ${check.message}` });
-          return ctx.jsonRes(res, check.state === 'Ready' ? 200 : 502, { ok: check.state === 'Ready', check, output: out.stdout.slice(-4000) }), true;
-        }
-        if (pathname === '/api/his/uninstall') {
-          if (String(body.confirm || '') !== item.id) throw Object.assign(new Error(`삭제 확인 값으로 '${item.id}'를 입력해야 합니다.`), { code: 400 });
-          const release = await helmStatus(ctx, item);
-          if (!release?.managed) throw Object.assign(new Error('Cluster Manager가 설치한 Helm release가 아니므로 삭제할 수 없습니다.'), { code: 409 });
-          await auditRequired(ctx, actor, 'HISUninstallRequested', item, reason, 'requested');
-          const out = await withKubeconfig(ctx, (env) => command('helm', ['uninstall', item.release, '--namespace', item.namespace, '--wait', '--timeout', '10m'], { env }));
-          const check = await waitForProbe(ctx, item, (value) => value.state !== 'Ready', 60000);
-          await ctx.publishNotify({ userActor: actor.username, action: 'HISUninstalled', target: `HIS/${item.id}`, result: 'success', reason: `${reason} · retained=${(item.retainedOnDelete || []).join(',') || 'none'}` });
-          return ctx.jsonRes(res, 200, { ok: true, check, retained: item.retainedOnDelete || [], output: out.stdout.slice(-4000) }), true;
-        }
-      } finally {
-        activeOperations.delete(item.id);
+      const action = pathname === '/api/his/install' ? 'install' : pathname === '/api/his/uninstall' ? 'uninstall' : '';
+      if (!action) throw Object.assign(new Error('not found'), { code: 404 });
+      if (action === 'uninstall') {
+        if (String(body.confirm || '') !== item.id) throw Object.assign(new Error(`삭제 확인 값으로 '${item.id}'를 입력해야 합니다.`), { code: 400 });
+        const release = await helmStatus(ctx, item);
+        if (!release?.managed) throw Object.assign(new Error('Cluster Manager가 설치한 Helm release가 아니므로 삭제할 수 없습니다.'), { code: 409 });
       }
-      throw Object.assign(new Error('not found'), { code: 404 });
+      await auditRequired(ctx, actor, action === 'install' ? 'HISInstallRequested' : 'HISUninstallRequested', item, reason, 'requested');
+      const operation = await createOperation(ctx, item, actor, action, reason);
+      ctx.jsonRes(res, 202, { ok: true, operation });
+      setImmediate(() => { void executeOperation(ctx, actor, item, operation); });
+      return true;
     } catch (error) {
       ctx.jsonRes(res, Number(error.code) >= 400 ? Number(error.code) : 500, { error: safeError(error) });
       return true;
@@ -446,6 +741,9 @@ module.exports = {
   command,
   withKubeconfig,
   k8s,
+  k8sRequest,
   kubeconfigText,
   auditRequired,
+  operationResourceName,
+  operationActive,
 };

@@ -14,7 +14,7 @@ spec:
   serviceAccountName: opensphere-cluster-manager
   displayName: "Cluster Manager"
   owner: opensphere-platform
-  version: 1.2.1
+  version: 1.2.2
   description: "OpenSphere Kubernetes, external Ceph Storage, and HIS management views"
   image:
     repository: ghcr.io/opensphere-platform/opensphere-shell-cluster-manager
@@ -24,7 +24,7 @@ spec:
     label: "Cluster Manager"
   manifest:
     path: /plugins/ui-shell.manifest.json
-    sha256: "876d29ea8b1729ad5b007c1c9bae99272204a56b425e76a9ef25bd58e81796dc"
+    sha256: "4a1556b3962a62a2f48d359e2ee5d50d2ce8a76ff5f618eb03a3d2c082803ed0"
     signaturePath: /plugins/ui-shell.manifest.json.sig
   trust:
     keyId: opensphere-plugins-v1

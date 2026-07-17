@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { HIS_CATALOG, catalogItem } = require('../his-catalog');
-const { reasonFrom, safeError, kubeconfigText, auditRequired } = require('../his-manager');
+const { reasonFrom, safeError, kubeconfigText, auditRequired, operationResourceName, operationActive } = require('../his-manager');
 
 test('HIS catalog keeps PFS/plugin concepts outside the prerequisite catalog', () => {
   assert.ok(HIS_CATALOG.some((item) => item.mode === 'DetectOnly'));
@@ -32,6 +32,14 @@ test('generated kubeconfig does not disable TLS verification', () => {
   const config = kubeconfigText('token', '/var/run/ca.crt', 'https://kubernetes.default.svc');
   assert.match(config, /certificate-authority: \/var\/run\/ca.crt/);
   assert.doesNotMatch(config, /insecure-skip-tls-verify/);
+});
+
+test('HIS operations use bounded Kubernetes names and reject stale heartbeats', () => {
+  assert.equal(operationResourceName('kube-prometheus-stack'), 'opensphere-his-operation-kube-prometheus-stack');
+  assert.ok(operationResourceName('X'.repeat(100)).length <= 63);
+  assert.equal(operationActive({ phase: 'Installing', updatedAt: new Date().toISOString() }), true);
+  assert.equal(operationActive({ phase: 'Installing', updatedAt: new Date(Date.now() - 120000).toISOString() }), false);
+  assert.equal(operationActive({ phase: 'Ready', updatedAt: new Date().toISOString() }), false);
 });
 
 test('durable audit request authenticates with the managed workload ServiceAccount token', async () => {

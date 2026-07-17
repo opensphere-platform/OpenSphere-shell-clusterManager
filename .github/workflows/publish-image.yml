@@ -46,7 +46,7 @@ jobs:
           push: true
           provenance: false
           tags: |
-            ghcr.io/opensphere-platform/opensphere-shell-cluster-manager:1.2.1
+            ghcr.io/opensphere-platform/opensphere-shell-cluster-manager:1.2.2
             ghcr.io/opensphere-platform/opensphere-shell-cluster-manager:edge
           build-args: |
             OS_MODULE_DESCRIPTOR=${{ steps.package.outputs.descriptor }}

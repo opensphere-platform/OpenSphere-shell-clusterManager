@@ -104,6 +104,12 @@ const HIS_CATALOG = Object.freeze([
     appVersion: 'v0.91.0',
     source: 'oci://ghcr.io/prometheus-community/charts/kube-prometheus-stack',
     values: ['--values', '/app/his-values/kube-prometheus-stack.yaml'],
+    operationalProfile: {
+      components: ['Prometheus Operator', 'Prometheus', 'Alertmanager', 'Grafana', 'kube-state-metrics', 'node-exporter'],
+      storage: ['Grafana 5Gi', 'Alertmanager 2Gi', 'Prometheus 20Gi'],
+      retention: ['Alertmanager 120h', 'Prometheus 7d'],
+      exposure: 'ClusterIP only (Ingress disabled)',
+    },
     retainedOnDelete: ['Namespace', 'CustomResourceDefinition', 'PersistentVolumeClaim', 'Prometheus/Alertmanager 관측 데이터'],
   },
   {

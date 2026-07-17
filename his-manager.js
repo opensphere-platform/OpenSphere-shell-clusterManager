@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const os = require('os');
+const net = require('net');
 const path = require('path');
 const { spawn } = require('child_process');
 const yaml = require('js-yaml');
@@ -13,7 +14,244 @@ const MAX_OUTPUT = 1024 * 1024;
 const HELM_TIMEOUT_MS = 12 * 60 * 1000;
 const OPERATION_NAMESPACE = process.env.HIS_OPERATION_NAMESPACE || process.env.POD_NAMESPACE || 'opensphere-console';
 const OPERATION_STALE_MS = 60 * 1000;
-const ACTIVE_OPERATION_PHASES = new Set(['Queued', 'Recovering', 'Installing', 'Validating', 'Uninstalling']);
+const ACTIVE_OPERATION_PHASES = new Set(['Queued', 'Recovering', 'Installing', 'Configuring', 'Migrating', 'Validating', 'Uninstalling']);
+const OBSERVABILITY_ITEM_ID = 'kube-prometheus-stack';
+const OBSERVABILITY_CONFIG_NAME = 'opensphere-his-config-kube-prometheus-stack';
+const OBSERVABILITY_RESET_CONFIRMATION = 'RESET OBSERVABILITY DATA';
+const OBSERVABILITY_PUBLIC_CONFIRMATION = 'ENABLE PUBLIC GRAFANA';
+const OIDC_SECRET_KEYS = Object.freeze([
+  'GF_AUTH_GENERIC_OAUTH_CLIENT_ID',
+  'GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET',
+  'GF_AUTH_GENERIC_OAUTH_AUTH_URL',
+  'GF_AUTH_GENERIC_OAUTH_TOKEN_URL',
+  'GF_AUTH_GENERIC_OAUTH_API_URL',
+]);
+const DEFAULT_OBSERVABILITY_CONFIG = Object.freeze({
+  schemaVersion: 1,
+  prometheus: Object.freeze({
+    retention: '7d',
+    storageClassName: '',
+    storageSize: '20Gi',
+    remoteWrite: Object.freeze({ enabled: false, url: '', secretName: '', secretKey: 'token' }),
+  }),
+  alertmanager: Object.freeze({ retention: '120h', storageClassName: '', storageSize: '2Gi' }),
+  grafana: Object.freeze({
+    storageClassName: '',
+    storageSize: '5Gi',
+    exposureMode: 'ClusterInternal',
+    hostname: '',
+    ingressClassName: 'nginx',
+    ingressNamespace: 'ingress-nginx',
+    tlsSecretName: '',
+    oidcSecretName: '',
+    allowedCidrs: Object.freeze([]),
+  }),
+});
+
+function clone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function k8sName(value, field, allowEmpty = false) {
+  const text = String(value || '').trim();
+  if (allowEmpty && !text) return '';
+  if (!/^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$/.test(text) || text.length > 253) {
+    throw Object.assign(new Error(`${field} 값이 올바른 Kubernetes/DNS 이름이 아닙니다.`), { code: 400 });
+  }
+  return text;
+}
+
+function storageQuantity(value, field) {
+  const text = String(value || '').trim();
+  const match = /^([1-9][0-9]*)(Mi|Gi|Ti)$/.exec(text);
+  if (!match) throw Object.assign(new Error(`${field} 용량은 1Gi, 500Mi와 같은 이진 단위로 입력해야 합니다.`), { code: 400 });
+  const units = { Mi: 1024n ** 2n, Gi: 1024n ** 3n, Ti: 1024n ** 4n };
+  return { text, bytes: BigInt(match[1]) * units[match[2]] };
+}
+
+function durationValue(value, field) {
+  const text = String(value || '').trim();
+  const match = /^([1-9][0-9]*)(m|h|d|w|y)$/.exec(text);
+  if (!match) throw Object.assign(new Error(`${field} 보존기간은 30d, 120h와 같이 입력해야 합니다.`), { code: 400 });
+  const units = { m: 60, h: 3600, d: 86400, w: 604800, y: 31536000 };
+  const seconds = Number(match[1]) * units[match[2]];
+  if (seconds < 3600 || seconds > 5 * 31536000) {
+    throw Object.assign(new Error(`${field} 보존기간은 1시간 이상 5년 이하만 허용합니다.`), { code: 400 });
+  }
+  return text;
+}
+
+function cidrValue(value) {
+  const text = String(value || '').trim();
+  const [address, rawPrefix, extra] = text.split('/');
+  const family = net.isIP(address);
+  const prefix = Number(rawPrefix);
+  if (extra !== undefined || !family || !Number.isInteger(prefix) || prefix < 0 || prefix > (family === 4 ? 32 : 128)) {
+    throw Object.assign(new Error(`허용 CIDR '${text}' 형식이 올바르지 않습니다.`), { code: 400 });
+  }
+  return `${address}/${prefix}`;
+}
+
+function remoteWriteUrl(value) {
+  const text = String(value || '').trim();
+  let parsed;
+  try { parsed = new URL(text); } catch { throw Object.assign(new Error('Remote write URL이 올바르지 않습니다.'), { code: 400 }); }
+  const clusterLocal = parsed.hostname.endsWith('.svc') || parsed.hostname.endsWith('.svc.cluster.local');
+  if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && clusterLocal)) {
+    throw Object.assign(new Error('Remote write는 HTTPS 또는 cluster-local HTTP 주소만 허용합니다.'), { code: 400 });
+  }
+  return parsed.toString();
+}
+
+function validateObservabilityConfig(input) {
+  const source = input && typeof input === 'object' ? input : {};
+  const prometheus = source.prometheus || {};
+  const alertmanager = source.alertmanager || {};
+  const grafana = source.grafana || {};
+  const remoteWrite = prometheus.remoteWrite || {};
+  const exposureMode = String(grafana.exposureMode || DEFAULT_OBSERVABILITY_CONFIG.grafana.exposureMode);
+  if (!['ClusterInternal', 'PrivateIngress', 'PublicIngress'].includes(exposureMode)) {
+    throw Object.assign(new Error('Grafana 공개 정책이 올바르지 않습니다.'), { code: 400 });
+  }
+  const remoteWriteEnabled = Boolean(remoteWrite.enabled);
+  const external = exposureMode !== 'ClusterInternal';
+  const config = {
+    schemaVersion: 1,
+    prometheus: {
+      retention: durationValue(prometheus.retention || DEFAULT_OBSERVABILITY_CONFIG.prometheus.retention, 'Prometheus'),
+      storageClassName: k8sName(prometheus.storageClassName, 'Prometheus StorageClass', true),
+      storageSize: storageQuantity(prometheus.storageSize || DEFAULT_OBSERVABILITY_CONFIG.prometheus.storageSize, 'Prometheus').text,
+      remoteWrite: {
+        enabled: remoteWriteEnabled,
+        url: remoteWriteEnabled ? remoteWriteUrl(remoteWrite.url) : '',
+        secretName: remoteWriteEnabled ? k8sName(remoteWrite.secretName, 'Remote write Secret') : '',
+        secretKey: remoteWriteEnabled ? k8sName(remoteWrite.secretKey || 'token', 'Remote write Secret key') : 'token',
+      },
+    },
+    alertmanager: {
+      retention: durationValue(alertmanager.retention || DEFAULT_OBSERVABILITY_CONFIG.alertmanager.retention, 'Alertmanager'),
+      storageClassName: k8sName(alertmanager.storageClassName, 'Alertmanager StorageClass', true),
+      storageSize: storageQuantity(alertmanager.storageSize || DEFAULT_OBSERVABILITY_CONFIG.alertmanager.storageSize, 'Alertmanager').text,
+    },
+    grafana: {
+      storageClassName: k8sName(grafana.storageClassName, 'Grafana StorageClass', true),
+      storageSize: storageQuantity(grafana.storageSize || DEFAULT_OBSERVABILITY_CONFIG.grafana.storageSize, 'Grafana').text,
+      exposureMode,
+      hostname: external ? k8sName(grafana.hostname, 'Grafana hostname') : '',
+      ingressClassName: external ? k8sName(grafana.ingressClassName || 'nginx', 'IngressClass') : String(grafana.ingressClassName || 'nginx'),
+      ingressNamespace: external ? k8sName(grafana.ingressNamespace || 'ingress-nginx', 'Ingress controller namespace') : String(grafana.ingressNamespace || 'ingress-nginx'),
+      tlsSecretName: external ? k8sName(grafana.tlsSecretName, 'Grafana TLS Secret') : '',
+      oidcSecretName: external ? k8sName(grafana.oidcSecretName, 'Grafana OIDC Secret') : '',
+      allowedCidrs: exposureMode === 'PrivateIngress'
+        ? [...new Set((Array.isArray(grafana.allowedCidrs) ? grafana.allowedCidrs : []).map(cidrValue))]
+        : [],
+    },
+  };
+  if (exposureMode === 'PrivateIngress' && !config.grafana.allowedCidrs.length) {
+    throw Object.assign(new Error('Private Ingress에는 하나 이상의 허용 CIDR이 필요합니다.'), { code: 400 });
+  }
+  return config;
+}
+
+function observabilityValues(rawConfig) {
+  const config = validateObservabilityConfig(rawConfig);
+  const namespaceNames = ['monitoring', 'opensphere-console'];
+  if (config.grafana.exposureMode !== 'ClusterInternal') namespaceNames.push(config.grafana.ingressNamespace);
+  const fromNamespaces = [...new Set(namespaceNames)];
+  const namespaceSelector = {
+    namespaceSelector: {
+      matchExpressions: [{ key: 'kubernetes.io/metadata.name', operator: 'In', values: fromNamespaces }],
+    },
+  };
+  const pvcSpec = (storageClassName, storageSize) => ({
+    ...(storageClassName ? { storageClassName } : {}),
+    accessModes: ['ReadWriteOnce'],
+    resources: { requests: { storage: storageSize } },
+  });
+  const external = config.grafana.exposureMode !== 'ClusterInternal';
+  const ingressAnnotations = external ? {
+    'nginx.ingress.kubernetes.io/ssl-redirect': 'true',
+    'nginx.ingress.kubernetes.io/force-ssl-redirect': 'true',
+    'nginx.ingress.kubernetes.io/limit-rps': '20',
+    'nginx.ingress.kubernetes.io/limit-burst-multiplier': '3',
+    ...(config.grafana.exposureMode === 'PrivateIngress'
+      ? { 'nginx.ingress.kubernetes.io/whitelist-source-range': config.grafana.allowedCidrs.join(',') }
+      : {}),
+  } : {};
+  const networkPolicy = (name, appName, ports) => ({
+    apiVersion: 'networking.k8s.io/v1',
+    kind: 'NetworkPolicy',
+    metadata: {
+      name: `opensphere-${name}-access`,
+      namespace: 'monitoring',
+      labels: { 'app.kubernetes.io/managed-by': 'OpenSphere', 'opensphere.io/policy': 'observability-access' },
+    },
+    spec: {
+      podSelector: { matchLabels: { 'app.kubernetes.io/name': appName } },
+      policyTypes: ['Ingress'],
+      ingress: [{ from: [namespaceSelector], ports }],
+    },
+  });
+  return {
+    grafana: {
+      deploymentStrategy: { type: 'Recreate' },
+      initChownData: { enabled: false },
+      service: { type: 'ClusterIP' },
+      ingress: {
+        enabled: external,
+        ingressClassName: external ? config.grafana.ingressClassName : '',
+        annotations: ingressAnnotations,
+        labels: { 'opensphere.io/exposure-mode': config.grafana.exposureMode },
+        hosts: external ? [config.grafana.hostname] : [],
+        path: '/',
+        tls: external ? [{ secretName: config.grafana.tlsSecretName, hosts: [config.grafana.hostname] }] : [],
+      },
+      persistence: {
+        enabled: true,
+        lookupVolumeName: true,
+        size: config.grafana.storageSize,
+        ...(config.grafana.storageClassName ? { storageClassName: config.grafana.storageClassName } : {}),
+        annotations: { 'helm.sh/resource-policy': 'keep', 'opensphere.io/data-class': 'observability' },
+      },
+      envFromSecret: external ? config.grafana.oidcSecretName : '',
+      'grafana.ini': {
+        server: external ? { domain: config.grafana.hostname, root_url: `https://${config.grafana.hostname}` } : {},
+        'auth.anonymous': { enabled: false },
+        'auth.generic_oauth': { enabled: external, allow_sign_up: true, scopes: 'openid profile email groups' },
+      },
+    },
+    alertmanager: {
+      ingress: { enabled: false },
+      service: { type: 'ClusterIP' },
+      alertmanagerSpec: {
+        retention: config.alertmanager.retention,
+        persistentVolumeClaimRetentionPolicy: { whenDeleted: 'Retain', whenScaled: 'Retain' },
+        storage: { volumeClaimTemplate: { spec: pvcSpec(config.alertmanager.storageClassName, config.alertmanager.storageSize) } },
+      },
+    },
+    prometheus: {
+      ingress: { enabled: false },
+      service: { type: 'ClusterIP' },
+      prometheusSpec: {
+        retention: config.prometheus.retention,
+        persistentVolumeClaimRetentionPolicy: { whenDeleted: 'Retain', whenScaled: 'Retain' },
+        remoteWrite: config.prometheus.remoteWrite.enabled ? [{
+          name: 'opensphere-managed',
+          url: config.prometheus.remoteWrite.url,
+          authorization: { credentials: { name: config.prometheus.remoteWrite.secretName, key: config.prometheus.remoteWrite.secretKey } },
+        }] : [],
+        storageSpec: { volumeClaimTemplate: { spec: pvcSpec(config.prometheus.storageClassName, config.prometheus.storageSize) } },
+      },
+    },
+    extraManifests: [
+      networkPolicy('grafana', 'grafana', [{ protocol: 'TCP', port: 3000 }]),
+      networkPolicy('prometheus', 'prometheus', [{ protocol: 'TCP', port: 9090 }]),
+      networkPolicy('alertmanager', 'alertmanager', [
+        { protocol: 'TCP', port: 9093 }, { protocol: 'TCP', port: 9094 }, { protocol: 'UDP', port: 9094 },
+      ]),
+    ],
+  };
+}
 
 function safeError(error) {
   const message = error && (error.safeMessage || error.message || error.msg || String(error));
@@ -108,7 +346,7 @@ async function withKubeconfig(ctx, callback) {
     HELM_CONFIG_HOME: path.join(dir, 'config'),
     HELM_DATA_HOME: path.join(dir, 'data'),
   };
-  try { return await callback(env); }
+  try { return await callback(env, dir); }
   finally { fs.rmSync(dir, { recursive: true, force: true }); }
 }
 
@@ -356,6 +594,19 @@ function helmArgs(item, variant) {
   return [...(item.values || []), ...(variant === 'kind' ? item.kindValues || [] : [])];
 }
 
+async function managedValuesForItem(ctx, item) {
+  if (item.id !== OBSERVABILITY_ITEM_ID) return null;
+  const [live, stored] = await Promise.all([observabilityLiveState(ctx), readObservabilityConfig(ctx)]);
+  return inferObservabilityConfig(live, stored);
+}
+
+function writeManagedValues(item, config, dir) {
+  if (item.id !== OBSERVABILITY_ITEM_ID || !config) return [];
+  const valuesPath = path.join(dir, 'opensphere-managed-values.yaml');
+  fs.writeFileSync(valuesPath, yaml.dump(observabilityValues(config), { noRefs: true, lineWidth: 140 }), { mode: 0o600 });
+  return ['--values', valuesPath];
+}
+
 async function helmStatus(ctx, item) {
   if (item.mode !== 'HelmManaged') return null;
   try {
@@ -414,6 +665,279 @@ async function writeOperation(ctx, item, operation) {
   return operation;
 }
 
+async function k8sOrNull(ctx, apiPath) {
+  try { return await k8s(ctx, apiPath); }
+  catch (error) { if (error.code === 404) return null; throw error; }
+}
+
+async function readObservabilityConfig(ctx) {
+  const cm = await k8sOrNull(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/configmaps/${OBSERVABILITY_CONFIG_NAME}`);
+  if (!cm?.data?.config) return null;
+  try { return validateObservabilityConfig(JSON.parse(cm.data.config)); }
+  catch (error) { throw Object.assign(new Error(`저장된 Observability 구성이 손상되었습니다: ${safeError(error)}`), { code: 500 }); }
+}
+
+async function writeObservabilityConfig(ctx, actor, config, reason) {
+  const existing = await k8sOrNull(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/configmaps/${OBSERVABILITY_CONFIG_NAME}`);
+  const body = {
+    apiVersion: 'v1',
+    kind: 'ConfigMap',
+    metadata: {
+      name: OBSERVABILITY_CONFIG_NAME,
+      namespace: OPERATION_NAMESPACE,
+      ...(existing?.metadata?.resourceVersion ? { resourceVersion: existing.metadata.resourceVersion } : {}),
+      labels: {
+        'app.kubernetes.io/managed-by': 'opensphere-cluster-manager',
+        'opensphere.io/his-configuration': OBSERVABILITY_ITEM_ID,
+      },
+    },
+    data: {
+      config: JSON.stringify(validateObservabilityConfig(config)),
+      updatedAt: new Date().toISOString(),
+      updatedBy: actor.username,
+      reason,
+    },
+  };
+  const apiPath = existing
+    ? `/api/v1/namespaces/${OPERATION_NAMESPACE}/configmaps/${OBSERVABILITY_CONFIG_NAME}`
+    : `/api/v1/namespaces/${OPERATION_NAMESPACE}/configmaps`;
+  await k8sRequest(ctx, apiPath, { method: existing ? 'PUT' : 'POST', body });
+  return body;
+}
+
+function observabilityPvcComponent(name) {
+  if (name === 'kube-prometheus-stack-grafana') return 'grafana';
+  if (/^prometheus-.*-prometheus-0$/.test(name)) return 'prometheus';
+  if (/^alertmanager-.*-alertmanager-0$/.test(name)) return 'alertmanager';
+  return '';
+}
+
+async function observabilityLiveState(ctx) {
+  const [storageClassList, ingressClassList, pvcList, serviceList, ingressList, policyList, prometheusList, alertmanagerList] = await Promise.all([
+    k8sListOrEmpty(ctx, '/apis/storage.k8s.io/v1/storageclasses'),
+    k8sListOrEmpty(ctx, '/apis/networking.k8s.io/v1/ingressclasses'),
+    k8sListOrEmpty(ctx, '/api/v1/namespaces/monitoring/persistentvolumeclaims'),
+    k8sListOrEmpty(ctx, '/api/v1/namespaces/monitoring/services'),
+    k8sListOrEmpty(ctx, '/apis/networking.k8s.io/v1/namespaces/monitoring/ingresses'),
+    k8sListOrEmpty(ctx, '/apis/networking.k8s.io/v1/namespaces/monitoring/networkpolicies'),
+    k8sListOrEmpty(ctx, '/apis/monitoring.coreos.com/v1/namespaces/monitoring/prometheuses'),
+    k8sListOrEmpty(ctx, '/apis/monitoring.coreos.com/v1/namespaces/monitoring/alertmanagers'),
+  ]);
+  const storageClasses = (storageClassList.items || []).map((storageClass) => ({
+    name: storageClass.metadata?.name || '',
+    provisioner: storageClass.provisioner || '',
+    isDefault: storageClass.metadata?.annotations?.['storageclass.kubernetes.io/is-default-class'] === 'true',
+    allowVolumeExpansion: storageClass.allowVolumeExpansion === true,
+    reclaimPolicy: storageClass.reclaimPolicy || 'Delete',
+    volumeBindingMode: storageClass.volumeBindingMode || 'Immediate',
+  }));
+  const pvcs = {};
+  for (const pvc of pvcList.items || []) {
+    const component = observabilityPvcComponent(pvc.metadata?.name || '');
+    if (!component) continue;
+    pvcs[component] = {
+      name: pvc.metadata?.name || '',
+      phase: pvc.status?.phase || 'Pending',
+      storageClassName: pvc.spec?.storageClassName || '',
+      requested: pvc.spec?.resources?.requests?.storage || '',
+      capacity: pvc.status?.capacity?.storage || '',
+      volumeName: pvc.spec?.volumeName || '',
+      selectedNode: pvc.metadata?.annotations?.['volume.kubernetes.io/selected-node'] || '',
+    };
+  }
+  const grafanaIngress = (ingressList.items || []).find((ingress) => /grafana/i.test(ingress.metadata?.name || '')) || null;
+  const directExternalServices = (serviceList.items || []).filter((service) => {
+    const name = service.metadata?.name || '';
+    return /prometheus|alertmanager/i.test(name) && !/operated/.test(name)
+      && !['ClusterIP', ''].includes(service.spec?.type || 'ClusterIP');
+  }).map((service) => service.metadata?.name || '');
+  const prometheus = (prometheusList.items || []).find((item) => item.metadata?.name === 'kube-prometheus-stack-prometheus') || prometheusList.items?.[0] || null;
+  const alertmanager = (alertmanagerList.items || []).find((item) => item.metadata?.name === 'kube-prometheus-stack-alertmanager') || alertmanagerList.items?.[0] || null;
+  return {
+    installed: Boolean(prometheus || alertmanager || pvcs.grafana),
+    storageClasses,
+    ingressClasses: (ingressClassList.items || []).map((item) => ({ name: item.metadata?.name || '', controller: item.spec?.controller || '' })),
+    pvcs,
+    prometheus: prometheus ? {
+      retention: prometheus.spec?.retention || '',
+      remoteWrite: (prometheus.spec?.remoteWrite || []).map((item) => ({
+        name: item.name || '',
+        url: item.url || '',
+        secretName: item.authorization?.credentials?.name || '',
+        secretKey: item.authorization?.credentials?.key || '',
+      })),
+    } : null,
+    alertmanager: alertmanager ? { retention: alertmanager.spec?.retention || '' } : null,
+    grafana: {
+      serviceType: (serviceList.items || []).find((service) => /grafana/i.test(service.metadata?.name || ''))?.spec?.type || 'NotInstalled',
+      ingress: grafanaIngress ? {
+        name: grafanaIngress.metadata?.name || '',
+        hostname: grafanaIngress.spec?.rules?.[0]?.host || '',
+        ingressClassName: grafanaIngress.spec?.ingressClassName || '',
+        tlsSecretName: grafanaIngress.spec?.tls?.[0]?.secretName || '',
+        exposureMode: grafanaIngress.metadata?.labels?.['opensphere.io/exposure-mode'] || 'PrivateIngress',
+      } : null,
+    },
+    networkPolicies: (policyList.items || []).filter((policy) => policy.metadata?.labels?.['opensphere.io/policy'] === 'observability-access').map((policy) => policy.metadata?.name || ''),
+    directExternalServices,
+  };
+}
+
+function inferObservabilityConfig(live, stored) {
+  if (stored) return validateObservabilityConfig(stored);
+  const config = clone(DEFAULT_OBSERVABILITY_CONFIG);
+  for (const component of ['prometheus', 'alertmanager', 'grafana']) {
+    if (live.pvcs[component]) {
+      config[component].storageClassName = live.pvcs[component].storageClassName;
+      config[component].storageSize = live.pvcs[component].requested || live.pvcs[component].capacity || config[component].storageSize;
+    }
+  }
+  if (live.prometheus?.retention) config.prometheus.retention = live.prometheus.retention;
+  if (live.alertmanager?.retention) config.alertmanager.retention = live.alertmanager.retention;
+  if (live.prometheus?.remoteWrite?.length) {
+    const remote = live.prometheus.remoteWrite[0];
+    config.prometheus.remoteWrite = { enabled: true, url: remote.url, secretName: remote.secretName, secretKey: remote.secretKey || 'token' };
+  }
+  if (live.grafana.ingress) {
+    config.grafana.exposureMode = live.grafana.ingress.exposureMode;
+    config.grafana.hostname = live.grafana.ingress.hostname;
+    config.grafana.ingressClassName = live.grafana.ingress.ingressClassName || 'nginx';
+    config.grafana.tlsSecretName = live.grafana.ingress.tlsSecretName;
+  }
+  return validateObservabilityConfig(config);
+}
+
+function flattenConfiguration(config) {
+  return {
+    'prometheus.retention': config.prometheus.retention,
+    'prometheus.storageClassName': config.prometheus.storageClassName || '(cluster default)',
+    'prometheus.storageSize': config.prometheus.storageSize,
+    'prometheus.remoteWrite.enabled': String(config.prometheus.remoteWrite.enabled),
+    'prometheus.remoteWrite.url': config.prometheus.remoteWrite.url || '—',
+    'prometheus.remoteWrite.secretRef': config.prometheus.remoteWrite.enabled ? `${config.prometheus.remoteWrite.secretName}/${config.prometheus.remoteWrite.secretKey}` : '—',
+    'alertmanager.retention': config.alertmanager.retention,
+    'alertmanager.storageClassName': config.alertmanager.storageClassName || '(cluster default)',
+    'alertmanager.storageSize': config.alertmanager.storageSize,
+    'grafana.storageClassName': config.grafana.storageClassName || '(cluster default)',
+    'grafana.storageSize': config.grafana.storageSize,
+    'grafana.exposureMode': config.grafana.exposureMode,
+    'grafana.hostname': config.grafana.hostname || '—',
+    'grafana.ingressClassName': config.grafana.exposureMode === 'ClusterInternal' ? '—' : config.grafana.ingressClassName,
+    'grafana.tlsSecretName': config.grafana.tlsSecretName || '—',
+    'grafana.oidcSecretName': config.grafana.oidcSecretName || '—',
+    'grafana.allowedCidrs': config.grafana.allowedCidrs.join(', ') || '—',
+  };
+}
+
+async function secretCheck(ctx, namespace, name, requiredKeys, label) {
+  const secret = await k8sOrNull(ctx, `/api/v1/namespaces/${namespace}/secrets/${encodeURIComponent(name)}`);
+  if (!secret) return { ok: false, message: `${label} '${name}'을 ${namespace} namespace에서 찾지 못했습니다.` };
+  const missing = requiredKeys.filter((key) => !secret.data?.[key]);
+  return missing.length
+    ? { ok: false, message: `${label} '${name}'에 필수 key가 없습니다: ${missing.join(', ')}` }
+    : { ok: true, type: secret.type || 'Opaque' };
+}
+
+async function observabilityConfigurationPlan(ctx, rawConfig) {
+  const desired = validateObservabilityConfig(rawConfig);
+  const [live, stored] = await Promise.all([observabilityLiveState(ctx), readObservabilityConfig(ctx)]);
+  const current = inferObservabilityConfig(live, stored);
+  const blockers = [];
+  const warnings = [];
+  const resetTargets = [];
+  const resizeTargets = [];
+  const defaultStorageClass = live.storageClasses.find((item) => item.isDefault);
+  const classByName = new Map(live.storageClasses.map((item) => [item.name, item]));
+
+  for (const component of ['prometheus', 'alertmanager', 'grafana']) {
+    const desiredClassName = desired[component].storageClassName || defaultStorageClass?.name || '';
+    const storageClass = classByName.get(desiredClassName);
+    if (!desiredClassName) blockers.push(`${component}: 기본 StorageClass가 없으므로 명시적으로 선택해야 합니다.`);
+    else if (!storageClass) blockers.push(`${component}: StorageClass '${desiredClassName}'이 존재하지 않습니다.`);
+    else if (/local-path|hostpath/i.test(storageClass.provisioner)) warnings.push(`${component}: '${desiredClassName}'은 노드 로컬 provisioner이므로 운영 내구성 저장소로 권장하지 않습니다.`);
+    const pvc = live.pvcs[component];
+    if (!pvc) continue;
+    const desiredSize = storageQuantity(desired[component].storageSize, component);
+    const currentSize = storageQuantity(pvc.requested || pvc.capacity, component);
+    if (desiredClassName !== pvc.storageClassName) resetTargets.push(`${component}: StorageClass ${pvc.storageClassName} → ${desiredClassName}`);
+    if (desiredSize.bytes < currentSize.bytes) resetTargets.push(`${component}: 용량 축소 ${pvc.requested} → ${desired[component].storageSize}`);
+    if (desiredSize.bytes > currentSize.bytes) {
+      if (storageClass?.allowVolumeExpansion) resizeTargets.push({ component, pvcName: pvc.name, from: pvc.requested, to: desired[component].storageSize });
+      else resetTargets.push(`${component}: '${desiredClassName}'이 온라인 확장을 지원하지 않아 ${pvc.requested} → ${desired[component].storageSize} 재배치 필요`);
+    }
+  }
+
+  if (desired.prometheus.remoteWrite.enabled) {
+    const remoteSecret = await secretCheck(ctx, 'monitoring', desired.prometheus.remoteWrite.secretName, [desired.prometheus.remoteWrite.secretKey], 'Remote write Secret');
+    if (!remoteSecret.ok) blockers.push(remoteSecret.message);
+  }
+
+  const external = desired.grafana.exposureMode !== 'ClusterInternal';
+  const prerequisites = { tlsSecretReady: !external, oidcSecretReady: !external, ingressClassReady: !external };
+  if (external) {
+    prerequisites.ingressClassReady = live.ingressClasses.some((item) => item.name === desired.grafana.ingressClassName);
+    if (!prerequisites.ingressClassReady) blockers.push(`IngressClass '${desired.grafana.ingressClassName}'이 존재하지 않습니다.`);
+    const tls = await secretCheck(ctx, 'monitoring', desired.grafana.tlsSecretName, ['tls.crt', 'tls.key'], 'TLS Secret');
+    prerequisites.tlsSecretReady = tls.ok && tls.type === 'kubernetes.io/tls';
+    if (!tls.ok) blockers.push(tls.message);
+    else if (tls.type !== 'kubernetes.io/tls') blockers.push(`TLS Secret '${desired.grafana.tlsSecretName}' type은 kubernetes.io/tls여야 합니다.`);
+    const oidc = await secretCheck(ctx, 'monitoring', desired.grafana.oidcSecretName, OIDC_SECRET_KEYS, 'Grafana OIDC Secret');
+    prerequisites.oidcSecretReady = oidc.ok;
+    if (!oidc.ok) blockers.push(oidc.message);
+    if (desired.grafana.exposureMode === 'PublicIngress') warnings.push('Public Ingress는 인터넷 노출입니다. TLS, OIDC/MFA 정책, rate limit, 감사로그를 운영자가 지속 검증해야 합니다.');
+  }
+  if (live.directExternalServices.length) warnings.push(`Prometheus/Alertmanager 직접 외부 Service가 감지되었습니다. 적용 시 ClusterIP로 복구합니다: ${live.directExternalServices.join(', ')}`);
+  if (resetTargets.length) warnings.push('StorageClass 변경·축소 또는 확장 불가 StorageClass의 증설은 관측 데이터를 삭제한 뒤 새 PVC로 재배치해야 합니다.');
+
+  const currentFlat = flattenConfiguration(current);
+  const desiredFlat = flattenConfiguration(desired);
+  const changes = Object.keys(desiredFlat).filter((field) => currentFlat[field] !== desiredFlat[field]).map((field) => ({
+    field,
+    from: currentFlat[field],
+    to: desiredFlat[field],
+    impact: field.includes('storageClassName') || field.includes('storageSize') ? 'Storage' : field.includes('exposure') || field.includes('grafana.') ? 'Access' : 'Runtime',
+  }));
+  return {
+    config: desired,
+    currentConfig: current,
+    changes,
+    blockers: [...new Set(blockers)],
+    warnings: [...new Set(warnings)],
+    requiresDataReset: resetTargets.length > 0,
+    resetTargets: [...new Set(resetTargets)],
+    resizeTargets,
+    canApply: blockers.length === 0,
+    prerequisites,
+    live,
+    policy: {
+      prometheusExternalExposure: 'Prohibited',
+      alertmanagerExternalExposure: 'Prohibited',
+      grafanaServiceType: 'ClusterIP',
+      publicConfirmation: OBSERVABILITY_PUBLIC_CONFIRMATION,
+    },
+  };
+}
+
+async function observabilityConfiguration(ctx) {
+  const [live, stored] = await Promise.all([observabilityLiveState(ctx), readObservabilityConfig(ctx)]);
+  const config = inferObservabilityConfig(live, stored);
+  return {
+    config,
+    source: stored ? 'ManagedConfig' : live.installed ? 'InferredFromCluster' : 'Defaults',
+    storageClasses: live.storageClasses,
+    ingressClasses: live.ingressClasses,
+    live,
+    policy: {
+      prometheusExternalExposure: 'Prohibited',
+      alertmanagerExternalExposure: 'Prohibited',
+      grafanaModes: ['ClusterInternal', 'PrivateIngress', 'PublicIngress'],
+      requiredOidcSecretKeys: OIDC_SECRET_KEYS,
+      resetConfirmation: OBSERVABILITY_RESET_CONFIRMATION,
+      publicConfirmation: OBSERVABILITY_PUBLIC_CONFIRMATION,
+    },
+  };
+}
+
 async function createOperation(ctx, item, actor, action, reason) {
   const existing = await readOperation(ctx, item.id);
   if (operationActive(existing)) {
@@ -427,7 +951,9 @@ async function createOperation(ctx, item, actor, action, reason) {
     action,
     phase: 'Queued',
     progress: 5,
-    message: action === 'install' ? '설치 작업이 대기열에 등록되었습니다.' : '삭제 작업이 대기열에 등록되었습니다.',
+    message: action === 'install'
+      ? '설치 작업이 대기열에 등록되었습니다.'
+      : action === 'configure' ? '운영 구성 변경이 대기열에 등록되었습니다.' : '삭제 작업이 대기열에 등록되었습니다.',
     error: '',
     actor: actor.username,
     reason,
@@ -596,8 +1122,11 @@ function renderedResources(rendered, defaultNamespace) {
 
 async function plan(ctx, item) {
   const variant = await clusterVariant(ctx);
-  const args = ['template', item.release, item.chart, '--namespace', item.namespace, '--include-crds', ...helmArgs(item, variant)];
-  const out = await withKubeconfig(ctx, (env) => command('helm', args, { env, timeoutMs: 120000 }));
+  const managedValues = await managedValuesForItem(ctx, item);
+  const out = await withKubeconfig(ctx, (env, dir) => {
+    const args = ['template', item.release, item.chart, '--namespace', item.namespace, '--include-crds', ...helmArgs(item, variant), ...writeManagedValues(item, managedValues, dir)];
+    return command('helm', args, { env, timeoutMs: 120000 });
+  });
   const resources = renderedResources(out.stdout, item.namespace);
   const byKind = resources.reduce((summary, resource) => {
     summary[resource.kind] = (summary[resource.kind] || 0) + 1;
@@ -635,7 +1164,7 @@ async function waitForProbe(ctx, item, wanted, timeoutMs = 120000) {
   return last || result('Blocked', 'ProbeTimeout', '검증 시간이 초과되었습니다.');
 }
 
-async function commandWithHeartbeat(ctx, item, operation, args) {
+async function commandWithHeartbeat(ctx, item, operation, args, managedValues = null) {
   let heartbeatBusy = false;
   const heartbeat = setInterval(async () => {
     if (heartbeatBusy) return;
@@ -652,9 +1181,116 @@ async function commandWithHeartbeat(ctx, item, operation, args) {
     }
   }, 5000);
   try {
-    return await withKubeconfig(ctx, (env) => command('helm', args, { env }));
+    return await withKubeconfig(ctx, (env, dir) => command('helm', [...args, ...writeManagedValues(item, managedValues, dir)], { env }));
   } finally {
     clearInterval(heartbeat);
+  }
+}
+
+async function resizeObservabilityPvcs(ctx, targets) {
+  for (const target of targets) {
+    await k8sRequest(ctx, `/api/v1/namespaces/monitoring/persistentvolumeclaims/${encodeURIComponent(target.pvcName)}`, {
+      method: 'PATCH',
+      contentType: 'application/merge-patch+json',
+      body: { spec: { resources: { requests: { storage: target.to } } } },
+    });
+  }
+}
+
+async function waitForObservabilityPvcsRemoved(ctx, names, timeoutMs = 120000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const remaining = [];
+    for (const name of names) {
+      if (await k8sOrNull(ctx, `/api/v1/namespaces/monitoring/persistentvolumeclaims/${encodeURIComponent(name)}`)) remaining.push(name);
+    }
+    if (!remaining.length) return;
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  throw Object.assign(new Error('기존 Observability PVC 삭제 대기 시간이 초과되었습니다.'), { code: 504 });
+}
+
+async function resetObservabilityData(ctx, item, operation, live) {
+  const names = Object.values(live.pvcs || {}).map((pvc) => pvc.name).filter(Boolean);
+  const release = await helmStatus(ctx, item);
+  if (release?.managed) {
+    await commandWithHeartbeat(ctx, item, operation, ['uninstall', item.release, '--namespace', item.namespace, '--wait', '--timeout', '10m']);
+  }
+  for (const name of names) {
+    await deleteIfPresent(ctx, `/api/v1/namespaces/monitoring/persistentvolumeclaims/${encodeURIComponent(name)}`);
+  }
+  await waitForObservabilityPvcsRemoved(ctx, names);
+  return names;
+}
+
+async function executeObservabilityConfiguration(ctx, actor, item, operation, desired, dataReset) {
+  let current = operation;
+  try {
+    current = await patchOperation(ctx, item, current, { phase: 'Configuring', progress: 10, message: '저장소와 접근 정책의 현재 상태를 검증하고 있습니다.' });
+    const configurationPlan = await observabilityConfigurationPlan(ctx, desired);
+    if (!configurationPlan.live.installed) throw Object.assign(new Error('Shared Observability가 설치되지 않았습니다. 먼저 설치하십시오.'), { code: 409 });
+    if (configurationPlan.blockers.length) throw Object.assign(new Error(configurationPlan.blockers.join(' ')), { code: 409 });
+    if (configurationPlan.requiresDataReset && !dataReset) {
+      throw Object.assign(new Error(`데이터 재배치 승인이 필요합니다: ${configurationPlan.resetTargets.join('; ')}`), { code: 409 });
+    }
+    if (configurationPlan.requiresDataReset) {
+      current = await patchOperation(ctx, item, current, {
+        phase: 'Migrating',
+        progress: 25,
+        message: '명시적 승인에 따라 기존 관측 데이터 PVC를 제거하고 새 저장소에 재배치하고 있습니다.',
+      });
+      const deleted = await resetObservabilityData(ctx, item, current, configurationPlan.live);
+      current = await patchOperation(ctx, item, current, {
+        phase: 'Configuring',
+        progress: 45,
+        message: `기존 PVC ${deleted.length}개를 제거했습니다. 새 운영 구성을 적용합니다.`,
+      });
+    } else if (configurationPlan.resizeTargets.length) {
+      current = await patchOperation(ctx, item, current, {
+        phase: 'Configuring',
+        progress: 35,
+        message: `온라인 확장을 지원하는 PVC ${configurationPlan.resizeTargets.length}개를 증설하고 있습니다.`,
+      });
+      await resizeObservabilityPvcs(ctx, configurationPlan.resizeTargets);
+    }
+    const variant = await clusterVariant(ctx);
+    current = await patchOperation(ctx, item, current, {
+      phase: 'Configuring',
+      progress: 55,
+      message: `Helm revision에 저장소·보존·Grafana ${desired.grafana.exposureMode} 정책을 적용하고 있습니다.`,
+      clusterVariant: variant,
+    });
+    const args = ['upgrade', '--install', item.release, item.chart, '--namespace', item.namespace, '--create-namespace', '--atomic', '--wait', '--timeout', '10m', '--history-max', '5', ...helmArgs(item, variant)];
+    const out = await commandWithHeartbeat(ctx, item, current, args, desired);
+    current = await patchOperation(ctx, item, current, { phase: 'Validating', progress: 88, message: '구성요소, PVC, NetworkPolicy와 외부 노출 정책을 재검증하고 있습니다.' });
+    const check = await waitForProbe(ctx, item, (value) => value.state === 'Ready');
+    if (check.state !== 'Ready') throw Object.assign(new Error(`운영 구성 적용 후 검증 실패: ${check.message}`), { code: 502 });
+    const after = await observabilityConfigurationPlan(ctx, desired);
+    if (after.blockers.length) throw Object.assign(new Error(`적용 후 정책 검증 실패: ${after.blockers.join(' ')}`), { code: 502 });
+    await writeObservabilityConfig(ctx, actor, desired, operation.reason);
+    await auditRequired(ctx, actor, 'HISObservabilityConfigured', item, operation.reason, `success:${desired.grafana.exposureMode}`);
+    await ctx.publishNotify({
+      userActor: actor.username,
+      action: 'HISObservabilityConfigured',
+      target: `HIS/${item.id}`,
+      result: 'success',
+      reason: `${operation.reason} · exposure=${desired.grafana.exposureMode} · dataReset=${dataReset}`,
+    });
+    await patchOperation(ctx, item, current, {
+      phase: 'Ready',
+      progress: 100,
+      message: `운영 구성이 적용되었습니다. Grafana ${desired.grafana.exposureMode}, Prometheus ${desired.prometheus.retention}, NetworkPolicy 3개 관리 중입니다.`,
+      output: out.stdout.slice(-4000),
+      error: '',
+    });
+  } catch (error) {
+    const message = safeError(error);
+    try { await auditRequired(ctx, actor, 'HISObservabilityConfigureFailed', item, operation.reason, message); }
+    catch (auditError) { console.error(`[his-operation] configuration failure audit unavailable id=${operation.id}: ${safeError(auditError)}`); }
+    try {
+      await ctx.publishNotify({ userActor: actor.username, action: 'HISObservabilityConfigureFailed', target: `HIS/${item.id}`, result: 'error', reason: `${operation.reason} · ${message}` });
+    } catch { /* best effort notification */ }
+    await patchOperation(ctx, item, current, { phase: 'Failed', progress: 100, message: 'Observability 운영 구성 적용에 실패했습니다.', error: message });
   }
 }
 
@@ -679,8 +1315,9 @@ async function executeOperation(ctx, actor, item, operation) {
         message: `Helm ${item.chartName} ${item.chartVersion} 리소스를 적용하고 Ready 상태를 기다리고 있습니다.`,
         clusterVariant: variant,
       });
+      const managedValues = await managedValuesForItem(ctx, item);
       const args = ['upgrade', '--install', item.release, item.chart, '--namespace', item.namespace, '--create-namespace', '--atomic', '--wait', '--timeout', '10m', '--history-max', '5', ...helmArgs(item, variant)];
-      const out = await commandWithHeartbeat(ctx, item, current, args);
+      const out = await commandWithHeartbeat(ctx, item, current, args, managedValues);
       current = await patchOperation(ctx, item, current, { phase: 'Validating', progress: 88, message: 'Helm 적용이 완료되어 구성요소와 저장소를 검증하고 있습니다.' });
       const check = await waitForProbe(ctx, item, (value) => value.state === 'Ready');
       if (check.state !== 'Ready') throw Object.assign(new Error(`설치 후 검증 실패: ${check.message}`), { code: 502 });
@@ -738,6 +1375,10 @@ function createHisManager(ctx) {
         await actorFor(ctx, req, false);
         return ctx.jsonRes(res, 200, await allStatus(ctx)), true;
       }
+      if (req.method === 'GET' && pathname === '/api/his/observability/config') {
+        await actorFor(ctx, req, false);
+        return ctx.jsonRes(res, 200, await observabilityConfiguration(ctx)), true;
+      }
       if (req.method !== 'POST') throw Object.assign(new Error('method not allowed'), { code: 405 });
       const body = await readJson(req);
       const actor = await actorFor(ctx, req, true);
@@ -745,6 +1386,32 @@ function createHisManager(ctx) {
 
       if (pathname === '/api/his/plan') {
         return ctx.jsonRes(res, 200, await plan(ctx, item)), true;
+      }
+      if (pathname === '/api/his/observability/plan') {
+        if (item.id !== OBSERVABILITY_ITEM_ID) throw Object.assign(new Error('Observability 항목만 운영 구성을 지원합니다.'), { code: 400 });
+        return ctx.jsonRes(res, 200, await observabilityConfigurationPlan(ctx, body.config)), true;
+      }
+      if (pathname === '/api/his/observability/configure') {
+        if (item.id !== OBSERVABILITY_ITEM_ID) throw Object.assign(new Error('Observability 항목만 운영 구성을 지원합니다.'), { code: 400 });
+        const reason = reasonFrom(body);
+        const desired = validateObservabilityConfig(body.config);
+        const configurationPlan = await observabilityConfigurationPlan(ctx, desired);
+        if (!configurationPlan.live.installed) throw Object.assign(new Error('Shared Observability가 설치되지 않았습니다.'), { code: 409 });
+        if (configurationPlan.blockers.length) throw Object.assign(new Error(configurationPlan.blockers.join(' ')), { code: 409 });
+        const dataReset = Boolean(body.resetData);
+        if (configurationPlan.requiresDataReset && (!dataReset || String(body.resetConfirmation || '') !== OBSERVABILITY_RESET_CONFIRMATION)) {
+          throw Object.assign(new Error(`데이터 재배치를 승인하려면 '${OBSERVABILITY_RESET_CONFIRMATION}'를 입력해야 합니다.`), { code: 400 });
+        }
+        if (desired.grafana.exposureMode === 'PublicIngress' && String(body.publicConfirmation || '') !== OBSERVABILITY_PUBLIC_CONFIRMATION) {
+          throw Object.assign(new Error(`Public Grafana를 승인하려면 '${OBSERVABILITY_PUBLIC_CONFIRMATION}'를 입력해야 합니다.`), { code: 400 });
+        }
+        const release = await helmStatus(ctx, item);
+        if (!release?.managed) throw Object.assign(new Error('Cluster Manager가 설치한 Shared Observability만 재구성할 수 있습니다.'), { code: 409 });
+        await auditRequired(ctx, actor, 'HISObservabilityConfigureRequested', item, reason, `requested:${desired.grafana.exposureMode}:reset=${dataReset}`);
+        const operation = await createOperation(ctx, item, actor, 'configure', reason);
+        ctx.jsonRes(res, 202, { ok: true, operation });
+        setImmediate(() => { void executeObservabilityConfiguration(ctx, actor, item, operation, desired, dataReset); });
+        return true;
       }
 
       const reason = reasonFrom(body);
@@ -785,4 +1452,11 @@ module.exports = {
   renderedResources,
   recoverableHelmCleanupError,
   stuckReleaseRecoveryStrategy,
+  validateObservabilityConfig,
+  observabilityValues,
+  observabilityPvcComponent,
+  flattenConfiguration,
+  DEFAULT_OBSERVABILITY_CONFIG,
+  OBSERVABILITY_RESET_CONFIRMATION,
+  OBSERVABILITY_PUBLIC_CONFIRMATION,
 };

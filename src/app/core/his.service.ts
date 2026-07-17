@@ -20,8 +20,8 @@ export interface HisOperation {
   id: string;
   itemId: string;
   displayName: string;
-  action: 'install' | 'uninstall';
-  phase: 'Queued' | 'Recovering' | 'Installing' | 'Validating' | 'Uninstalling' | 'Ready' | 'Removed' | 'Failed' | 'RollbackStalled';
+  action: 'install' | 'uninstall' | 'configure';
+  phase: 'Queued' | 'Recovering' | 'Installing' | 'Configuring' | 'Migrating' | 'Validating' | 'Uninstalling' | 'Ready' | 'Removed' | 'Failed' | 'RollbackStalled';
   progress: number;
   message: string;
   error: string;
@@ -100,6 +100,82 @@ export interface HisPlan {
   resources: Array<{ apiVersion: string; kind: string; namespace: string; name: string }>;
 }
 
+export type GrafanaExposureMode = 'ClusterInternal' | 'PrivateIngress' | 'PublicIngress';
+
+export interface ObservabilityConfig {
+  schemaVersion: 1;
+  prometheus: {
+    retention: string;
+    storageClassName: string;
+    storageSize: string;
+    remoteWrite: { enabled: boolean; url: string; secretName: string; secretKey: string };
+  };
+  alertmanager: { retention: string; storageClassName: string; storageSize: string };
+  grafana: {
+    storageClassName: string;
+    storageSize: string;
+    exposureMode: GrafanaExposureMode;
+    hostname: string;
+    ingressClassName: string;
+    ingressNamespace: string;
+    tlsSecretName: string;
+    oidcSecretName: string;
+    allowedCidrs: string[];
+  };
+}
+
+export interface StorageClassOption {
+  name: string;
+  provisioner: string;
+  isDefault: boolean;
+  allowVolumeExpansion: boolean;
+  reclaimPolicy: string;
+  volumeBindingMode: string;
+}
+
+export interface ObservabilityLiveState {
+  installed: boolean;
+  storageClasses: StorageClassOption[];
+  ingressClasses: Array<{ name: string; controller: string }>;
+  pvcs: Record<string, { name: string; phase: string; storageClassName: string; requested: string; capacity: string; volumeName: string; selectedNode: string }>;
+  prometheus: { retention: string; remoteWrite: Array<{ name: string; url: string; secretName: string; secretKey: string }> } | null;
+  alertmanager: { retention: string } | null;
+  grafana: { serviceType: string; ingress: null | { name: string; hostname: string; ingressClassName: string; tlsSecretName: string; exposureMode: GrafanaExposureMode } };
+  networkPolicies: string[];
+  directExternalServices: string[];
+}
+
+export interface ObservabilityConfigurationState {
+  config: ObservabilityConfig;
+  source: 'ManagedConfig' | 'InferredFromCluster' | 'Defaults';
+  storageClasses: StorageClassOption[];
+  ingressClasses: Array<{ name: string; controller: string }>;
+  live: ObservabilityLiveState;
+  policy: {
+    prometheusExternalExposure: 'Prohibited';
+    alertmanagerExternalExposure: 'Prohibited';
+    grafanaModes: GrafanaExposureMode[];
+    requiredOidcSecretKeys: string[];
+    resetConfirmation: string;
+    publicConfirmation: string;
+  };
+}
+
+export interface ObservabilityConfigurationPlan {
+  config: ObservabilityConfig;
+  currentConfig: ObservabilityConfig;
+  changes: Array<{ field: string; from: string; to: string; impact: 'Storage' | 'Access' | 'Runtime' }>;
+  blockers: string[];
+  warnings: string[];
+  requiresDataReset: boolean;
+  resetTargets: string[];
+  resizeTargets: Array<{ component: string; pvcName: string; from: string; to: string }>;
+  canApply: boolean;
+  prerequisites: { tlsSecretReady: boolean; oidcSecretReady: boolean; ingressClassReady: boolean };
+  live: ObservabilityLiveState;
+  policy: { prometheusExternalExposure: 'Prohibited'; alertmanagerExternalExposure: 'Prohibited'; grafanaServiceType: 'ClusterIP'; publicConfirmation: string };
+}
+
 @Injectable({ providedIn: 'root' })
 export class HisService {
   private http = inject(HttpClient);
@@ -116,5 +192,22 @@ export class HisService {
   install(id: string, reason: string): Observable<{ ok: boolean; operation: HisOperation }> { return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('install'), { id, reason }); }
   uninstall(id: string, reason: string, confirm: string): Observable<{ ok: boolean; operation: HisOperation }> {
     return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('uninstall'), { id, reason, confirm });
+  }
+  observabilityConfig(): Observable<ObservabilityConfigurationState> {
+    return this.http.get<ObservabilityConfigurationState>(this.url('observability/config'));
+  }
+  observabilityPlan(config: ObservabilityConfig): Observable<ObservabilityConfigurationPlan> {
+    return this.http.post<ObservabilityConfigurationPlan>(this.url('observability/plan'), { id: 'kube-prometheus-stack', config });
+  }
+  configureObservability(
+    config: ObservabilityConfig,
+    reason: string,
+    resetData: boolean,
+    resetConfirmation: string,
+    publicConfirmation: string,
+  ): Observable<{ ok: boolean; operation: HisOperation }> {
+    return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('observability/configure'), {
+      id: 'kube-prometheus-stack', config, reason, resetData, resetConfirmation, publicConfirmation,
+    });
   }
 }

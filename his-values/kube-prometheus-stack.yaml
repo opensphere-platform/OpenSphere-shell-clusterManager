@@ -20,12 +20,20 @@ grafana:
     # an atomic rollback never attempts to clear the immutable volumeName.
     lookupVolumeName: true
     size: 5Gi
+    annotations:
+      helm.sh/resource-policy: keep
+      opensphere.io/data-class: observability
+  service:
+    type: ClusterIP
 
 alertmanager:
   ingress:
     enabled: false
   alertmanagerSpec:
     retention: 120h
+    persistentVolumeClaimRetentionPolicy:
+      whenDeleted: Retain
+      whenScaled: Retain
     storage:
       volumeClaimTemplate:
         spec:
@@ -39,6 +47,9 @@ prometheus:
     enabled: false
   prometheusSpec:
     retention: 7d
+    persistentVolumeClaimRetentionPolicy:
+      whenDeleted: Retain
+      whenScaled: Retain
     serviceMonitorSelectorNilUsesHelmValues: false
     podMonitorSelectorNilUsesHelmValues: false
     ruleSelectorNilUsesHelmValues: false

@@ -2,7 +2,16 @@ import { CommonModule } from '@angular/common';
 import { Component, OnDestroy, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ClarityModule } from '@clr/angular';
-import { HisItem, HisOperation, HisPlan, HisService, HisStatus } from '../core/his.service';
+import {
+  HisItem,
+  HisOperation,
+  HisPlan,
+  HisService,
+  HisStatus,
+  ObservabilityConfig,
+  ObservabilityConfigurationPlan,
+  ObservabilityConfigurationState,
+} from '../core/his.service';
 
 @Component({
   selector: 'app-his',
@@ -79,6 +88,7 @@ import { HisItem, HisOperation, HisPlan, HisService, HisStatus } from '../core/h
           <ng-container *ngIf="item.mode === 'HelmManaged'; else detectOnly">
             <button class="btn btn-sm btn-outline" type="button" [disabled]="busy() || operationActive(item.operation)" (click)="openPlan(item, 'install')">계획</button>
             <button class="btn btn-sm btn-primary" type="button" [disabled]="busy() || operationActive(item.operation) || !canInstall(item)" (click)="openPlan(item, 'install', true)">설치</button>
+            <button *ngIf="item.id === 'kube-prometheus-stack'" class="btn btn-sm btn-outline" type="button" [disabled]="busy() || operationActive(item.operation) || !item.release?.managed" (click)="openObservabilityConfiguration()">운영 구성</button>
             <button class="btn btn-sm btn-danger-outline" type="button" [disabled]="busy() || operationActive(item.operation) || !item.release?.managed" (click)="openPlan(item, 'uninstall', true)">삭제</button>
           </ng-container>
           <ng-template #detectOnly><span class="muted">호스트 제공 · 진단만</span></ng-template>
@@ -87,7 +97,7 @@ import { HisItem, HisOperation, HisPlan, HisService, HisStatus } from '../core/h
           <div class="detail">
             <section class="operation-card" *ngIf="item.operation as operation" role="status" aria-live="polite">
               <div class="operation-head">
-                <div><strong>{{ operation.action === 'install' ? '설치' : '삭제' }} 작업 · {{ operation.phase }}</strong><div class="muted">작업 ID {{ operation.id }} · {{ operation.actor }} · {{ operation.worker }}</div></div>
+                <div><strong>{{ operationLabel(operation) }} 작업 · {{ operation.phase }}</strong><div class="muted">작업 ID {{ operation.id }} · {{ operation.actor }} · {{ operation.worker }}</div></div>
                 <span class="label" [class.label-success]="operation.phase === 'Ready' || operation.phase === 'Removed'" [class.label-danger]="operation.phase === 'Failed' || operation.phase === 'RollbackStalled'" [class.label-info]="operationActive(operation)">{{ operation.progress }}%</span>
               </div>
               <div class="progress-block"><progress [value]="operation.progress" max="100" [attr.aria-label]="operation.message"></progress></div>
@@ -174,6 +184,125 @@ import { HisItem, HisOperation, HisPlan, HisService, HisStatus } from '../core/h
         </button>
       </div>
     </clr-modal>
+
+    <clr-modal [(clrModalOpen)]="configurationModalOpen" [clrModalClosable]="!configurationBusy()" [clrModalSize]="'xl'">
+      <h3 class="modal-title">Shared Observability 운영 구성</h3>
+      <div class="modal-body configuration-modal">
+        <div *ngIf="configurationLoading()" class="progress loop"><progress></progress></div>
+        <div *ngIf="error()" class="alert alert-danger" role="alert"><div class="alert-items"><div class="alert-item static"><span class="alert-text">{{ error() }}</span></div></div></div>
+        <ng-container *ngIf="observabilityState() as state">
+          <div class="policy-banner">
+            <div><strong>저장소·보존·원격 보관</strong><span>설치 후 관리 가능한 선언형 운영 구성입니다.</span></div>
+            <div><strong>외부 공개 원칙</strong><span>Grafana만 TLS+OIDC Ingress를 허용하며 Prometheus/Alertmanager 직접 공개는 금지합니다.</span></div>
+            <span class="label label-info">{{ state.source }}</span>
+          </div>
+
+          <div class="alert alert-warning" *ngIf="state.live.directExternalServices.length" role="alert">
+            <div class="alert-items"><div class="alert-item static"><span class="alert-text">정책 외 직접 공개 Service: {{ state.live.directExternalServices.join(', ') }}. 적용 시 ClusterIP로 복구합니다.</span></div></div>
+          </div>
+
+          <ng-container *ngIf="observabilityConfig() as config">
+            <section class="config-section">
+              <div class="section-heading"><div><p class="eyebrow">DATA PLANE</p><h4>영구 저장소와 보존기간</h4></div><span>StorageClass 변경·축소는 명시적 데이터 재배치가 필요합니다.</span></div>
+              <table class="table table-compact config-table">
+                <thead><tr><th>서비스</th><th>StorageClass</th><th>용량</th><th>보존기간</th><th>현재 PVC</th></tr></thead>
+                <tbody>
+                  <tr>
+                    <td><strong>Prometheus</strong><div class="muted">메트릭 TSDB</div></td>
+                    <td><select clrSelect name="prometheusStorageClass" [(ngModel)]="config.prometheus.storageClassName"><option value="">Cluster default</option><option *ngFor="let sc of state.storageClasses" [value]="sc.name">{{ sc.name }}{{ sc.isDefault ? ' (default)' : '' }}</option></select><div class="storage-hint">{{ storageClassHint(state, config.prometheus.storageClassName) }}</div></td>
+                    <td><input clrInput name="prometheusStorageSize" [(ngModel)]="config.prometheus.storageSize" placeholder="20Gi"></td>
+                    <td><input clrInput name="prometheusRetention" [(ngModel)]="config.prometheus.retention" placeholder="7d"></td>
+                    <td>{{ livePvc(state, 'prometheus') }}</td>
+                  </tr>
+                  <tr>
+                    <td><strong>Alertmanager</strong><div class="muted">알림 상태·silence</div></td>
+                    <td><select clrSelect name="alertmanagerStorageClass" [(ngModel)]="config.alertmanager.storageClassName"><option value="">Cluster default</option><option *ngFor="let sc of state.storageClasses" [value]="sc.name">{{ sc.name }}{{ sc.isDefault ? ' (default)' : '' }}</option></select><div class="storage-hint">{{ storageClassHint(state, config.alertmanager.storageClassName) }}</div></td>
+                    <td><input clrInput name="alertmanagerStorageSize" [(ngModel)]="config.alertmanager.storageSize" placeholder="2Gi"></td>
+                    <td><input clrInput name="alertmanagerRetention" [(ngModel)]="config.alertmanager.retention" placeholder="120h"></td>
+                    <td>{{ livePvc(state, 'alertmanager') }}</td>
+                  </tr>
+                  <tr>
+                    <td><strong>Grafana</strong><div class="muted">대시보드·설정 DB</div></td>
+                    <td><select clrSelect name="grafanaStorageClass" [(ngModel)]="config.grafana.storageClassName"><option value="">Cluster default</option><option *ngFor="let sc of state.storageClasses" [value]="sc.name">{{ sc.name }}{{ sc.isDefault ? ' (default)' : '' }}</option></select><div class="storage-hint">{{ storageClassHint(state, config.grafana.storageClassName) }}</div></td>
+                    <td><input clrInput name="grafanaStorageSize" [(ngModel)]="config.grafana.storageSize" placeholder="5Gi"></td>
+                    <td><span class="muted">해당 없음</span></td>
+                    <td>{{ livePvc(state, 'grafana') }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </section>
+
+            <section class="config-section split-config">
+              <div>
+                <div class="section-heading"><div><p class="eyebrow">DURABILITY</p><h4>Prometheus Remote Write</h4></div></div>
+                <clr-toggle-container>
+                  <clr-toggle-wrapper><input type="checkbox" clrToggle name="remoteWriteEnabled" [(ngModel)]="config.prometheus.remoteWrite.enabled"><label>외부 장기 저장소로 전송</label></clr-toggle-wrapper>
+                </clr-toggle-container>
+                <div class="compact-fields" *ngIf="config.prometheus.remoteWrite.enabled">
+                  <label>HTTPS endpoint<input clrInput name="remoteWriteUrl" [(ngModel)]="config.prometheus.remoteWrite.url" placeholder="https://metrics.example.com/api/v1/write"></label>
+                  <label>Credential Secret<input clrInput name="remoteWriteSecret" [(ngModel)]="config.prometheus.remoteWrite.secretName" placeholder="prometheus-remote-write"></label>
+                  <label>Secret key<input clrInput name="remoteWriteKey" [(ngModel)]="config.prometheus.remoteWrite.secretKey" placeholder="token"></label>
+                </div>
+                <p class="muted">자격 증명 값은 화면이나 ConfigMap에 저장하지 않고 monitoring namespace의 기존 Secret 참조만 저장합니다.</p>
+              </div>
+              <div>
+                <div class="section-heading"><div><p class="eyebrow">CURRENT SECURITY</p><h4>실행 정책 상태</h4></div></div>
+                <dl class="runtime-policy">
+                  <dt>Grafana Service</dt><dd>{{ state.live.grafana.serviceType }}</dd>
+                  <dt>Managed NetworkPolicy</dt><dd>{{ state.live.networkPolicies.length }}/3</dd>
+                  <dt>Grafana Ingress</dt><dd>{{ state.live.grafana.ingress?.hostname || '없음' }}</dd>
+                  <dt>Prometheus 직접 공개</dt><dd>금지</dd>
+                  <dt>Alertmanager 직접 공개</dt><dd>금지</dd>
+                </dl>
+              </div>
+            </section>
+
+            <section class="config-section">
+              <div class="section-heading"><div><p class="eyebrow">ACCESS POLICY</p><h4>Grafana 접근 정책</h4></div><span>Service는 모든 모드에서 ClusterIP로 유지합니다.</span></div>
+              <div class="exposure-options">
+                <label [class.selected]="config.grafana.exposureMode === 'ClusterInternal'"><input type="radio" name="grafanaExposure" value="ClusterInternal" [(ngModel)]="config.grafana.exposureMode"><strong>Cluster Internal</strong><span>기본값. monitoring과 Console namespace에서만 접근</span></label>
+                <label [class.selected]="config.grafana.exposureMode === 'PrivateIngress'"><input type="radio" name="grafanaExposure" value="PrivateIngress" [(ngModel)]="config.grafana.exposureMode"><strong>Private Ingress</strong><span>TLS+OIDC+IP allowlist를 모두 검증한 내부망 공개</span></label>
+                <label class="danger-option" [class.selected]="config.grafana.exposureMode === 'PublicIngress'"><input type="radio" name="grafanaExposure" value="PublicIngress" [(ngModel)]="config.grafana.exposureMode"><strong>Public Ingress</strong><span>TLS+OIDC+rate limit+명시적 승인이 필요한 인터넷 공개</span></label>
+              </div>
+              <div class="ingress-fields" *ngIf="config.grafana.exposureMode !== 'ClusterInternal'">
+                <label>Hostname<input clrInput name="grafanaHostname" [(ngModel)]="config.grafana.hostname" placeholder="grafana.example.com"></label>
+                <label>IngressClass<select clrSelect name="grafanaIngressClass" [(ngModel)]="config.grafana.ingressClassName"><option *ngFor="let ingress of state.ingressClasses" [value]="ingress.name">{{ ingress.name }}</option></select></label>
+                <label>Controller namespace<input clrInput name="grafanaIngressNamespace" [(ngModel)]="config.grafana.ingressNamespace" placeholder="ingress-nginx"></label>
+                <label>TLS Secret<input clrInput name="grafanaTlsSecret" [(ngModel)]="config.grafana.tlsSecretName" placeholder="grafana-tls"></label>
+                <label>OIDC env Secret<input clrInput name="grafanaOidcSecret" [(ngModel)]="config.grafana.oidcSecretName" placeholder="grafana-oidc"></label>
+                <label *ngIf="config.grafana.exposureMode === 'PrivateIngress'">허용 CIDR<textarea clrTextarea name="grafanaCidrs" [(ngModel)]="allowedCidrsText" placeholder="10.0.0.0/8&#10;192.168.0.0/16"></textarea></label>
+              </div>
+              <details *ngIf="config.grafana.exposureMode !== 'ClusterInternal'" class="secret-contract"><summary>Grafana OIDC Secret 계약</summary><code *ngFor="let key of state.policy.requiredOidcSecretKeys">{{ key }}</code></details>
+            </section>
+
+            <section class="config-section plan-section">
+              <div class="section-heading"><div><p class="eyebrow">CHANGE CONTROL</p><h4>변경 계획과 승인</h4></div><button class="btn btn-sm btn-outline" type="button" [disabled]="configurationPlanning() || configurationBusy()" (click)="validateConfiguration()">변경 계획 검사</button></div>
+              <div *ngIf="configurationPlanning()" class="progress loop"><progress></progress></div>
+              <ng-container *ngIf="observabilityPlan() as configPlan">
+                <div class="alert alert-danger" *ngIf="configPlan.blockers.length"><div class="alert-items"><div class="alert-item static"><span class="alert-text"><strong>적용 차단</strong><span *ngFor="let blocker of configPlan.blockers"> · {{ blocker }}</span></span></div></div></div>
+                <div class="alert alert-warning" *ngIf="configPlan.warnings.length"><div class="alert-items"><div class="alert-item static"><span class="alert-text"><strong>주의</strong><span *ngFor="let warning of configPlan.warnings"> · {{ warning }}</span></span></div></div></div>
+                <table class="table table-compact change-table" *ngIf="configPlan.changes.length"><thead><tr><th>영역</th><th>항목</th><th>현재</th><th>변경</th></tr></thead><tbody><tr *ngFor="let change of configPlan.changes"><td><span class="label">{{ change.impact }}</span></td><td><code>{{ change.field }}</code></td><td>{{ change.from }}</td><td>{{ change.to }}</td></tr></tbody></table>
+                <p class="muted" *ngIf="!configPlan.changes.length">선언된 구성 변경이 없습니다. 정책 리소스는 현재 값으로 재조정할 수 있습니다.</p>
+                <div class="destructive-confirm" *ngIf="configPlan.requiresDataReset">
+                  <strong>데이터 초기화 재배치 필요</strong>
+                  <ul><li *ngFor="let target of configPlan.resetTargets">{{ target }}</li></ul>
+                  <label><input type="checkbox" clrCheckbox name="resetData" [(ngModel)]="resetData"> 기존 Prometheus·Alertmanager·Grafana 데이터를 삭제하고 새 PVC를 생성합니다.</label>
+                  <input clrInput name="resetConfirmation" [(ngModel)]="resetConfirmation" [placeholder]="state.policy.resetConfirmation" autocomplete="off">
+                </div>
+              </ng-container>
+              <form clrForm clrLayout="vertical">
+                <clr-textarea-container><label>변경 사유</label><textarea clrTextarea name="configurationReason" [(ngModel)]="configurationReason" required minlength="8" maxlength="500" placeholder="저장소·보존·공개 정책 변경 근거(8자 이상)"></textarea></clr-textarea-container>
+                <clr-input-container *ngIf="config.grafana.exposureMode === 'PublicIngress'"><label>Public 공개 확인</label><input clrInput name="publicConfirmation" [(ngModel)]="publicConfirmation" [placeholder]="state.policy.publicConfirmation" autocomplete="off"><clr-control-helper>{{ state.policy.publicConfirmation }} 를 정확히 입력하십시오.</clr-control-helper></clr-input-container>
+              </form>
+            </section>
+          </ng-container>
+        </ng-container>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" type="button" [disabled]="configurationBusy()" (click)="configurationModalOpen = false">취소</button>
+        <button class="btn btn-primary" type="button" [disabled]="!configurationReadyToApply()" (click)="applyObservabilityConfiguration()">운영 구성 적용</button>
+      </div>
+    </clr-modal>
   `,
   styles: [`
     :host { display: block; }
@@ -218,6 +347,46 @@ import { HisItem, HisOperation, HisPlan, HisService, HisStatus } from '../core/h
     .resource-list { max-height: 16rem; overflow: auto; border: 1px solid #d8d8d8; }
     .resource-list > div { display: grid; grid-template-columns: minmax(16rem, 1fr) minmax(8rem, 0.5fr); padding: 0.3rem 0.5rem; border-bottom: 1px solid #eee; }
     .profile-card { display: grid; grid-template-columns: 8rem 1fr; gap: 0.3rem 0.75rem; padding: 0.65rem; margin-bottom: 0.7rem; border: 1px solid #d8d8d8; background: #fafafa; }
+    .configuration-modal { display: grid; gap: 0.9rem; max-height: 72vh; overflow: auto; padding-right: 0.3rem; }
+    .policy-banner { display: grid; grid-template-columns: minmax(16rem, 1fr) minmax(16rem, 1fr) auto; gap: 0.8rem; align-items: center; padding: 0.7rem; border: 1px solid #9bd3e6; background: #eefaff; }
+    .policy-banner > div { display: grid; gap: 0.15rem; }
+    .policy-banner span:not(.label) { color: #565656; font-size: 0.65rem; }
+    .config-section { border: 1px solid #d8d8d8; background: #fff; padding: 0.75rem; }
+    .section-heading { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; margin-bottom: 0.55rem; }
+    .section-heading h4 { margin: 0.05rem 0 0; font-size: 0.9rem; }
+    .section-heading > span { color: #6f6f6f; font-size: 0.65rem; }
+    .config-table { table-layout: fixed; margin: 0; }
+    .config-table th:nth-child(1), .config-table th:nth-child(5) { width: 18%; }
+    .config-table th:nth-child(2) { width: 28%; }
+    .config-table th:nth-child(3), .config-table th:nth-child(4) { width: 18%; }
+    .config-table input, .config-table select { width: 100%; min-width: 6rem; }
+    .storage-hint { max-width: 18rem; margin-top: 0.2rem; color: #6f6f6f; font-size: 0.58rem; line-height: 1.35; }
+    .split-config { display: grid; grid-template-columns: minmax(20rem, 1.25fr) minmax(16rem, 0.75fr); gap: 1rem; }
+    .compact-fields, .ingress-fields { display: grid; grid-template-columns: repeat(3, minmax(10rem, 1fr)); gap: 0.65rem; margin: 0.5rem 0; }
+    .compact-fields label, .ingress-fields label { display: grid; gap: 0.2rem; font-size: 0.65rem; font-weight: 600; }
+    .compact-fields input, .ingress-fields input, .ingress-fields select, .ingress-fields textarea { width: 100%; }
+    .runtime-policy { display: grid; grid-template-columns: 12rem 1fr; gap: 0.3rem 0.7rem; margin: 0; }
+    .runtime-policy dt { color: #565656; }
+    .runtime-policy dd { margin: 0; font-weight: 600; }
+    .exposure-options { display: grid; grid-template-columns: repeat(3, minmax(13rem, 1fr)); gap: 0.65rem; }
+    .exposure-options > label { display: grid; grid-template-columns: auto 1fr; gap: 0.15rem 0.4rem; align-items: start; padding: 0.65rem; border: 1px solid #c8c8c8; cursor: pointer; }
+    .exposure-options > label.selected { border-color: #4c6fff; box-shadow: inset 0 0 0 1px #4c6fff; background: #f5f7ff; }
+    .exposure-options > label.danger-option.selected { border-color: #c21d00; box-shadow: inset 0 0 0 1px #c21d00; background: #fff5f2; }
+    .exposure-options input { grid-row: 1 / span 2; }
+    .exposure-options span { color: #6f6f6f; font-size: 0.62rem; line-height: 1.4; }
+    .secret-contract { margin-top: 0.55rem; padding: 0.45rem; background: #f5f5f5; }
+    .secret-contract code { display: block; margin: 0.2rem 0 0 1rem; }
+    .plan-section { background: #fafafa; }
+    .change-table { table-layout: fixed; }
+    .change-table th:nth-child(1) { width: 10%; }
+    .change-table th:nth-child(2) { width: 30%; }
+    .destructive-confirm { display: grid; gap: 0.4rem; margin: 0.6rem 0; padding: 0.65rem; border: 1px solid #e12200; background: #fff5f2; }
+    .destructive-confirm ul { margin: 0 0 0 1.1rem; }
+    .destructive-confirm input[type='text'] { max-width: 22rem; }
+    @media (max-width: 1100px) {
+      .split-config, .exposure-options, .policy-banner { grid-template-columns: 1fr; }
+      .compact-fields, .ingress-fields { grid-template-columns: 1fr 1fr; }
+    }
     textarea { min-height: 5rem; }
   `],
 })
@@ -234,9 +403,22 @@ export class HisComponent implements OnInit, OnDestroy {
   readonly error = signal('');
   readonly notice = signal('');
   readonly expandedItems = signal<ReadonlySet<string>>(new Set<string>());
+  readonly observabilityState = signal<ObservabilityConfigurationState | null>(null);
+  readonly observabilityConfig = signal<ObservabilityConfig | null>(null);
+  readonly observabilityPlan = signal<ObservabilityConfigurationPlan | null>(null);
+  readonly configurationLoading = signal(false);
+  readonly configurationPlanning = signal(false);
+  readonly configurationBusy = signal(false);
   modalOpen = false;
+  configurationModalOpen = false;
   reason = '';
   confirm = '';
+  allowedCidrsText = '';
+  configurationReason = '';
+  resetData = false;
+  resetConfirmation = '';
+  publicConfirmation = '';
+  private configurationFingerprint = '';
   private pollTimer: ReturnType<typeof setInterval> | null = null;
 
   ngOnInit(): void {
@@ -274,7 +456,10 @@ export class HisComponent implements OnInit, OnDestroy {
     });
   }
   operationActive(operation?: HisOperation | null): boolean {
-    return !!operation && ['Queued', 'Recovering', 'Installing', 'Validating', 'Uninstalling'].includes(operation.phase);
+    return !!operation && ['Queued', 'Recovering', 'Installing', 'Configuring', 'Migrating', 'Validating', 'Uninstalling'].includes(operation.phase);
+  }
+  operationLabel(operation: HisOperation): string {
+    return operation.action === 'install' ? '설치' : operation.action === 'configure' ? '운영 구성' : '삭제';
   }
   canInstall(item: HisItem): boolean {
     if (item.mode !== 'HelmManaged') return false;
@@ -323,6 +508,111 @@ export class HisComponent implements OnInit, OnDestroy {
       },
       error: (error) => { this.busy.set(false); this.error.set(this.message(error)); },
     });
+  }
+
+  openObservabilityConfiguration(): void {
+    this.error.set('');
+    this.observabilityState.set(null);
+    this.observabilityConfig.set(null);
+    this.observabilityPlan.set(null);
+    this.configurationFingerprint = '';
+    this.allowedCidrsText = '';
+    this.configurationReason = '';
+    this.resetData = false;
+    this.resetConfirmation = '';
+    this.publicConfirmation = '';
+    this.configurationModalOpen = true;
+    this.configurationLoading.set(true);
+    this.his.observabilityConfig().subscribe({
+      next: (state) => {
+        this.observabilityState.set(state);
+        const config = this.cloneConfig(state.config);
+        this.observabilityConfig.set(config);
+        this.allowedCidrsText = config.grafana.allowedCidrs.join('\n');
+        this.configurationLoading.set(false);
+        this.validateConfiguration();
+      },
+      error: (error) => { this.configurationLoading.set(false); this.error.set(this.message(error)); },
+    });
+  }
+
+  storageClassHint(state: ObservabilityConfigurationState, selected: string): string {
+    const storageClass = state.storageClasses.find((item) => item.name === selected)
+      || state.storageClasses.find((item) => item.isDefault);
+    if (!storageClass) return '기본 StorageClass 없음';
+    return `${storageClass.provisioner} · ${storageClass.allowVolumeExpansion ? '온라인 확장 가능' : '온라인 확장 불가'} · reclaim ${storageClass.reclaimPolicy}`;
+  }
+
+  livePvc(state: ObservabilityConfigurationState, component: 'prometheus' | 'alertmanager' | 'grafana'): string {
+    const pvc = state.live.pvcs[component];
+    return pvc ? `${pvc.requested || pvc.capacity} · ${pvc.storageClassName} · ${pvc.selectedNode || 'node pending'}` : '없음';
+  }
+
+  validateConfiguration(): void {
+    const config = this.configurationRequestConfig();
+    if (!config) return;
+    this.error.set('');
+    this.configurationPlanning.set(true);
+    this.observabilityPlan.set(null);
+    this.his.observabilityPlan(config).subscribe({
+      next: (plan) => {
+        const normalized = this.cloneConfig(plan.config);
+        this.observabilityConfig.set(normalized);
+        this.allowedCidrsText = normalized.grafana.allowedCidrs.join('\n');
+        this.configurationFingerprint = JSON.stringify(normalized);
+        this.observabilityPlan.set(plan);
+        this.configurationPlanning.set(false);
+      },
+      error: (error) => { this.configurationPlanning.set(false); this.error.set(this.message(error)); },
+    });
+  }
+
+  configurationReadyToApply(): boolean {
+    const state = this.observabilityState();
+    const plan = this.observabilityPlan();
+    const config = this.configurationRequestConfig();
+    if (!state || !plan || !config || !plan.canApply || this.configurationBusy() || this.configurationPlanning()) return false;
+    if (JSON.stringify(config) !== this.configurationFingerprint) return false;
+    if (this.configurationReason.trim().length < 8) return false;
+    if (plan.requiresDataReset && (!this.resetData || this.resetConfirmation !== state.policy.resetConfirmation)) return false;
+    if (config.grafana.exposureMode === 'PublicIngress' && this.publicConfirmation !== state.policy.publicConfirmation) return false;
+    return true;
+  }
+
+  applyObservabilityConfiguration(): void {
+    const config = this.configurationRequestConfig();
+    const state = this.observabilityState();
+    if (!config || !state || !this.configurationReadyToApply()) return;
+    this.configurationBusy.set(true);
+    this.error.set('');
+    this.his.configureObservability(
+      config,
+      this.configurationReason.trim(),
+      this.resetData,
+      this.resetConfirmation,
+      this.publicConfirmation,
+    ).subscribe({
+      next: (response) => {
+        this.configurationBusy.set(false);
+        this.configurationModalOpen = false;
+        this.notice.set(`Shared Observability 운영 구성 작업이 등록되었습니다. 작업 ID: ${response.operation.id}`);
+        this.setExpanded('kube-prometheus-stack', true);
+        this.load();
+      },
+      error: (error) => { this.configurationBusy.set(false); this.error.set(this.message(error)); },
+    });
+  }
+
+  private configurationRequestConfig(): ObservabilityConfig | null {
+    const current = this.observabilityConfig();
+    if (!current) return null;
+    const config = this.cloneConfig(current);
+    config.grafana.allowedCidrs = this.allowedCidrsText.split(/[\n,]+/).map((value) => value.trim()).filter(Boolean);
+    return config;
+  }
+
+  private cloneConfig(config: ObservabilityConfig): ObservabilityConfig {
+    return JSON.parse(JSON.stringify(config));
   }
 
   private message(error: any): string {

@@ -6,7 +6,21 @@ const { HIS_CATALOG, catalogItem } = require('../his-catalog');
 const fs = require('node:fs');
 const path = require('node:path');
 const yaml = require('js-yaml');
-const { reasonFrom, safeError, kubeconfigText, auditRequired, operationResourceName, operationActive, renderedResources, recoverableHelmCleanupError, stuckReleaseRecoveryStrategy } = require('../his-manager');
+const {
+  reasonFrom,
+  safeError,
+  kubeconfigText,
+  auditRequired,
+  operationResourceName,
+  operationActive,
+  renderedResources,
+  recoverableHelmCleanupError,
+  stuckReleaseRecoveryStrategy,
+  validateObservabilityConfig,
+  observabilityValues,
+  observabilityPvcComponent,
+  DEFAULT_OBSERVABILITY_CONFIG,
+} = require('../his-manager');
 
 test('HIS catalog keeps PFS/plugin concepts outside the prerequisite catalog', () => {
   assert.ok(HIS_CATALOG.some((item) => item.mode === 'DetectOnly'));
@@ -79,6 +93,66 @@ test('Grafana persistence profile is repeat-install safe', () => {
   assert.equal(values.grafana.deploymentStrategy.type, 'Recreate');
   assert.equal(values.grafana.initChownData.enabled, false);
   assert.equal(values.grafana.persistence.lookupVolumeName, true);
+  assert.equal(values.grafana.persistence.annotations['helm.sh/resource-policy'], 'keep');
+  assert.equal(values.prometheus.prometheusSpec.persistentVolumeClaimRetentionPolicy.whenDeleted, 'Retain');
+  assert.equal(values.alertmanager.alertmanagerSpec.persistentVolumeClaimRetentionPolicy.whenScaled, 'Retain');
+});
+
+test('Observability configuration is allowlisted and secure by default', () => {
+  const config = validateObservabilityConfig(DEFAULT_OBSERVABILITY_CONFIG);
+  const values = observabilityValues(config);
+  assert.equal(values.grafana.service.type, 'ClusterIP');
+  assert.equal(values.grafana.ingress.enabled, false);
+  assert.equal(values.prometheus.ingress.enabled, false);
+  assert.equal(values.alertmanager.ingress.enabled, false);
+  assert.equal(values.extraManifests.length, 3);
+  assert.equal(values.grafana.persistence.annotations['helm.sh/resource-policy'], 'keep');
+  assert.deepEqual(values.prometheus.prometheusSpec.remoteWrite, []);
+});
+
+test('private Grafana ingress requires TLS, OIDC references and CIDR restrictions', () => {
+  assert.throws(() => validateObservabilityConfig({
+    ...DEFAULT_OBSERVABILITY_CONFIG,
+    grafana: { ...DEFAULT_OBSERVABILITY_CONFIG.grafana, exposureMode: 'PrivateIngress', hostname: 'grafana.example.com', tlsSecretName: 'grafana-tls', oidcSecretName: 'grafana-oidc' },
+  }), /허용 CIDR/);
+  const config = validateObservabilityConfig({
+    ...DEFAULT_OBSERVABILITY_CONFIG,
+    grafana: {
+      ...DEFAULT_OBSERVABILITY_CONFIG.grafana,
+      exposureMode: 'PrivateIngress',
+      hostname: 'grafana.example.com',
+      tlsSecretName: 'grafana-tls',
+      oidcSecretName: 'grafana-oidc',
+      allowedCidrs: ['10.0.0.0/8'],
+    },
+  });
+  const values = observabilityValues(config);
+  assert.equal(values.grafana.ingress.enabled, true);
+  assert.equal(values.grafana.ingress.annotations['nginx.ingress.kubernetes.io/whitelist-source-range'], '10.0.0.0/8');
+  assert.equal(values.grafana.envFromSecret, 'grafana-oidc');
+  assert.equal(values.grafana['grafana.ini']['auth.anonymous'].enabled, false);
+  assert.deepEqual(values.grafana.ingress.tls[0].hosts, ['grafana.example.com']);
+});
+
+test('remote write only accepts HTTPS or cluster-local HTTP and secret references', () => {
+  assert.throws(() => validateObservabilityConfig({
+    ...DEFAULT_OBSERVABILITY_CONFIG,
+    prometheus: { ...DEFAULT_OBSERVABILITY_CONFIG.prometheus, remoteWrite: { enabled: true, url: 'http://metrics.example.com/write', secretName: 'remote-write', secretKey: 'token' } },
+  }), /HTTPS/);
+  const config = validateObservabilityConfig({
+    ...DEFAULT_OBSERVABILITY_CONFIG,
+    prometheus: { ...DEFAULT_OBSERVABILITY_CONFIG.prometheus, remoteWrite: { enabled: true, url: 'https://metrics.example.com/write', secretName: 'remote-write', secretKey: 'token' } },
+  });
+  const remoteWrite = observabilityValues(config).prometheus.prometheusSpec.remoteWrite[0];
+  assert.equal(remoteWrite.url, 'https://metrics.example.com/write');
+  assert.deepEqual(remoteWrite.authorization.credentials, { name: 'remote-write', key: 'token' });
+});
+
+test('Observability PVC names are bounded to the three managed data stores', () => {
+  assert.equal(observabilityPvcComponent('kube-prometheus-stack-grafana'), 'grafana');
+  assert.equal(observabilityPvcComponent('prometheus-kube-prometheus-stack-prometheus-db-prometheus-kube-prometheus-stack-prometheus-0'), 'prometheus');
+  assert.equal(observabilityPvcComponent('alertmanager-kube-prometheus-stack-alertmanager-db-alertmanager-kube-prometheus-stack-alertmanager-0'), 'alertmanager');
+  assert.equal(observabilityPvcComponent('customer-database'), '');
 });
 
 test('durable audit request authenticates with the managed workload ServiceAccount token', async () => {

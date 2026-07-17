@@ -18,13 +18,13 @@ spec:
   description: "OpenSphere Kubernetes, external Ceph Storage, and HIS management views"
   image:
     repository: ghcr.io/opensphere-platform/opensphere-shell-cluster-manager
-    digest: sha256:dd42e17480db90f29f2aaf8c49a79cc273d202ebaba46fd663a42d9db3ecb427
+    digest: sha256:89ba7cadd4257a7ee495fae59c6379ebfc5209d0980c54cb1ef4c6b5a847e979
   nav:
     band: "운영 Operate"
     label: "Cluster Manager"
   manifest:
     path: /plugins/ui-shell.manifest.json
-    sha256: "422775ed49832ed9661186bac3d13fff009b8d16bf8ecdb30748181f48a294fa"
+    sha256: "1fb62fc1b3fb921c90341821073eff7cbac6b4390961dbe4c2dbcc51b231e89d"
     signaturePath: /plugins/ui-shell.manifest.json.sig
   trust:
     keyId: opensphere-plugins-v1

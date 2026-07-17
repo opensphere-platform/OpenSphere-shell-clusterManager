@@ -127,9 +127,21 @@ import { HisItem, HisPlan, HisService, HisStatus } from '../core/his.service';
   `,
   styles: [`
     :host { display: block; }
-    .his-head { display: flex; justify-content: space-between; gap: 1.5rem; align-items: flex-start; margin-bottom: 0.8rem; }
-    .his-head h1 { margin: 0.15rem 0 0.35rem; font-size: 1.45rem; font-weight: 400; }
-    .his-head p { margin: 0; max-width: 62rem; color: #565656; }
+    .his-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 1.5rem;
+      align-items: flex-start;
+      height: auto;
+      min-height: 0;
+      margin-bottom: 0.8rem;
+      padding: 0;
+      background: transparent;
+      color: inherit;
+      overflow: visible;
+    }
+    .his-head h1 { margin: 0.15rem 0 0.35rem; color: #2d4048; font-size: 1.45rem; font-weight: 400; line-height: 1.25; }
+    .his-head p { margin: 0; max-width: 62rem; color: #565656; line-height: 1.5; }
     .eyebrow { color: #4c6fff !important; font-size: 0.65rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
     .summary { display: flex; align-items: center; gap: 0.75rem; padding: 0.55rem 0; color: #565656; font-size: 0.72rem; }
     .muted { color: #6f6f6f; font-size: 0.65rem; margin-top: 0.12rem; }

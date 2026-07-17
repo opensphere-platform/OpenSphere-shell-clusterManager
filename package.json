@@ -1,6 +1,6 @@
 {
   "name": "cluster-manager",
-  "version": "1.1.3",
+  "version": "1.1.4",
   "description": "OpenSphere subShell — K8s Cluster + Ceph manager. Angular 22 + Clarity 18, exported as Angular Element <osp-k8s-console-ng>. Standalone project: `ng build` → dist served by server.js (generic K8s proxy + WS exec).",
   "private": true,
   "scripts": {

@@ -13,6 +13,9 @@ import {
   ObservabilityConfigurationState,
 } from '../core/his.service';
 
+type HisLifecycleAction = 'install' | 'upgrade' | 'recover' | 'blocked';
+type HisMutationAction = 'install' | 'upgrade' | 'recover' | 'rollback' | 'uninstall';
+
 @Component({
   selector: 'app-his',
   standalone: true,
@@ -87,11 +90,13 @@ import {
         </clr-dg-cell>
         <clr-dg-cell>
           <ng-container *ngIf="item.mode === 'HelmManaged'; else detectOnly">
-            <button class="btn btn-sm btn-outline" type="button" [disabled]="busy() || operationActive(item.operation)" (click)="openPlan(item, 'install')">계획</button>
-            <button class="btn btn-sm btn-primary" type="button" [disabled]="busy() || operationActive(item.operation) || !canInstall(item)" (click)="openPlan(item, 'install', true)">설치</button>
-            <button class="btn btn-sm btn-outline" type="button" [disabled]="busy() || operationActive(item.operation) || !item.release?.managed" (click)="openPlan(item, 'upgrade', true)">업그레이드</button>
+            <button class="btn btn-sm btn-outline" type="button" [disabled]="busy() || operationActive(item.operation) || releaseLifecycle(item) === 'blocked'" (click)="openPlan(item, planAction(item))">계획</button>
+            <button *ngIf="releaseLifecycle(item) === 'install'" class="btn btn-sm btn-primary" type="button" [disabled]="busy() || operationActive(item.operation) || !canInstall(item)" (click)="openPlan(item, 'install', true)">설치</button>
+            <button *ngIf="releaseLifecycle(item) === 'upgrade'" class="btn btn-sm btn-outline" type="button" [disabled]="busy() || operationActive(item.operation)" (click)="openPlan(item, 'upgrade', true)">업그레이드</button>
+            <button *ngIf="releaseLifecycle(item) === 'recover'" class="btn btn-sm btn-warning-outline" type="button" [disabled]="busy() || operationActive(item.operation)" (click)="openPlan(item, 'recover', true)">복구</button>
+            <span *ngIf="releaseLifecycle(item) === 'blocked'" class="muted">Helm 상태 확인 필요</span>
             <button class="btn btn-sm btn-outline" type="button" [disabled]="busy() || operationActive(item.operation) || !rollbackAvailable(item)" (click)="openPlan(item, 'rollback', true)">롤백</button>
-            <button *ngIf="item.id === 'kube-prometheus-stack'" class="btn btn-sm btn-outline" type="button" [disabled]="busy() || operationActive(item.operation) || !item.release?.managed" (click)="openObservabilityConfiguration()">운영 구성</button>
+            <button *ngIf="item.id === 'kube-prometheus-stack'" class="btn btn-sm btn-outline" type="button" [disabled]="busy() || operationActive(item.operation) || releaseLifecycle(item) !== 'upgrade'" (click)="openObservabilityConfiguration()">운영 구성</button>
             <button class="btn btn-sm btn-danger-outline" type="button" [disabled]="busy() || operationActive(item.operation) || !item.release?.managed" (click)="openPlan(item, 'uninstall', true)">삭제</button>
           </ng-container>
           <ng-template #detectOnly><span class="muted">호스트 제공 · 진단만</span></ng-template>
@@ -501,7 +506,7 @@ export class HisComponent implements OnInit, OnDestroy {
   readonly status = signal<HisStatus | null>(null);
   readonly selected = signal<HisItem | null>(null);
   readonly plan = signal<HisPlan | null>(null);
-  readonly action = signal<'install' | 'upgrade' | 'rollback' | 'uninstall'>('install');
+  readonly action = signal<HisMutationAction>('install');
   readonly executeRequested = signal(false);
   readonly loading = signal(false);
   readonly planLoading = signal(false);
@@ -573,22 +578,35 @@ export class HisComponent implements OnInit, OnDestroy {
   operationLabel(operation: HisOperation): string {
     return operation.action === 'install' ? '설치'
       : operation.action === 'upgrade' ? '업그레이드'
-        : operation.action === 'rollback' ? '롤백'
-          : operation.action === 'configure' ? '운영 구성' : '삭제';
+        : operation.action === 'recover' ? '복구'
+          : operation.action === 'rollback' ? '롤백'
+            : operation.action === 'configure' ? '운영 구성' : '삭제';
+  }
+  releaseLifecycle(item: HisItem): HisLifecycleAction {
+    if (!item.release?.managed) return 'install';
+    const status = String(item.release.status || '').toLowerCase();
+    if (status === 'deployed') return 'upgrade';
+    if (['failed', 'pending-install', 'pending-upgrade', 'pending-rollback', 'uninstalling'].includes(status)) return 'recover';
+    return 'blocked';
+  }
+  planAction(item: HisItem): Exclude<HisLifecycleAction, 'blocked'> {
+    const action = this.releaseLifecycle(item);
+    return action === 'blocked' ? 'install' : action;
   }
   canInstall(item: HisItem): boolean {
     if (item.mode !== 'HelmManaged') return false;
     if (this.operationActive(item.operation)) return false;
+    if (this.releaseLifecycle(item) !== 'install') return false;
     if (item.check.state === 'Ready' && item.ownership === 'External') return false;
     if (item.check.state === 'Degraded' && !item.release?.managed) return false;
-    return item.check.state !== 'Ready' || !!item.release?.managed;
+    return item.check.state !== 'Ready';
   }
 
   rollbackAvailable(item: HisItem): boolean {
-    return Boolean(item.release?.managed && Number(item.release.revision) >= 2);
+    return Boolean(this.releaseLifecycle(item) === 'upgrade' && Number(item.release?.revision) >= 2);
   }
 
-  openPlan(item: HisItem, action: 'install' | 'upgrade' | 'rollback' | 'uninstall', execute = false): void {
+  openPlan(item: HisItem, action: HisMutationAction, execute = false): void {
     this.selected.set(item);
     this.action.set(action);
     this.executeRequested.set(execute);
@@ -608,7 +626,7 @@ export class HisComponent implements OnInit, OnDestroy {
   readyToExecute(): boolean {
     const item = this.selected();
     if (!item || !this.plan() || this.busy() || this.reason.trim().length < 8) return false;
-    if (this.action() === 'install' || this.action() === 'upgrade') return true;
+    if (this.action() === 'install' || this.action() === 'upgrade' || this.action() === 'recover') return true;
     if (this.action() === 'rollback') return !!this.rollbackRevision && this.confirm === `${item.id}:${this.rollbackRevision}`;
     return this.confirm === item.id;
   }
@@ -616,13 +634,15 @@ export class HisComponent implements OnInit, OnDestroy {
   actionTitle(): string {
     return this.action() === 'uninstall' ? 'HIS 삭제 확인'
       : this.action() === 'upgrade' ? 'HIS 업그레이드 계획'
-        : this.action() === 'rollback' ? 'HIS revision 롤백' : 'HIS 설치 계획';
+        : this.action() === 'recover' ? 'HIS release 복구 계획'
+          : this.action() === 'rollback' ? 'HIS revision 롤백' : 'HIS 설치 계획';
   }
 
   executeButtonLabel(): string {
     return this.action() === 'install' ? '설치 실행'
       : this.action() === 'upgrade' ? '업그레이드 실행'
-        : this.action() === 'rollback' ? '롤백 실행' : '삭제 실행';
+        : this.action() === 'recover' ? '복구 실행'
+          : this.action() === 'rollback' ? '롤백 실행' : '삭제 실행';
   }
 
   rollbackTargets(plan: HisPlan, item: HisItem): HisPlan['history'] {
@@ -641,8 +661,9 @@ export class HisComponent implements OnInit, OnDestroy {
     const request = this.action() === 'install'
       ? this.his.install(item.id, this.reason.trim())
       : this.action() === 'upgrade' ? this.his.upgrade(item.id, this.reason.trim())
-        : this.action() === 'rollback' ? this.his.rollback(item.id, Number(this.rollbackRevision), this.reason.trim(), this.confirm)
-          : this.his.uninstall(item.id, this.reason.trim(), this.confirm);
+        : this.action() === 'recover' ? this.his.recover(item.id, this.reason.trim())
+          : this.action() === 'rollback' ? this.his.rollback(item.id, Number(this.rollbackRevision), this.reason.trim(), this.confirm)
+            : this.his.uninstall(item.id, this.reason.trim(), this.confirm);
     request.subscribe({
       next: (response) => {
         this.busy.set(false);

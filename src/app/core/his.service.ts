@@ -20,7 +20,7 @@ export interface HisOperation {
   id: string;
   itemId: string;
   displayName: string;
-  action: 'install' | 'upgrade' | 'rollback' | 'uninstall' | 'configure';
+  action: 'install' | 'upgrade' | 'recover' | 'rollback' | 'uninstall' | 'configure';
   phase: 'Queued' | 'Recovering' | 'Installing' | 'Upgrading' | 'RollingBack' | 'Configuring' | 'Migrating' | 'Validating' | 'Uninstalling' | 'Ready' | 'Removed' | 'Failed' | 'RollbackStalled';
   progress: number;
   message: string;
@@ -217,6 +217,7 @@ export class HisService {
   plan(id: string): Observable<HisPlan> { return this.http.post<HisPlan>(this.url('plan'), { id }); }
   install(id: string, reason: string): Observable<{ ok: boolean; operation: HisOperation }> { return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('install'), { id, reason }); }
   upgrade(id: string, reason: string): Observable<{ ok: boolean; operation: HisOperation }> { return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('upgrade'), { id, reason }); }
+  recover(id: string, reason: string): Observable<{ ok: boolean; operation: HisOperation }> { return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('recover'), { id, reason }); }
   rollback(id: string, revision: number, reason: string, confirm: string): Observable<{ ok: boolean; operation: HisOperation }> {
     return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('rollback'), { id, revision, reason, confirm });
   }

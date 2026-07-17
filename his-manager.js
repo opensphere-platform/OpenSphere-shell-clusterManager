@@ -1266,8 +1266,9 @@ async function createOperation(ctx, item, actor, action, reason, extra = {}) {
     message: action === 'install'
       ? '설치 작업이 대기열에 등록되었습니다.'
       : action === 'upgrade' ? '업그레이드 작업이 대기열에 등록되었습니다.'
-        : action === 'rollback' ? `revision ${extra.targetRevision || ''} 롤백 작업이 대기열에 등록되었습니다.`
-          : action === 'configure' ? '운영 구성 변경이 대기열에 등록되었습니다.' : '삭제 작업이 대기열에 등록되었습니다.',
+        : action === 'recover' ? '중단된 Helm release 복구 작업이 대기열에 등록되었습니다.'
+          : action === 'rollback' ? `revision ${extra.targetRevision || ''} 롤백 작업이 대기열에 등록되었습니다.`
+            : action === 'configure' ? '운영 구성 변경이 대기열에 등록되었습니다.' : '삭제 작업이 대기열에 등록되었습니다.',
     error: '',
     actor: actor.username,
     reason,
@@ -1303,6 +1304,22 @@ function recoverableHelmCleanupError(releaseStatus, message) {
 function stuckReleaseRecoveryStrategy(releaseStatus, workloadPresent) {
   if (releaseStatus === 'failed' && workloadPresent) return 'repair-in-place';
   return 'replace';
+}
+
+const RECOVERABLE_RELEASE_STATUSES = new Set([
+  'failed',
+  'pending-install',
+  'pending-upgrade',
+  'pending-rollback',
+  'uninstalling',
+]);
+
+function releaseLifecycleAction(release) {
+  if (!release?.managed) return 'install';
+  const status = String(release.status || '').toLowerCase();
+  if (status === 'deployed') return 'upgrade';
+  if (RECOVERABLE_RELEASE_STATUSES.has(status)) return 'recover';
+  return 'blocked';
 }
 
 async function recoverStuckRelease(ctx, actor, item, operation, release, observedCheck) {
@@ -1622,12 +1639,15 @@ async function executeObservabilityConfiguration(ctx, actor, item, operation, de
 async function executeOperation(ctx, actor, item, operation) {
   let current = operation;
   try {
-    if (operation.action === 'install' || operation.action === 'upgrade') {
+    if (operation.action === 'install' || operation.action === 'upgrade' || operation.action === 'recover') {
       const upgrading = operation.action === 'upgrade';
-      current = await patchOperation(ctx, item, current, { phase: upgrading ? 'Upgrading' : 'Installing', progress: 10, message: `${upgrading ? '업그레이드' : '설치'} 전 상태를 확인하고 있습니다.` });
+      const recovering = operation.action === 'recover';
+      const actionLabel = recovering ? '복구' : upgrading ? '업그레이드' : '설치';
+      current = await patchOperation(ctx, item, current, { phase: recovering ? 'Recovering' : upgrading ? 'Upgrading' : 'Installing', progress: 10, message: `${actionLabel} 전 상태를 확인하고 있습니다.` });
       const before = await itemStatus(ctx, item);
-      if (upgrading && !before.release?.managed) {
-        throw Object.assign(new Error('Cluster Manager가 소유한 Helm release만 업그레이드할 수 있습니다.'), { code: 409 });
+      const lifecycleAction = releaseLifecycleAction(before.release);
+      if (lifecycleAction !== operation.action) {
+        throw Object.assign(new Error(`현재 Helm release 상태에서는 ${actionLabel} 작업을 실행할 수 없습니다. 허용 작업: ${lifecycleAction}`), { code: 409 });
       }
       if (before.check.state === 'Ready' && !before.release?.managed) {
         throw Object.assign(new Error('호스트 또는 외부 관리자가 제공한 capability입니다. Cluster Manager가 덮어쓰지 않습니다.'), { code: 409 });
@@ -1636,12 +1656,12 @@ async function executeOperation(ctx, actor, item, operation) {
       if (before.check.state === 'Degraded' && !before.release?.managed && componentPresent) {
         throw Object.assign(new Error('부분 설치 워크로드가 존재합니다. 충돌을 해소한 뒤 설치하십시오.'), { code: 409 });
       }
-      current = await recoverStuckRelease(ctx, actor, item, current, before.release, before.check);
+      if (recovering) current = await recoverStuckRelease(ctx, actor, item, current, before.release, before.check);
       const variant = await clusterVariant(ctx);
       current = await patchOperation(ctx, item, current, {
-        phase: upgrading ? 'Upgrading' : 'Installing',
+        phase: recovering ? 'Recovering' : upgrading ? 'Upgrading' : 'Installing',
         progress: 35,
-        message: `Helm ${item.chartName} ${item.chartVersion} 고정 payload를 ${upgrading ? '업그레이드' : '적용'}하고 Ready 상태를 기다리고 있습니다.`,
+        message: `Helm ${item.chartName} ${item.chartVersion} 고정 payload를 ${recovering ? '재조정' : upgrading ? '업그레이드' : '적용'}하고 Ready 상태를 기다리고 있습니다.`,
         clusterVariant: variant,
       });
       const managedValues = await managedValuesForItem(ctx, item);
@@ -1650,8 +1670,8 @@ async function executeOperation(ctx, actor, item, operation) {
       current = await patchOperation(ctx, item, current, { phase: 'Validating', progress: 88, message: 'Helm 적용이 완료되어 구성요소와 저장소를 검증하고 있습니다.' });
       const acceptableDegraded = new Set(['IssuerMissing', 'IngressTlsPolicyMissing']);
       const check = await waitForProbe(ctx, item, (value) => value.state === 'Ready' || acceptableDegraded.has(value.reason));
-      if (check.state !== 'Ready' && !acceptableDegraded.has(check.reason)) throw Object.assign(new Error(`${upgrading ? '업그레이드' : '설치'} 후 검증 실패: ${check.message}`), { code: 502 });
-      const auditAction = upgrading ? 'HISUpgraded' : 'HISInstalled';
+      if (check.state !== 'Ready' && !acceptableDegraded.has(check.reason)) throw Object.assign(new Error(`${actionLabel} 후 검증 실패: ${check.message}`), { code: 502 });
+      const auditAction = recovering ? 'HISRecovered' : upgrading ? 'HISUpgraded' : 'HISInstalled';
       await auditRequired(ctx, actor, auditAction, item, operation.reason, `success:${check.state}:${check.reason}`);
       await ctx.publishNotify({ userActor: actor.username, action: auditAction, target: `HIS/${item.id}`, result: check.state, reason: `${operation.reason} · ${check.message}` });
       current = await patchOperation(ctx, item, current, {
@@ -1699,6 +1719,7 @@ async function executeOperation(ctx, actor, item, operation) {
     const phase = release?.status === 'uninstalling' ? 'RollbackStalled' : 'Failed';
     const failureAction = operation.action === 'install' ? 'HISInstallFailed'
       : operation.action === 'upgrade' ? 'HISUpgradeFailed'
+        : operation.action === 'recover' ? 'HISRecoveryFailed'
         : operation.action === 'rollback' ? 'HISRollbackFailed' : 'HISUninstallFailed';
     try { await auditRequired(ctx, actor, failureAction, item, operation.reason, message); }
     catch (auditError) { console.error(`[his-operation] failure audit unavailable id=${operation.id}: ${safeError(auditError)}`); }
@@ -1765,20 +1786,30 @@ function createHisManager(ctx) {
       const reason = reasonFrom(body);
       const action = pathname === '/api/his/install' ? 'install'
         : pathname === '/api/his/upgrade' ? 'upgrade'
-          : pathname === '/api/his/rollback' ? 'rollback'
-            : pathname === '/api/his/uninstall' ? 'uninstall' : '';
+          : pathname === '/api/his/recover' ? 'recover'
+            : pathname === '/api/his/rollback' ? 'rollback'
+              : pathname === '/api/his/uninstall' ? 'uninstall' : '';
       if (!action) throw Object.assign(new Error('not found'), { code: 404 });
       let operationExtra = {};
-      if (action === 'uninstall' || action === 'upgrade' || action === 'rollback') {
-        const release = await helmStatus(ctx, item);
-        if (!release?.managed) throw Object.assign(new Error('Cluster Manager가 설치한 Helm release만 변경할 수 있습니다.'), { code: 409 });
+      const release = await helmStatus(ctx, item);
+      const lifecycleAction = releaseLifecycleAction(release);
+      if (action === 'install' && lifecycleAction !== 'install') {
+        throw Object.assign(new Error(`이미 Helm release가 존재합니다. 현재 허용 작업: ${lifecycleAction}`), { code: 409 });
+      }
+      if (action === 'upgrade' && lifecycleAction !== 'upgrade') {
+        throw Object.assign(new Error(`정상 배포된 Helm release만 업그레이드할 수 있습니다. 현재 허용 작업: ${lifecycleAction}`), { code: 409 });
+      }
+      if (action === 'recover' && lifecycleAction !== 'recover') {
+        throw Object.assign(new Error(`실패하거나 중단된 Helm release만 복구할 수 있습니다. 현재 허용 작업: ${lifecycleAction}`), { code: 409 });
+      }
+      if ((action === 'rollback' && lifecycleAction !== 'upgrade') || (action === 'uninstall' && !release?.managed)) {
+        throw Object.assign(new Error('Cluster Manager가 정상 관리 중인 Helm release만 이 작업을 실행할 수 있습니다.'), { code: 409 });
       }
       if (action === 'uninstall') {
         if (String(body.confirm || '') !== item.id) throw Object.assign(new Error(`삭제 확인 값으로 '${item.id}'를 입력해야 합니다.`), { code: 400 });
       }
       if (action === 'rollback') {
         const targetRevision = Number(body.revision || 0);
-        const release = await helmStatus(ctx, item);
         const history = await helmHistory(ctx, item);
         if (!Number.isInteger(targetRevision) || targetRevision < 1 || targetRevision >= Number(release?.revision || 0) || !history.some((entry) => entry.revision === targetRevision)) {
           throw Object.assign(new Error('현재 revision보다 작은 유효한 Helm history revision을 선택해야 합니다.'), { code: 400 });
@@ -1789,7 +1820,8 @@ function createHisManager(ctx) {
       }
       const requestedAction = action === 'install' ? 'HISInstallRequested'
         : action === 'upgrade' ? 'HISUpgradeRequested'
-          : action === 'rollback' ? 'HISRollbackRequested' : 'HISUninstallRequested';
+          : action === 'recover' ? 'HISRecoveryRequested'
+            : action === 'rollback' ? 'HISRollbackRequested' : 'HISUninstallRequested';
       await auditRequired(ctx, actor, requestedAction, item, reason, action === 'rollback' ? `requested:revision=${operationExtra.targetRevision}` : 'requested');
       const operation = await createOperation(ctx, item, actor, action, reason, operationExtra);
       ctx.jsonRes(res, 202, { ok: true, operation });
@@ -1824,6 +1856,7 @@ module.exports = {
   renderedResources,
   recoverableHelmCleanupError,
   stuckReleaseRecoveryStrategy,
+  releaseLifecycleAction,
   validateObservabilityConfig,
   observabilityValues,
   observabilityPvcComponent,

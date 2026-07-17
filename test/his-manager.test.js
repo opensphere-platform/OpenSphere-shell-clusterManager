@@ -20,6 +20,7 @@ const {
   renderedResources,
   recoverableHelmCleanupError,
   stuckReleaseRecoveryStrategy,
+  releaseLifecycleAction,
   validateObservabilityConfig,
   observabilityValues,
   observabilityPvcComponent,
@@ -121,6 +122,23 @@ test('failed releases with live workloads are repaired in place', () => {
   assert.equal(stuckReleaseRecoveryStrategy('failed', true), 'repair-in-place');
   assert.equal(stuckReleaseRecoveryStrategy('failed', false), 'replace');
   assert.equal(stuckReleaseRecoveryStrategy('uninstalling', true), 'replace');
+});
+
+test('Helm lifecycle exposes exactly one primary action for each release state', () => {
+  assert.equal(releaseLifecycleAction(null), 'install');
+  assert.equal(releaseLifecycleAction({ managed: false, status: 'not-installed', revision: 0 }), 'install');
+  assert.equal(releaseLifecycleAction({ managed: true, status: 'deployed', revision: 3 }), 'upgrade');
+  assert.equal(releaseLifecycleAction({ managed: true, status: 'failed', revision: 3 }), 'recover');
+  assert.equal(releaseLifecycleAction({ managed: true, status: 'pending-upgrade', revision: 3 }), 'recover');
+  assert.equal(releaseLifecycleAction({ managed: true, status: 'unknown', revision: 1 }), 'blocked');
+});
+
+test('HIS UI renders install, upgrade and recovery as mutually exclusive lifecycle actions', () => {
+  const ui = fs.readFileSync(path.resolve(__dirname, '../src/app/resources/his.component.ts'), 'utf8');
+  assert.match(ui, /\*ngIf="releaseLifecycle\(item\) === 'install'"[^>]*>[\s\S]*?설치<\/button>/);
+  assert.match(ui, /\*ngIf="releaseLifecycle\(item\) === 'upgrade'"[^>]*>[\s\S]*?업그레이드<\/button>/);
+  assert.match(ui, /\*ngIf="releaseLifecycle\(item\) === 'recover'"[^>]*>[\s\S]*?복구<\/button>/);
+  assert.match(ui, /if \(this\.releaseLifecycle\(item\) !== 'install'\) return false;/);
 });
 
 test('Grafana persistence profile is repeat-install safe', () => {

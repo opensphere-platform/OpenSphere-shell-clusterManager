@@ -1,0 +1,6 @@
+# The kind development profile consumes the certificate produced by
+# cert-manager-kind.yaml as the controller's default TLS certificate. Standard
+# clusters must supply an approved enterprise/ACME certificate explicitly.
+controller:
+  extraArgs:
+    default-ssl-certificate: cert-manager/opensphere-his-default-tls

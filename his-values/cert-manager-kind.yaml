@@ -1,0 +1,83 @@
+# OpenSphere HIS certificate bootstrap for the local kind development profile.
+#
+# This profile is never applied to standard/production clusters. It creates a
+# development-only CA chain so the local host can exercise the complete
+# cert-manager and ingress TLS lifecycle without an external ACME or enterprise
+# PKI dependency.
+clusterResourceNamespace: cert-manager
+
+extraObjects:
+  - |
+    apiVersion: cert-manager.io/v1
+    kind: ClusterIssuer
+    metadata:
+      name: opensphere-his-development-bootstrap
+      labels:
+        app.kubernetes.io/managed-by: Helm
+        opensphere.io/his-capability: certificate
+        opensphere.io/trust-profile: development
+    spec:
+      selfSigned: {}
+  - |
+    apiVersion: cert-manager.io/v1
+    kind: Certificate
+    metadata:
+      name: opensphere-his-development-ca
+      namespace: cert-manager
+      labels:
+        app.kubernetes.io/managed-by: Helm
+        opensphere.io/his-capability: certificate
+        opensphere.io/trust-profile: development
+    spec:
+      isCA: true
+      commonName: OpenSphere HIS Development CA
+      secretName: opensphere-his-development-ca
+      duration: 8760h
+      renewBefore: 720h
+      privateKey:
+        algorithm: ECDSA
+        size: 256
+        rotationPolicy: Always
+      issuerRef:
+        name: opensphere-his-development-bootstrap
+        kind: ClusterIssuer
+        group: cert-manager.io
+  - |
+    apiVersion: cert-manager.io/v1
+    kind: ClusterIssuer
+    metadata:
+      name: opensphere-his-development-ca
+      labels:
+        app.kubernetes.io/managed-by: Helm
+        opensphere.io/his-capability: certificate
+        opensphere.io/trust-profile: development
+    spec:
+      ca:
+        secretName: opensphere-his-development-ca
+  - |
+    apiVersion: cert-manager.io/v1
+    kind: Certificate
+    metadata:
+      name: opensphere-his-default-tls
+      namespace: cert-manager
+      labels:
+        app.kubernetes.io/managed-by: Helm
+        opensphere.io/his-capability: certificate
+        opensphere.io/trust-profile: development
+    spec:
+      secretName: opensphere-his-default-tls
+      commonName: his.opensphere.local
+      dnsNames:
+        - his.opensphere.local
+        - '*.opensphere.local'
+        - localhost
+      duration: 2160h
+      renewBefore: 360h
+      privateKey:
+        algorithm: ECDSA
+        size: 256
+        rotationPolicy: Always
+      issuerRef:
+        name: opensphere-his-development-ca
+        kind: ClusterIssuer
+        group: cert-manager.io

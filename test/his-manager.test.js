@@ -21,6 +21,7 @@ const {
   recoverableHelmCleanupError,
   stuckReleaseRecoveryStrategy,
   releaseLifecycleAction,
+  ingressDefaultCertificateRef,
   validateObservabilityConfig,
   observabilityValues,
   observabilityPvcComponent,
@@ -139,6 +140,33 @@ test('HIS UI renders install, upgrade and recovery as mutually exclusive lifecyc
   assert.match(ui, /\*ngIf="releaseLifecycle\(item\) === 'upgrade'"[^>]*>[\s\S]*?업그레이드<\/button>/);
   assert.match(ui, /\*ngIf="releaseLifecycle\(item\) === 'recover'"[^>]*>[\s\S]*?복구<\/button>/);
   assert.match(ui, /if \(this\.releaseLifecycle\(item\) !== 'install'\) return false;/);
+});
+
+test('kind HIS profile provisions an issuer chain and binds ingress default TLS without weakening standard clusters', () => {
+  const ingress = catalogItem('ingress-nginx');
+  const certificates = catalogItem('cert-manager');
+  assert.deepEqual(ingress.values, []);
+  assert.deepEqual(ingress.kindValues, ['--values', '/app/his-values/ingress-nginx-kind.yaml']);
+  assert.deepEqual(certificates.values, ['--set', 'crds.enabled=true']);
+  assert.deepEqual(certificates.kindValues, ['--values', '/app/his-values/cert-manager-kind.yaml']);
+
+  const ingressValues = yaml.load(fs.readFileSync(path.resolve(__dirname, '../his-values/ingress-nginx-kind.yaml'), 'utf8'));
+  assert.equal(ingressValues.controller.extraArgs['default-ssl-certificate'], 'cert-manager/opensphere-his-default-tls');
+
+  const certValues = yaml.load(fs.readFileSync(path.resolve(__dirname, '../his-values/cert-manager-kind.yaml'), 'utf8'));
+  assert.equal(certValues.clusterResourceNamespace, 'cert-manager');
+  assert.equal(certValues.extraObjects.length, 4);
+  assert.match(certValues.extraObjects.join('\n'), /opensphere\.io\/trust-profile: development/);
+  assert.match(certValues.extraObjects.join('\n'), /kind: ClusterIssuer/);
+  assert.match(certValues.extraObjects.join('\n'), /secretName: opensphere-his-default-tls/);
+});
+
+test('ingress default certificate reference is parsed from the managed controller only', () => {
+  assert.deepEqual(ingressDefaultCertificateRef({ spec: { template: { spec: { containers: [{ args: ['--default-ssl-certificate=cert-manager/opensphere-his-default-tls'] }] } } } }), {
+    namespace: 'cert-manager', name: 'opensphere-his-default-tls',
+  });
+  assert.equal(ingressDefaultCertificateRef({ spec: { template: { spec: { containers: [{ args: ['--default-ssl-certificate=../../secret'] }] } } } }), null);
+  assert.equal(ingressDefaultCertificateRef(null), null);
 });
 
 test('Grafana persistence profile is repeat-install safe', () => {

@@ -439,6 +439,26 @@ function containerImages(resource) {
   return (resource?.spec?.template?.spec?.containers || []).map((item) => item.image).filter(Boolean).join(', ');
 }
 
+function ingressDefaultCertificateRef(resource) {
+  const containers = resource?.spec?.template?.spec?.containers || [];
+  const args = containers.flatMap((container) => container.args || []);
+  const prefix = '--default-ssl-certificate=';
+  const value = String(args.find((arg) => String(arg).startsWith(prefix)) || '').slice(prefix.length);
+  const match = /^([a-z0-9]([-a-z0-9.]*[a-z0-9])?)\/([a-z0-9]([-a-z0-9.]*[a-z0-9])?)$/.exec(value);
+  return match ? { namespace: match[1], name: match[3] } : null;
+}
+
+async function tlsSecretReady(ctx, ref) {
+  if (!ref) return false;
+  try {
+    const secret = await k8s(ctx, `/api/v1/namespaces/${encodeURIComponent(ref.namespace)}/secrets/${encodeURIComponent(ref.name)}`);
+    return secret.type === 'kubernetes.io/tls' && Boolean(secret.data?.['tls.crt']) && Boolean(secret.data?.['tls.key']);
+  } catch (error) {
+    if (error.code === 404) return false;
+    throw error;
+  }
+}
+
 function addressOfService(service) {
   const ingress = service?.status?.loadBalancer?.ingress || [];
   return ingress.map((item) => item.ip || item.hostname).filter(Boolean).join(', ') || service?.spec?.externalIPs?.join(', ') || '';
@@ -610,6 +630,9 @@ async function probe(ctx, name) {
     const controllerServices = (services.items || []).filter((item) => /ingress.*controller/i.test(item.metadata?.name || ''));
     const readyEndpoints = (endpointSlices.items || []).flatMap((slice) => slice.endpoints || []).filter((endpoint) => endpoint.conditions?.ready !== false).length;
     const tlsIngresses = (ingresses.items || []).filter((item) => (item.spec?.tls || []).length).length;
+    const defaultCertificate = ingressDefaultCertificateRef(controller);
+    const defaultCertificateReady = await tlsSecretReady(ctx, defaultCertificate);
+    const tlsPolicyReady = tlsIngresses > 0 || defaultCertificateReady;
     const rows = controllerServices.map((service) => ({ name: service.metadata?.name || '', type: service.spec?.type || 'ClusterIP', clusterIP: service.spec?.clusterIP || '', external: addressOfService(service) || 'None', listeners: (service.spec?.ports || []).map((port) => `${port.name || ''}:${port.port}->${port.targetPort}`).join(', ') }));
     const externallyExposed = rows.some((row) => ['LoadBalancer', 'NodePort'].includes(row.type));
     const details = diagnosticDetails({
@@ -618,14 +641,15 @@ async function probe(ctx, name) {
         { label: 'Controller', value: controller ? `${controller.status?.availableReplicas || 0}/${controller.spec?.replicas || 1}` : 'Missing', state: controller && availableDeployment(controller) ? 'Passed' : 'Failed' },
         { label: 'Ready endpoints', value: String(readyEndpoints), state: readyEndpoints ? 'Passed' : 'Failed' },
         { label: 'TLS Ingress references', value: `${tlsIngresses}/${ingresses.items?.length || 0}`, state: 'Info' },
+        { label: 'Default TLS certificate', value: defaultCertificate ? `${defaultCertificate.namespace}/${defaultCertificate.name}` : 'Not configured', state: defaultCertificateReady ? 'Passed' : 'Failed' },
       ],
       tables: [{ title: 'Ingress service exposure', columns: [{ key: 'name', label: 'Service' }, { key: 'type', label: 'Type' }, { key: 'clusterIP', label: 'Cluster IP' }, { key: 'external', label: 'External address' }, { key: 'listeners', label: 'Listeners' }], rows }],
-      warnings: externallyExposed && !tlsIngresses ? ['외부 listener가 있으나 TLS를 참조하는 Ingress가 없습니다.'] : [],
+      warnings: externallyExposed && !tlsPolicyReady ? ['외부 listener가 있으나 Ready 상태의 기본 인증서 또는 TLS Ingress 참조가 없습니다.'] : [],
       security: [externallyExposed ? '외부 진입 경로 존재: TLS·OIDC·allowlist 정책을 서비스별로 검증하십시오.' : 'ClusterIP 내부 경로만 발견'],
-      canaries: [{ name: 'Controller endpoint', state: readyEndpoints ? 'Passed' : 'Failed', message: `${readyEndpoints}개 ready endpoint` }, { name: 'Host/TLS reachability', state: 'NotRun', message: '실제 hostname과 승인된 인증서가 필요한 on-demand 검증' }],
+      canaries: [{ name: 'Controller endpoint', state: readyEndpoints ? 'Passed' : 'Failed', message: `${readyEndpoints}개 ready endpoint` }, { name: 'TLS policy', state: tlsPolicyReady ? 'Passed' : 'Failed', message: defaultCertificateReady ? `default ${defaultCertificate.namespace}/${defaultCertificate.name}` : `${tlsIngresses} TLS Ingress references` }],
     });
     if (!classItems.length || !controller || !availableDeployment(controller) || !readyEndpoints) return result('Blocked', 'IngressControlMissing', 'IngressClass·controller·endpoint 계약이 준비되지 않았습니다.', containerImages(controller), details);
-    if (externallyExposed && !tlsIngresses) return result('Degraded', 'IngressTlsPolicyMissing', 'Controller는 Ready이나 외부 listener에 TLS 참조가 없습니다.', containerImages(controller), details);
+    if (externallyExposed && !tlsPolicyReady) return result('Degraded', 'IngressTlsPolicyMissing', 'Controller는 Ready이나 외부 listener에 유효한 TLS 정책이 없습니다.', containerImages(controller), details);
     return result('Ready', 'IngressPathReady', `IngressClass ${classItems.map((item) => item.metadata?.name).join(', ')}와 ${readyEndpoints}개 endpoint가 준비되었습니다.`, containerImages(controller), details);
   }
   if (name === 'certManager') {
@@ -1668,7 +1692,10 @@ async function executeOperation(ctx, actor, item, operation) {
       const args = ['upgrade', '--install', item.release, item.chart, '--namespace', item.namespace, '--create-namespace', '--atomic', '--wait', '--timeout', '10m', '--history-max', '5', ...helmArgs(item, variant)];
       const out = await commandWithHeartbeat(ctx, item, current, args, managedValues);
       current = await patchOperation(ctx, item, current, { phase: 'Validating', progress: 88, message: 'Helm 적용이 완료되어 구성요소와 저장소를 검증하고 있습니다.' });
-      const acceptableDegraded = new Set(['IssuerMissing', 'IngressTlsPolicyMissing']);
+      // Ingress can be installed before cert-manager; that intermediate state
+      // is allowed so the administrator can complete the ordered pair. A
+      // cert-manager operation itself must finish with a Ready issuer chain.
+      const acceptableDegraded = new Set(['IngressTlsPolicyMissing']);
       const check = await waitForProbe(ctx, item, (value) => value.state === 'Ready' || acceptableDegraded.has(value.reason));
       if (check.state !== 'Ready' && !acceptableDegraded.has(check.reason)) throw Object.assign(new Error(`${actionLabel} 후 검증 실패: ${check.message}`), { code: 502 });
       const auditAction = recovering ? 'HISRecovered' : upgrading ? 'HISUpgraded' : 'HISInstalled';
@@ -1857,6 +1884,7 @@ module.exports = {
   recoverableHelmCleanupError,
   stuckReleaseRecoveryStrategy,
   releaseLifecycleAction,
+  ingressDefaultCertificateRef,
   validateObservabilityConfig,
   observabilityValues,
   observabilityPvcComponent,

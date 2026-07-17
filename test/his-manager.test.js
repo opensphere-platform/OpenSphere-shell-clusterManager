@@ -3,7 +3,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { HIS_CATALOG, catalogItem } = require('../his-catalog');
-const { reasonFrom, safeError, kubeconfigText, auditRequired, operationResourceName, operationActive, renderedResources, recoverableHelmCleanupError } = require('../his-manager');
+const fs = require('node:fs');
+const path = require('node:path');
+const yaml = require('js-yaml');
+const { reasonFrom, safeError, kubeconfigText, auditRequired, operationResourceName, operationActive, renderedResources, recoverableHelmCleanupError, stuckReleaseRecoveryStrategy } = require('../his-manager');
 
 test('HIS catalog keeps PFS/plugin concepts outside the prerequisite catalog', () => {
   assert.ok(HIS_CATALOG.some((item) => item.mode === 'DetectOnly'));
@@ -63,6 +66,19 @@ test('stalled uninstall metadata is recoverable only for an uninstalling release
   assert.equal(recoverableHelmCleanupError('uninstalling', 'failed to delete release: kube-prometheus-stack'), true);
   assert.equal(recoverableHelmCleanupError('deployed', 'failed to delete release: kube-prometheus-stack'), false);
   assert.equal(recoverableHelmCleanupError('failed', 'release: not found'), true);
+});
+
+test('failed releases with live workloads are repaired in place', () => {
+  assert.equal(stuckReleaseRecoveryStrategy('failed', true), 'repair-in-place');
+  assert.equal(stuckReleaseRecoveryStrategy('failed', false), 'replace');
+  assert.equal(stuckReleaseRecoveryStrategy('uninstalling', true), 'replace');
+});
+
+test('Grafana persistence profile is repeat-install safe', () => {
+  const values = yaml.load(fs.readFileSync(path.resolve(__dirname, '../his-values/kube-prometheus-stack.yaml'), 'utf8'));
+  assert.equal(values.grafana.deploymentStrategy.type, 'Recreate');
+  assert.equal(values.grafana.initChownData.enabled, false);
+  assert.equal(values.grafana.persistence.lookupVolumeName, true);
 });
 
 test('durable audit request authenticates with the managed workload ServiceAccount token', async () => {

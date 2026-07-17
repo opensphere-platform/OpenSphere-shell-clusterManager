@@ -459,7 +459,12 @@ function recoverableHelmCleanupError(releaseStatus, message) {
     || (releaseStatus === 'uninstalling' && /failed to delete release/i.test(text));
 }
 
-async function recoverStuckRelease(ctx, actor, item, operation, release) {
+function stuckReleaseRecoveryStrategy(releaseStatus, workloadPresent) {
+  if (releaseStatus === 'failed' && workloadPresent) return 'repair-in-place';
+  return 'replace';
+}
+
+async function recoverStuckRelease(ctx, actor, item, operation, release, observedCheck) {
   if (!release?.managed || !['uninstalling', 'failed', 'pending-install', 'pending-upgrade', 'pending-rollback'].includes(release.status)) {
     return operation;
   }
@@ -469,6 +474,14 @@ async function recoverStuckRelease(ctx, actor, item, operation, release) {
     message: `중단된 Helm release(${release.status})를 정리하고 있습니다.`,
   });
   await auditRequired(ctx, actor, 'HISRecoveryStarted', item, operation.reason, release.status);
+  const observedWorkloadPresent = (observedCheck?.details?.components || []).some((component) => component.resourceName);
+  if (stuckReleaseRecoveryStrategy(release.status, observedWorkloadPresent) === 'repair-in-place') {
+    await auditRequired(ctx, actor, 'HISRecoveryCompleted', item, operation.reason, 'repair-in-place');
+    return patchOperation(ctx, item, operation, {
+      progress: 25,
+      message: '실패한 Helm revision을 보존하고 현재 워크로드 위에서 안전하게 재조정합니다.',
+    });
+  }
   try {
     await withKubeconfig(ctx, (env) => command('helm', ['uninstall', item.release, '--namespace', item.namespace, '--no-hooks', '--wait', '--timeout', '2m'], { env, timeoutMs: 150000 }));
   } catch (error) {
@@ -658,7 +671,7 @@ async function executeOperation(ctx, actor, item, operation) {
       if (before.check.state === 'Degraded' && !before.release?.managed && componentPresent) {
         throw Object.assign(new Error('부분 설치 워크로드가 존재합니다. 충돌을 해소한 뒤 설치하십시오.'), { code: 409 });
       }
-      current = await recoverStuckRelease(ctx, actor, item, current, before.release);
+      current = await recoverStuckRelease(ctx, actor, item, current, before.release, before.check);
       const variant = await clusterVariant(ctx);
       current = await patchOperation(ctx, item, current, {
         phase: 'Installing',
@@ -771,4 +784,5 @@ module.exports = {
   operationActive,
   renderedResources,
   recoverableHelmCleanupError,
+  stuckReleaseRecoveryStrategy,
 };

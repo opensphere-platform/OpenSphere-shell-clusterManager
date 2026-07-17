@@ -2,10 +2,23 @@
 # The stack stays cluster-internal and discovers component-owned monitors across namespaces.
 grafana:
   enabled: true
+  # Grafana uses a single ReadWriteOnce PVC. RollingUpdate can start a second
+  # Pod against the same volume and leave Helm waiting until its atomic
+  # rollback expires. Recreate guarantees single-writer replacement.
+  deploymentStrategy:
+    type: Recreate
+  # The Pod security context already owns the volume through fsGroup 472.
+  # Re-running a root chown over an initialized volume is not portable across
+  # CSI/local-path implementations and can fail on Grafana's 0700 directories.
+  initChownData:
+    enabled: false
   ingress:
     enabled: false
   persistence:
     enabled: true
+    # Preserve the controller-assigned PV binding in Helm upgrade manifests so
+    # an atomic rollback never attempts to clear the immutable volumeName.
+    lookupVolumeName: true
     size: 5Gi
 
 alertmanager:

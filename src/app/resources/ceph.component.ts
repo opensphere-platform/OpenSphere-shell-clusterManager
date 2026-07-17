@@ -12,9 +12,8 @@ const cephHealthColor = (h: string): 'success' | 'danger' | 'warning' | 'info' |
 
 /**
  * Rook-Ceph CephCluster 실연동 (구 DummyCephComponent 대체).
- * OKD-perspective-binding: Ceph/ODF는 perspective 2(K8s Cluster) 내부 "Storage 뷰 스코프"의 한 리소스.
- * 이 컴포넌트는 app.component의 capability-gate(ceph.rook.io CRD 존재)를 통과해야 nav에 노출된다.
- * 그래도 404면 ResourceListComponent가 friendly로 처리(빨간 에러 아님).
+ * Cluster Manager의 Ceph Storage 전문 관점 기본 화면.
+ * Ceph가 미설치된 상태에서도 진입점은 노출하고, 404는 ResourceListComponent가 friendly로 처리한다.
  * 읽기 전용 — 생성 액션 없음(createLabel 미지정).
  */
 @Component({

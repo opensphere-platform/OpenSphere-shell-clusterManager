@@ -1,6 +1,6 @@
 # OpenSphere-shell-clusterManager
 
-OpenSphere V2 **subShell** — K8s Cluster + Ceph 관리. **독자적·온전한 Angular 22 프로젝트** (구 Perspective #2 `cluster` 계승·개명).
+OpenSphere V2 **subShell** — Kubernetes, Ceph Storage, HIS를 독립 관리 관점으로 제공하는 Cluster Manager. **독자적·온전한 Angular 22 프로젝트**입니다.
 
 | 측면 | 값 |
 |---|---|
@@ -10,6 +10,14 @@ OpenSphere V2 **subShell** — K8s Cluster + Ceph 관리. **독자적·온전한
 | 백엔드 | `server.js` — 제네릭 `/api/k8s/*` 프록시(secrets 차단) + WS exec 게이트웨이 + 정적 서빙 |
 | HIS | `his-manager.js` + `his-catalog.js` — 단일 HIS preflight, 고정 Helm chart 계획·설치·검증·삭제 |
 | 종류 | subShell (1급 host-guest) — ⚠️위계는 현재 advisory (생성기가 `kind`/`hostRef` 미방출, 설계 §9.2) |
+
+상단 `Management view` 선택기는 설치 상태와 무관하게 항상 표시됩니다.
+
+- `Kubernetes`: 코어 리소스와 capability-gate된 Virtualization·Migration·Observability
+- `Ceph Storage`: CephCluster와 CSI snapshot 리소스
+- `HIS Prerequisites`: 호스트 전제조건 진단과 승인된 Helm 설치·검증·삭제
+
+공유 가능한 경로는 `/p/cluster-manager/<k8s|ceph|his>/<resource>` 형식입니다.
 
 ## 구조 (루트 Angular 프로젝트 + 배포 배선)
 ```

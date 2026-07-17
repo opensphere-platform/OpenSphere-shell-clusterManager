@@ -52,14 +52,17 @@ import { PrometheusRulesComponent } from './resources/mon-alerts.component';
 import { ServiceMonitorsComponent } from './resources/mon-targets.component';
 import { HisComponent } from './resources/his.component';
 
+/** Cluster Manager의 최상위 관리 관점. 각 관점은 독립된 메뉴·라우트·기본 화면을 갖는다. */
+export type ManagementView = 'k8s' | 'ceph' | 'his';
 /** 앱 내부 사이드바 네비. requires=이 항목이 요구하는 apiGroup — 클러스터에 실재할 때만 노출(capability-gate, §3.3 실구현만). */
 export interface NavItem { id: string; label: string; component: Type<any>; requires?: string; }
-/** scope: 'vm' 그룹은 VM 뷰 스코프에서만, 그 외(기본=cluster)는 Cluster 뷰에서만 노출(§7.1 통합 콤보 뷰). */
-export interface NavGroup { group: string; items: NavItem[]; scope?: 'cluster' | 'vm'; }
+/** view: 상단 관리 관점 선택기에 연결되는 전문 화면 영역. 기본값은 k8s. */
+export interface NavGroup { group: string; items: NavItem[]; view?: ManagementView; }
 
 export const NAV: NavGroup[] = [
   {
     group: 'Host Infrastructure',
+    view: 'his',
     items: [
       { id: 'his', label: 'HIS Prerequisites', component: HisComponent },
     ],
@@ -125,10 +128,9 @@ export const NAV: NavGroup[] = [
       { id: 'serviceaccounts', label: 'Service Accounts', component: ServiceAccountComponent },
     ],
   },
-  // ── KubeVirt 가상화(VM 뷰 스코프) — 각 항목 requires로 capability-gate. 해당 CRD 없으면 자동 숨김. ──
+  // ── KubeVirt 가상화 — Kubernetes 관점 안에서 capability-gate. 해당 CRD 없으면 자동 숨김. ──
   {
     group: 'Virtualization',
-    scope: 'vm',
     items: [
       { id: 'vm-overview', label: '개요 (Overview)', component: VmOverviewComponent, requires: 'kubevirt.io' },
       { id: 'virtualmachines', label: 'Virtual Machines', component: VirtualMachinesComponent, requires: 'kubevirt.io' },
@@ -140,15 +142,16 @@ export const NAV: NavGroup[] = [
   },
   {
     group: 'Storage (Ceph/ODF)',
+    view: 'ceph',
     items: [
       { id: 'volumesnapshots', label: 'Volume Snapshots', component: VolumeSnapshotsComponent, requires: 'snapshot.storage.k8s.io' },
       { id: 'volumesnapshotclasses', label: 'Volume Snapshot Classes', component: VolumeSnapshotClassesComponent, requires: 'snapshot.storage.k8s.io' },
-      { id: 'ceph', label: 'Ceph / ODF', component: CephClustersComponent, requires: 'ceph.rook.io' },
+      // Ceph가 아직 없더라도 전문 관점과 진단 진입점은 항상 보여야 한다.
+      { id: 'ceph', label: 'Ceph Clusters', component: CephClustersComponent },
     ],
   },
   {
     group: 'Migration (MTV)',
-    scope: 'vm',
     items: [
       { id: 'mtv-providers', label: 'Providers', component: MtvProvidersComponent, requires: 'forklift.konveyor.io' },
       { id: 'mtv-plans', label: 'Plans', component: MtvPlansComponent, requires: 'forklift.konveyor.io' },

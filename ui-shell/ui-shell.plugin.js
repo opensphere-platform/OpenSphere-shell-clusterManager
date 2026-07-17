@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────
-// Perspective 2 — K8s Cluster + Ceph = Angular K8s Console 자체(구 k8s-console-ng 전체 흡수, 단일화).
+// Cluster Manager — Kubernetes / Ceph Storage / HIS 전문 관리 관점을 하나의 subShell에서 제공한다.
 //   단일 nav = 콘솔 nav(실데이터): Workloads · Network · Config&Storage · Cluster · Access
 //     + OpenSphere 확장: Virtualization · Storage(Ceph/ODF) · Migration(MTV) · Observability.
 //   별도 perspective 더미 트리 없음(중복 제거). server.js가 /api/k8s/* 프록시 + WS exec + /app(번들) 서빙.
@@ -35,7 +35,7 @@ export function activate(ctx) {
   injectOnce(base);
   ctx.extensions.registerPage({
     id: ctx.pluginId,
-    title: '2. K8s Cluster + Ceph',
+    title: 'Cluster Manager',
     navBand: '운영 Operate',
     elementTag: TAG,
   });

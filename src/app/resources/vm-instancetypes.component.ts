@@ -3,7 +3,7 @@ import { ColumnDef, ResourceListComponent } from '../shared/resource-list.compon
 
 /**
  * KubeVirt VirtualMachineClusterInstancetype 실연동 (구 DummyInstanceTypesComponent 대체).
- * OKD-perspective-binding §7.1: VM 뷰 스코프(perspective 2 K8s Cluster 내부)의 리소스.
+ * Kubernetes 관리 관점 안에서 capability-gate로 노출되는 KubeVirt 리소스.
  * InstanceType은 VM의 컴퓨트(CPU/메모리) 사전정의 — cluster-scoped 변형(*ClusterInstancetype)이라
  * namespaced=false. namespaced 변형(VirtualMachineInstancetype)은 별 리소스로 둔다.
  * 읽기 전용 — 생성 위저드 없음(createLabel 미지정). app.component capability-gate

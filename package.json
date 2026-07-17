@@ -1,7 +1,7 @@
 {
   "name": "cluster-manager",
-  "version": "1.1.7",
-  "description": "OpenSphere Cluster Manager subShell — Kubernetes, Ceph Storage, and HIS management views. Angular 22 + Clarity 18, exported as Angular Element <osp-k8s-console-ng>.",
+  "version": "1.2.0",
+  "description": "OpenSphere Cluster Manager subShell — Kubernetes, external Ceph Storage, and HIS management views. Angular 22 + Clarity 18, exported as Angular Element <osp-k8s-console-ng>.",
   "private": true,
   "scripts": {
     "build": "ng build --configuration production",

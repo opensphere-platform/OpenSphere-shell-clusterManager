@@ -8,7 +8,7 @@ const yaml = require('js-yaml');
 const { HIS_CATALOG, catalogItem } = require('./his-catalog');
 
 const ADMIN_GROUP = 'opensphere-console-admins';
-const MAX_BODY = 64 * 1024;
+const MAX_BODY = 256 * 1024;
 const MAX_OUTPUT = 1024 * 1024;
 const HELM_TIMEOUT_MS = 12 * 60 * 1000;
 const activeOperations = new Set();
@@ -440,8 +440,12 @@ module.exports = {
   createHisManager,
   allStatus,
   itemStatus,
+  readJson,
   reasonFrom,
   safeError,
+  command,
+  withKubeconfig,
+  k8s,
   kubeconfigText,
   auditRequired,
 };

@@ -9,6 +9,7 @@ on:
       - server.js
       - his-catalog.js
       - his-manager.js
+      - ceph-manager.js
       - his-values/**
       - package.json
       - package-lock.json
@@ -45,7 +46,7 @@ jobs:
           push: true
           provenance: false
           tags: |
-            ghcr.io/opensphere-platform/opensphere-shell-cluster-manager:1.1.7
+            ghcr.io/opensphere-platform/opensphere-shell-cluster-manager:1.2.0
             ghcr.io/opensphere-platform/opensphere-shell-cluster-manager:edge
           build-args: |
             OS_MODULE_DESCRIPTOR=${{ steps.package.outputs.descriptor }}

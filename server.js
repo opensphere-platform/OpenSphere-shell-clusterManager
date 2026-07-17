@@ -9,6 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const { WebSocketServer, WebSocket } = require('ws');
 const { createHisManager } = require('./his-manager');
+const { createCephManager } = require('./ceph-manager');
 const COOKIE = 'osng_token'; // 브라우저 WS는 커스텀 헤더를 못 실음 → 신원 토큰을 HttpOnly 쿠키로 전달
 function tokenFromCookie(cookieHeader) {
   if (!cookieHeader) return null;
@@ -201,6 +202,16 @@ const hisManager = createHisManager({
   controller: CONTROLLER,
   publishNotify,
 });
+const cephManager = createCephManager({
+  verifyToken,
+  requestToken,
+  jsonRes,
+  token: tok,
+  apiServer: APISERVER,
+  caPath: `${SA}/ca.crt`,
+  controller: CONTROLLER,
+  publishNotify,
+});
 const _notifiedNodes = new Set();
 async function nodeHealthPublish() {
   try {
@@ -228,7 +239,8 @@ function serveFrom(root, rel, res) {
 
 // 제네릭 K8s API 프록시: /api/k8s/<표준 K8s 경로> → APISERVER.
 // 읽기(GET): Console 자격을 fail-closed로 검증한 뒤 전용 ServiceAccount의 고정 읽기 권한으로 수행한다.
-// 범용 쓰기: 차단한다. 변경은 live 관리자 검증·계획·감사를 갖춘 /api/his/* 승인 경로만 사용한다.
+// 범용 쓰기: 차단한다. 변경은 live 관리자 검증·계획·감사를 갖춘
+// /api/his/* 및 /api/ceph/* 승인 경로만 사용한다.
 // ServiceAccount에 users/groups impersonate 권한을 부여하지 않는 것이 permissionProfile의 보안 계약이다.
 async function authorizeK8sProxyRequest(req, isWrite, verifier = verifyToken) {
   let actor;
@@ -301,6 +313,7 @@ const server = http.createServer(async (req, res) => {
       return res.end(JSON.stringify({ user: actor.username }));
     }
     if (p.startsWith('/api/his/')) return hisManager(req, res, p);
+    if (p.startsWith('/api/ceph/')) return cephManager(req, res, p);
     if (p.startsWith('/api/k8s/')) return k8sProxy(req, res, req.url);
     if (p === '/api/nodes') {
       const list = await nodes();

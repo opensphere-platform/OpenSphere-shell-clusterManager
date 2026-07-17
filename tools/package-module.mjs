@@ -32,7 +32,7 @@ const descriptor = {
   shellCompat: manifest.shellCompat,
   sdkVersion: '0.2.0',
   permissions: manifest.permissions,
-  permissionProfile: 'cluster-his-manager-v1',
+  permissionProfile: 'cluster-infrastructure-manager-v1',
   runtime: { port: 8080, healthPath: '/healthz', serviceAccountName: 'opensphere-cluster-manager', resources: { cpuRequest: '50m', memoryRequest: '128Mi', cpuLimit: '500m', memoryLimit: '512Mi' } },
   manifest: { path: '/plugins/ui-shell.manifest.json', sha256: hash(manifestText), signaturePath: '/plugins/ui-shell.manifest.json.sig' },
   trust: { keyId: 'opensphere-plugins-v1' },

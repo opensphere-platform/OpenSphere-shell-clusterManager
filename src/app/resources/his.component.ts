@@ -402,7 +402,7 @@ import {
     .reset-confirmation-field { display: grid; gap: 0.3rem; width: min(100%, 36rem); }
     .reset-confirmation-label { font-size: 0.65rem; font-weight: 600; }
     .reset-confirmation-token { display: block; width: fit-content; max-width: 100%; padding: 0.25rem 0.4rem; border: 1px solid #c8c8c8; background: #fff; color: #2d4048; font-size: 0.7rem; overflow-wrap: anywhere; }
-    .reset-confirmation-field input[type='text'] { width: 100%; max-width: none; }
+    .reset-confirmation-field input { width: 100%; max-width: none; }
     .reset-confirmation-help { color: #a32100; font-size: 0.62rem; line-height: 1.4; }
     .reset-confirmation-help.ready { color: #2f6b00; }
     @media (max-width: 1100px) {

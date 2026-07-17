@@ -20,7 +20,7 @@ export interface HisOperation {
   id: string;
   itemId: string;
   displayName: string;
-  action: 'install' | 'upgrade' | 'recover' | 'rollback' | 'uninstall' | 'configure';
+  action: 'install' | 'upgrade' | 'recover' | 'rollback' | 'uninstall' | 'configure' | 'validate';
   phase: 'Queued' | 'Recovering' | 'Installing' | 'Upgrading' | 'RollingBack' | 'Configuring' | 'Migrating' | 'Validating' | 'Uninstalling' | 'Ready' | 'Removed' | 'Failed' | 'RollbackStalled';
   progress: number;
   message: string;
@@ -65,6 +65,7 @@ export interface HisCheck {
     security?: string[];
     canaries?: HisCanary[];
     evidence?: HisEvidence[];
+    validationFingerprint?: string;
     compatibility?: HisCompatibility | null;
     remediation?: HisRemediation | null;
   };
@@ -235,6 +236,9 @@ export class HisService {
   status(): Observable<HisStatus> { return this.http.get<HisStatus>(this.url('status')); }
   setProfile(profile: string, selected: boolean, reason: string): Observable<HisStatus> {
     return this.http.post<HisStatus>(this.url('profiles'), { profile, selected, reason });
+  }
+  validate(id: 'storage' | 'csi-snapshot', reason: string): Observable<{ ok: boolean; operation: HisOperation }> {
+    return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('validate'), { id, reason });
   }
   plan(id: string): Observable<HisPlan> { return this.http.post<HisPlan>(this.url('plan'), { id }); }
   install(id: string, reason: string): Observable<{ ok: boolean; operation: HisOperation }> { return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('install'), { id, reason }); }

@@ -44,7 +44,7 @@ type HisMutationAction = 'install' | 'upgrade' | 'recover' | 'rollback' | 'unins
     </div>
 
     <section class="summary" *ngIf="status() as s">
-      <span class="label" [class.label-success]="s.state === 'Ready'" [class.label-danger]="s.state === 'Blocked'" [class.label-warning]="s.state === 'Degraded'">HIS Core {{ s.state }}</span>
+      <span class="label" [class.label-success]="s.state === 'Ready'" [class.label-danger]="s.state === 'Blocked'" [class.label-warning]="s.state === 'Degraded'">HIS {{ s.state }}</span>
       <span>Core {{ s.summary.coreReady }}/{{ s.summary.coreTotal }} Ready</span>
       <span>활성 profile {{ s.summary.selectedProfilesReady }}/{{ s.summary.selectedProfilesTotal }} Ready</span>
       <span>검사 {{ s.checkedAt | date:'yyyy-MM-dd HH:mm:ss' }}</span>
@@ -111,6 +111,7 @@ type HisMutationAction = 'install' | 'upgrade' | 'recover' | 'rollback' | 'unins
           </ng-container>
           <ng-template #detectOnly>
             <span class="muted">호스트 제공 · 진단만</span>
+            <button *ngIf="item.id === 'storage' || item.id === 'csi-snapshot'" class="btn btn-sm btn-outline profile-action" type="button" [disabled]="busy() || operationActive(item.operation) || !canValidate(item)" (click)="openCanaryValidation(item)">실검증</button>
             <button *ngIf="item.profile" class="btn btn-sm btn-outline profile-action" type="button" [disabled]="busy()" (click)="openProfileSelection(item)">
               {{ item.profileSelected ? 'profile 해제' : '요구조건으로 선택' }}
             </button>
@@ -417,6 +418,29 @@ type HisMutationAction = 'install' | 'upgrade' | 'recover' | 'rollback' | 'unins
         </button>
       </div>
     </clr-modal>
+
+    <clr-modal [(clrModalOpen)]="canaryModalOpen" [clrModalSize]="'md'" [clrModalClosable]="!canaryBusy()">
+      <h3 class="modal-title">HIS 실제 데이터 경로 검증</h3>
+      <div class="modal-body" *ngIf="canaryTarget() as item">
+        <div class="alert alert-warning">
+          <div class="alert-items"><div class="alert-item static"><span class="alert-text">
+            <strong>{{ item.displayName }}</strong> 검증을 위해 격리된 임시 PVC와 Pod를 생성한 뒤 자동 삭제합니다.
+            Data Protection은 추가로 임시 VolumeSnapshot과 복원 PVC를 사용하며 deletionPolicy=Delete인 class만 허용합니다.
+          </span></div></div>
+        </div>
+        <p class="muted">고정된 64Mi 요청과 현재 Cluster Manager image만 사용합니다. 임의 image·manifest·StorageClass 입력은 받지 않습니다.</p>
+        <form clrForm clrLayout="vertical">
+          <clr-textarea-container>
+            <label>검증 사유</label>
+            <textarea clrTextarea name="canaryReason" [(ngModel)]="canaryReason" required minlength="8" maxlength="500" placeholder="실검증 목적과 승인 근거(8자 이상)"></textarea>
+          </clr-textarea-container>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" type="button" [disabled]="canaryBusy()" (click)="canaryModalOpen = false">취소</button>
+        <button class="btn btn-primary" type="button" [disabled]="canaryBusy() || canaryReason.trim().length < 8" (click)="runCanaryValidation()">검증 실행</button>
+      </div>
+    </clr-modal>
   `,
   styles: [`
     :host { display: block; }
@@ -568,9 +592,12 @@ export class HisComponent implements OnInit, OnDestroy {
   readonly configurationBusy = signal(false);
   readonly profileTarget = signal<HisItem | null>(null);
   readonly profileBusy = signal(false);
+  readonly canaryTarget = signal<HisItem | null>(null);
+  readonly canaryBusy = signal(false);
   modalOpen = false;
   configurationModalOpen = false;
   profileModalOpen = false;
+  canaryModalOpen = false;
   reason = '';
   confirm = '';
   rollbackRevision = '';
@@ -580,6 +607,7 @@ export class HisComponent implements OnInit, OnDestroy {
   resetConfirmation = '';
   publicConfirmation = '';
   profileReason = '';
+  canaryReason = '';
   private configurationFingerprint = '';
   private pollTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -634,6 +662,32 @@ export class HisComponent implements OnInit, OnDestroy {
       error: (error) => { this.error.set(this.message(error)); this.profileBusy.set(false); },
     });
   }
+  canValidate(item: HisItem): boolean {
+    return item.id === 'storage' ? ['CsiStorageReady', 'StorageCanaryRequired', 'StorageCanaryFailed'].includes(item.check.reason)
+      : item.id === 'csi-snapshot' ? ['SnapshotReady', 'DataProtectionCanaryRequired', 'DataProtectionCanaryFailed'].includes(item.check.reason) : false;
+  }
+  openCanaryValidation(item: HisItem): void {
+    this.canaryTarget.set(item);
+    this.canaryReason = '';
+    this.error.set('');
+    this.canaryModalOpen = true;
+  }
+  runCanaryValidation(): void {
+    const item = this.canaryTarget();
+    if (!item || !['storage', 'csi-snapshot'].includes(item.id) || this.canaryBusy() || this.canaryReason.trim().length < 8) return;
+    this.canaryBusy.set(true);
+    this.error.set('');
+    this.his.validate(item.id as 'storage' | 'csi-snapshot', this.canaryReason.trim()).subscribe({
+      next: (response) => {
+        this.canaryBusy.set(false);
+        this.canaryModalOpen = false;
+        this.notice.set(`${item.displayName} 실제 데이터 경로 검증이 시작되었습니다. 작업 ID: ${response.operation.id}`);
+        this.setExpanded(item.id, true);
+        this.load();
+      },
+      error: (error) => { this.error.set(this.message(error)); this.canaryBusy.set(false); },
+    });
+  }
   isExpanded(itemId: string): boolean { return this.expandedItems().has(itemId); }
   setExpanded(itemId: string, expanded: boolean): void {
     this.expandedItems.update((current) => {
@@ -652,7 +706,8 @@ export class HisComponent implements OnInit, OnDestroy {
       : operation.action === 'upgrade' ? '업그레이드'
         : operation.action === 'recover' ? '복구'
           : operation.action === 'rollback' ? '롤백'
-            : operation.action === 'configure' ? '운영 구성' : '삭제';
+            : operation.action === 'configure' ? '운영 구성'
+              : operation.action === 'validate' ? '실검증' : '삭제';
   }
   releaseLifecycle(item: HisItem): HisLifecycleAction {
     if (!item.release?.managed) return 'install';

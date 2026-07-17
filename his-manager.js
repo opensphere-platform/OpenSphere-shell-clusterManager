@@ -432,6 +432,92 @@ function diagnosticDetails({ facts = [], tables = [], warnings = [], security = 
   return { facts, tables, warnings, security, canaries, evidence };
 }
 
+function evaluateStorageContract(storageClasses = [], csiDrivers = [], pvcs = []) {
+  const driverNames = new Set(csiDrivers.map((item) => item.metadata?.name).filter(Boolean));
+  const defaults = storageClasses.filter((item) => item.metadata?.annotations?.['storageclass.kubernetes.io/is-default-class'] === 'true');
+  const pendingPvcs = pvcs.filter((pvc) => pvc.status?.phase !== 'Bound');
+  const defaultClass = defaults.length === 1 ? defaults[0] : null;
+  const defaultCsiBacked = Boolean(defaultClass?.provisioner && driverNames.has(defaultClass.provisioner));
+  const rows = storageClasses.map((item) => ({
+    name: item.metadata?.name || '',
+    default: defaults.includes(item) ? 'Yes' : 'No',
+    provisioner: item.provisioner || '',
+    csiBacked: driverNames.has(item.provisioner) ? 'Yes' : 'No',
+    binding: item.volumeBindingMode || 'Immediate',
+    expansion: item.allowVolumeExpansion ? 'Yes' : 'No',
+    reclaim: item.reclaimPolicy || 'Delete',
+    parameters: Object.entries(item.parameters || {}).map(([key, value]) => `${key}=${value}`).join(', ') || 'None',
+  }));
+  if (!storageClasses.length) return { state: 'Blocked', reason: 'StorageClassMissing', defaults, defaultClass, defaultCsiBacked, pendingPvcs, rows };
+  if (defaults.length !== 1) return { state: 'Degraded', reason: 'DefaultStorageClassMissing', defaults, defaultClass, defaultCsiBacked, pendingPvcs, rows };
+  if (!defaultCsiBacked) return { state: 'Degraded', reason: 'DefaultStorageClassNotCsi', defaults, defaultClass, defaultCsiBacked, pendingPvcs, rows };
+  if (pendingPvcs.length) return { state: 'Degraded', reason: 'StorageContractDegraded', defaults, defaultClass, defaultCsiBacked, pendingPvcs, rows };
+  return { state: 'Ready', reason: 'CsiStorageReady', defaults, defaultClass, defaultCsiBacked, pendingPvcs, rows };
+}
+
+function validationCanaryName(itemId) {
+  return itemId === 'storage' ? 'Dynamic provision/bind'
+    : itemId === 'csi-snapshot' ? 'Snapshot → restore' : '';
+}
+
+function storageContractFingerprint(storageClass) {
+  if (!storageClass) return '';
+  return JSON.stringify([
+    storageClass.metadata?.uid || '', storageClass.metadata?.name || '', storageClass.provisioner || '',
+    storageClass.volumeBindingMode || 'Immediate', Boolean(storageClass.allowVolumeExpansion), storageClass.reclaimPolicy || 'Delete',
+    Object.entries(storageClass.parameters || {}).sort(([left], [right]) => left.localeCompare(right)),
+  ]);
+}
+
+function snapshotContractFingerprint(storageClass, snapshotClass) {
+  if (!storageClass || !snapshotClass) return '';
+  return JSON.stringify([
+    storageContractFingerprint(storageClass), snapshotClass.metadata?.uid || '', snapshotClass.metadata?.name || '',
+    snapshotClass.driver || '', snapshotClass.deletionPolicy || '', Object.entries(snapshotClass.parameters || {}).sort(([left], [right]) => left.localeCompare(right)),
+  ]);
+}
+
+function applyValidationOperation(check, operation, itemId) {
+  const canaryName = validationCanaryName(itemId);
+  if (!canaryName || operation?.action !== 'validate' || !check?.details?.canaries) return check;
+  const matches = Boolean(operation.validationFingerprint && operation.validationFingerprint === check.details.validationFingerprint);
+  const state = operation.phase === 'Ready' && matches ? 'Passed' : operation.phase === 'Failed' ? 'Failed' : 'NotRun';
+  const message = operation.phase === 'Ready' && matches
+    ? `${operation.message} (${operation.finishedAt || operation.updatedAt})`
+    : operation.phase === 'Ready' ? '검증 후 StorageClass/CSI 계약이 변경되어 재검증이 필요합니다.'
+      : operation.phase === 'Failed' ? operation.error || operation.message : `${operation.message} · 작업 ${operation.id}`;
+  return {
+    ...check,
+    details: {
+      ...check.details,
+      canaries: check.details.canaries.map((canary) => canary.name === canaryName ? { ...canary, state, message } : canary),
+    },
+  };
+}
+
+function gateValidationReadiness(check, operation, itemId) {
+  const eligible = (itemId === 'storage' && check.reason === 'CsiStorageReady')
+    || (itemId === 'csi-snapshot' && check.reason === 'SnapshotReady');
+  const enriched = applyValidationOperation(check, operation, itemId);
+  if (!eligible) return enriched;
+  const matches = operation?.action === 'validate'
+    && operation.phase === 'Ready'
+    && operation.validationFingerprint
+    && operation.validationFingerprint === check.details?.validationFingerprint;
+  if (matches) return enriched;
+  const running = operation?.action === 'validate' && operationActive(operation);
+  const failed = operation?.action === 'validate' && operation.phase === 'Failed';
+  const domain = itemId === 'storage' ? 'Storage' : 'DataProtection';
+  return {
+    ...enriched,
+    state: 'Degraded',
+    reason: `${domain}Canary${running ? 'Running' : failed ? 'Failed' : 'Required'}`,
+    message: running ? '승인된 실제 데이터 경로 검증이 진행 중입니다.'
+      : failed ? `실제 데이터 경로 검증에 실패했습니다: ${operation.error || operation.message}`
+        : '객체 계약은 준비되었지만 현재 계약에 대한 실제 데이터 경로 검증이 필요합니다.',
+  };
+}
+
 function condition(resource, type) {
   return (resource?.status?.conditions || []).find((item) => item.type === type);
 }
@@ -837,53 +923,64 @@ async function probe(ctx, name) {
     return result('Blocked', 'ObservabilityMissing', '공유 kube-prometheus-stack이 없습니다. Observability profile에서 선택 설치할 수 있습니다.', '', details);
   }
   if (name === 'storage') {
-    const [list, pvcs, pvs] = await Promise.all([
+    const [list, drivers, pvcs, pvs] = await Promise.all([
       k8s(ctx, '/apis/storage.k8s.io/v1/storageclasses'),
+      k8sListOrEmpty(ctx, '/apis/storage.k8s.io/v1/csidrivers'),
       k8sListOrEmpty(ctx, '/api/v1/persistentvolumeclaims'),
       k8sListOrEmpty(ctx, '/api/v1/persistentvolumes'),
     ]);
     const items = list.items || [];
-    const defaults = items.filter((x) => x.metadata?.annotations?.['storageclass.kubernetes.io/is-default-class'] === 'true');
-    const rows = items.map((item) => ({ name: item.metadata?.name || '', default: defaults.includes(item) ? 'Yes' : 'No', provisioner: item.provisioner || '', binding: item.volumeBindingMode || 'Immediate', expansion: item.allowVolumeExpansion ? 'Yes' : 'No', reclaim: item.reclaimPolicy || 'Delete', parameters: Object.entries(item.parameters || {}).map(([key, value]) => `${key}=${value}`).join(', ') || 'None' }));
-    const pendingPvcs = (pvcs.items || []).filter((pvc) => pvc.status?.phase !== 'Bound');
-    const localDelete = rows.filter((row) => /local-path|hostpath/i.test(row.provisioner) && row.reclaim === 'Delete');
+    const driverItems = drivers.items || [];
+    const contract = evaluateStorageContract(items, driverItems, pvcs.items || []);
+    const localDelete = contract.rows.filter((row) => /local-path|hostpath/i.test(row.provisioner) && row.reclaim === 'Delete');
     const details = diagnosticDetails({
       facts: [
         { label: 'StorageClasses', value: String(items.length), state: items.length ? 'Passed' : 'Failed' },
-        { label: 'Default class', value: defaults.map((item) => item.metadata?.name).join(', ') || 'Missing', state: defaults.length === 1 ? 'Passed' : 'Failed' },
-        { label: 'PVC Bound', value: `${(pvcs.items?.length || 0) - pendingPvcs.length}/${pvcs.items?.length || 0}`, state: pendingPvcs.length ? 'Failed' : 'Passed' },
+        { label: 'Default class', value: contract.defaults.map((item) => item.metadata?.name).join(', ') || 'Missing', state: contract.defaults.length === 1 ? 'Passed' : 'Failed' },
+        { label: 'Registered CSI drivers', value: driverItems.map((item) => item.metadata?.name).join(', ') || 'None', state: driverItems.length ? 'Passed' : 'Failed' },
+        { label: 'Default CSI binding', value: contract.defaultCsiBacked ? contract.defaultClass.provisioner : 'Not backed by CSIDriver', state: contract.defaultCsiBacked ? 'Passed' : 'Failed' },
+        { label: 'PVC Bound', value: `${(pvcs.items?.length || 0) - contract.pendingPvcs.length}/${pvcs.items?.length || 0}`, state: contract.pendingPvcs.length ? 'Failed' : 'Passed' },
         { label: 'PersistentVolumes', value: String(pvs.items?.length || 0), state: 'Info' },
       ],
-      tables: [{ title: 'StorageClass capability matrix', columns: [{ key: 'name', label: 'StorageClass' }, { key: 'default', label: 'Default' }, { key: 'provisioner', label: 'Provisioner' }, { key: 'binding', label: 'Binding' }, { key: 'expansion', label: 'Expansion' }, { key: 'reclaim', label: 'Reclaim' }, { key: 'parameters', label: 'Parameters' }], rows }],
+      tables: [{ title: 'StorageClass capability matrix', columns: [{ key: 'name', label: 'StorageClass' }, { key: 'default', label: 'Default' }, { key: 'provisioner', label: 'Provisioner' }, { key: 'csiBacked', label: 'CSI-backed' }, { key: 'binding', label: 'Binding' }, { key: 'expansion', label: 'Expansion' }, { key: 'reclaim', label: 'Reclaim' }, { key: 'parameters', label: 'Parameters' }], rows: contract.rows }],
       warnings: [
+        ...(!contract.defaultCsiBacked && contract.defaultClass ? [`${contract.defaultClass.metadata?.name}: 기본 provisioner ${contract.defaultClass.provisioner || 'unknown'}와 일치하는 CSIDriver가 없습니다.`] : []),
         ...localDelete.map((row) => `${row.name}: 노드 로컬 저장소 + reclaim Delete는 운영 내구 저장소로 권장하지 않습니다.`),
-        ...pendingPvcs.map((pvc) => `${pvc.metadata?.namespace}/${pvc.metadata?.name}: ${pvc.status?.phase || 'Pending'}`),
+        ...contract.pendingPvcs.map((pvc) => `${pvc.metadata?.namespace}/${pvc.metadata?.name}: ${pvc.status?.phase || 'Pending'}`),
       ],
-      security: ['StorageClass 변경은 기존 PVC spec을 변경하지 않습니다. class migration은 명시적 데이터 재배치가 필요합니다.'],
-      canaries: [{ name: 'PVC inventory', state: pendingPvcs.length ? 'Failed' : 'Passed', message: `${pendingPvcs.length}개 unbound PVC` }, { name: 'Dynamic provision/bind', state: 'NotRun', message: '승인된 on-demand PVC canary가 필요합니다.' }],
+      security: ['StorageClass 변경은 기존 PVC spec을 변경하지 않습니다. class migration은 명시적 데이터 재배치가 필요합니다.', '샘플 CSI 또는 provisioner 이름 추정만으로 Ready 처리하지 않습니다. StorageClass.provisioner와 CSIDriver 등록을 정확히 대조합니다.'],
+      canaries: [{ name: 'CSI registration contract', state: contract.defaultCsiBacked ? 'Passed' : 'Failed', message: contract.defaultCsiBacked ? `${contract.defaultClass.metadata?.name} → ${contract.defaultClass.provisioner}` : '기본 StorageClass가 등록된 CSIDriver에 연결되지 않았습니다.' }, { name: 'PVC inventory', state: contract.pendingPvcs.length ? 'Failed' : 'Passed', message: `${contract.pendingPvcs.length}개 unbound PVC` }, { name: 'Dynamic provision/bind', state: 'NotRun', message: '승인된 on-demand PVC canary가 필요합니다.' }],
     });
-    if (!items.length) return result('Blocked', 'StorageClassMissing', 'StorageClass가 없습니다.', '', details);
-    if (defaults.length !== 1 || pendingPvcs.length) return result('Degraded', defaults.length ? 'StorageContractDegraded' : 'DefaultStorageClassMissing', `StorageClass ${items.length}개, 기본값 ${defaults.length}개, unbound PVC ${pendingPvcs.length}개입니다.`, defaults[0]?.provisioner || items[0]?.provisioner || '', details);
-    return result('Ready', 'StorageClassReady', `기본 StorageClass ${defaults[0].metadata.name}와 PVC ${(pvcs.items?.length || 0) - pendingPvcs.length}/${pvcs.items?.length || 0}개가 준비되었습니다.`, defaults[0].provisioner || '', details);
+    details.validationFingerprint = storageContractFingerprint(contract.defaultClass);
+    if (contract.state === 'Blocked') return result('Blocked', contract.reason, 'StorageClass가 없습니다.', '', details);
+    if (contract.reason === 'DefaultStorageClassNotCsi') return result('Degraded', contract.reason, `기본 StorageClass ${contract.defaultClass.metadata.name}의 provisioner ${contract.defaultClass.provisioner}는 등록된 CSI 드라이버가 아닙니다. 승인된 호스트 스토리지 공급자 또는 Ceph CSI를 먼저 연결하십시오.`, contract.defaultClass.provisioner || '', details);
+    if (contract.state === 'Degraded') return result('Degraded', contract.reason, `StorageClass ${items.length}개, 기본값 ${contract.defaults.length}개, unbound PVC ${contract.pendingPvcs.length}개입니다.`, contract.defaultClass?.provisioner || items[0]?.provisioner || '', details);
+    return result('Ready', contract.reason, `CSI-backed 기본 StorageClass ${contract.defaultClass.metadata.name}와 PVC ${(pvcs.items?.length || 0) - contract.pendingPvcs.length}/${pvcs.items?.length || 0}개가 준비되었습니다.`, contract.defaultClass.provisioner || '', details);
   }
   if (name === 'snapshot') {
-    const [drivers, classes, crds, deployments, snapshots] = await Promise.all([
+    const [drivers, classes, crds, deployments, snapshots, storageClasses] = await Promise.all([
       k8sListOrEmpty(ctx, '/apis/storage.k8s.io/v1/csidrivers'),
       k8sListOrEmpty(ctx, '/apis/snapshot.storage.k8s.io/v1/volumesnapshotclasses'),
       k8sListOrEmpty(ctx, '/apis/apiextensions.k8s.io/v1/customresourcedefinitions'),
       k8sListOrEmpty(ctx, '/apis/apps/v1/deployments'),
       k8sListOrEmpty(ctx, '/apis/snapshot.storage.k8s.io/v1/volumesnapshots'),
+      k8sListOrEmpty(ctx, '/apis/storage.k8s.io/v1/storageclasses'),
     ]);
     const driverItems = drivers.items || [];
     const classItems = classes.items || [];
     const snapshotCrds = (crds.items || []).filter((item) => item.spec?.group === 'snapshot.storage.k8s.io');
     const controllers = (deployments.items || []).filter((item) => /snapshot-controller|csi.*controller/i.test(item.metadata?.name || ''));
+    const defaultStorageClasses = (storageClasses.items || []).filter((item) => item.metadata?.annotations?.['storageclass.kubernetes.io/is-default-class'] === 'true');
+    const defaultStorageClass = defaultStorageClasses.length === 1 ? defaultStorageClasses[0] : null;
+    const mappedClasses = defaultStorageClass ? classItems.filter((item) => item.driver === defaultStorageClass.provisioner) : [];
+    const validationClass = mappedClasses.find((item) => item.deletionPolicy === 'Delete') || mappedClasses[0] || null;
     const rows = driverItems.map((item) => ({ name: item.metadata?.name || '', attachRequired: String(item.spec?.attachRequired ?? true), podInfo: String(item.spec?.podInfoOnMount ?? false), fsGroupPolicy: item.spec?.fsGroupPolicy || '', modes: (item.spec?.volumeLifecycleModes || []).join(', '), tokenRequests: String(item.spec?.tokenRequests?.length || 0) }));
     const details = diagnosticDetails({
       facts: [
         { label: 'CSI drivers', value: String(driverItems.length), state: driverItems.length ? 'Passed' : 'Failed' },
         { label: 'Snapshot CRDs', value: `${snapshotCrds.length}/3`, state: snapshotCrds.length >= 3 ? 'Passed' : 'Failed' },
         { label: 'Snapshot classes', value: String(classItems.length), state: classItems.length ? 'Passed' : 'Failed' },
+        { label: 'Default StorageClass mapping', value: defaultStorageClass && mappedClasses.length ? `${defaultStorageClass.metadata?.name} → ${mappedClasses.map((item) => item.metadata?.name).join(', ')}` : 'Missing', state: defaultStorageClass && mappedClasses.length ? 'Passed' : 'Failed' },
         { label: 'Controller deployments', value: `${controllers.filter(availableDeployment).length}/${controllers.length}`, state: controllers.length && controllers.every(availableDeployment) ? 'Passed' : 'Failed' },
         { label: 'VolumeSnapshots', value: String(snapshots.items?.length || 0), state: 'Info' },
       ],
@@ -891,11 +988,12 @@ async function probe(ctx, name) {
         { title: 'CSI driver capabilities', columns: [{ key: 'name', label: 'Driver' }, { key: 'attachRequired', label: 'Attach' }, { key: 'podInfo', label: 'Pod info' }, { key: 'fsGroupPolicy', label: 'FSGroup' }, { key: 'modes', label: 'Lifecycle modes' }, { key: 'tokenRequests', label: 'Token requests' }], rows },
         { title: 'VolumeSnapshotClass mapping', columns: [{ key: 'name', label: 'Class' }, { key: 'driver', label: 'Driver' }, { key: 'deletionPolicy', label: 'Deletion policy' }], rows: classItems.map((item) => ({ name: item.metadata?.name || '', driver: item.driver || '', deletionPolicy: item.deletionPolicy || '' })) },
       ],
-      warnings: !driverItems.length ? ['호스트가 CSI driver를 제공하지 않습니다. local-path provisioner만으로 snapshot을 제공할 수 없습니다.'] : !classItems.length ? ['CSI driver는 있으나 VolumeSnapshotClass가 없습니다.'] : [],
+      warnings: !driverItems.length ? ['호스트가 CSI driver를 제공하지 않습니다. local-path provisioner만으로 snapshot을 제공할 수 없습니다.'] : !classItems.length ? ['CSI driver는 있으나 VolumeSnapshotClass가 없습니다.'] : !mappedClasses.length ? ['기본 StorageClass provisioner와 연결된 VolumeSnapshotClass가 없습니다.'] : [],
       security: ['Snapshot deletionPolicy와 restore 대상 StorageClass는 데이터 보존·암호화 정책과 함께 승인해야 합니다.'],
       canaries: [{ name: 'Snapshot API contract', state: driverItems.length && classItems.length && snapshotCrds.length >= 3 ? 'Passed' : 'Failed', message: `${driverItems.length} drivers · ${classItems.length} classes · ${snapshotCrds.length} CRDs` }, { name: 'Snapshot → restore', state: 'NotRun', message: '승인된 on-demand 데이터 보호 canary가 필요합니다.' }],
     });
-    const complete = driverItems.length && classItems.length && snapshotCrds.length >= 3 && controllers.length && controllers.every(availableDeployment);
+    details.validationFingerprint = snapshotContractFingerprint(defaultStorageClass, validationClass);
+    const complete = driverItems.length && mappedClasses.length && snapshotCrds.length >= 3 && controllers.length && controllers.every(availableDeployment);
     if (complete) return result('Ready', 'SnapshotReady', 'CSI driver·snapshot controller·CRD·VolumeSnapshotClass가 준비되었습니다.', driverItems.map((item) => item.metadata?.name).join(', '), details);
     return result('Degraded', driverItems.length ? 'SnapshotContractPartial' : 'CsiDriverMissing', `CSI ${driverItems.length}개, SnapshotClass ${classItems.length}개, CRD ${snapshotCrds.length}/3, controller ${controllers.filter(availableDeployment).length}/${controllers.length}입니다.`, driverItems.map((item) => item.metadata?.name).join(', '), details);
   }
@@ -1340,7 +1438,8 @@ async function createOperation(ctx, item, actor, action, reason, extra = {}) {
       : action === 'upgrade' ? '업그레이드 작업이 대기열에 등록되었습니다.'
         : action === 'recover' ? '중단된 Helm release 복구 작업이 대기열에 등록되었습니다.'
           : action === 'rollback' ? `revision ${extra.targetRevision || ''} 롤백 작업이 대기열에 등록되었습니다.`
-            : action === 'configure' ? '운영 구성 변경이 대기열에 등록되었습니다.' : '삭제 작업이 대기열에 등록되었습니다.',
+            : action === 'configure' ? '운영 구성 변경이 대기열에 등록되었습니다.'
+              : action === 'validate' ? '실제 데이터 경로 검증 작업이 대기열에 등록되었습니다.' : '삭제 작업이 대기열에 등록되었습니다.',
     error: '',
     actor: actor.username,
     reason,
@@ -1438,10 +1537,11 @@ async function itemStatus(ctx, item) {
   try {
     const [check, release, operation] = await Promise.all([probe(ctx, item.probe), helmStatus(ctx, item), readOperation(ctx, item.id)]);
     const ownership = release?.managed ? 'ClusterManager' : check.state === 'Ready' ? 'External' : 'Unmanaged';
+    const validatedCheck = gateValidationReadiness(check, operation, item.id);
     const enrichedCheck = {
-      ...check,
+      ...validatedCheck,
       details: {
-        ...(check.details || {}),
+        ...(validatedCheck.details || {}),
         compatibility: item.compatibility || null,
         remediation: item.remediation || null,
       },
@@ -1725,6 +1825,178 @@ async function resetObservabilityData(ctx, item, operation, live) {
   return names;
 }
 
+function canaryResourceName(prefix) {
+  return `opensphere-his-${prefix}-${Date.now().toString(36)}`.slice(0, 63);
+}
+
+async function currentRuntimeImage(ctx) {
+  const podName = process.env.HOSTNAME;
+  if (!podName) throw Object.assign(new Error('검증 Pod에 사용할 현재 Cluster Manager image를 확인할 수 없습니다.'), { code: 500 });
+  const pod = await k8s(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/pods/${encodeURIComponent(podName)}`);
+  const image = (pod.spec?.containers || []).find((container) => container.name === 'cluster-manager')?.image || pod.spec?.containers?.[0]?.image;
+  if (!image) throw Object.assign(new Error('현재 Cluster Manager image 참조가 없습니다.'), { code: 500 });
+  return image;
+}
+
+function canaryPvc(name, storageClassName, dataSource = null) {
+  return {
+    apiVersion: 'v1', kind: 'PersistentVolumeClaim',
+    metadata: { name, namespace: OPERATION_NAMESPACE, labels: { 'app.kubernetes.io/managed-by': 'opensphere-cluster-manager', 'opensphere.io/his-canary': 'storage' } },
+    spec: {
+      accessModes: ['ReadWriteOnce'], storageClassName,
+      resources: { requests: { storage: '64Mi' } },
+      ...(dataSource ? { dataSource } : {}),
+    },
+  };
+}
+
+function canaryPod(name, pvcName, image, command) {
+  return {
+    apiVersion: 'v1', kind: 'Pod',
+    metadata: { name, namespace: OPERATION_NAMESPACE, labels: { 'app.kubernetes.io/managed-by': 'opensphere-cluster-manager', 'opensphere.io/his-canary': 'storage' } },
+    spec: {
+      restartPolicy: 'Never', automountServiceAccountToken: false, enableServiceLinks: false,
+      securityContext: { seccompProfile: { type: 'RuntimeDefault' }, fsGroup: 1000, fsGroupChangePolicy: 'OnRootMismatch' },
+      containers: [{
+        name: 'probe', image, imagePullPolicy: 'IfNotPresent', command: ['/bin/sh', '-ec'], args: [command],
+        securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, runAsNonRoot: true, runAsUser: 1000, capabilities: { drop: ['ALL'] } },
+        resources: { requests: { cpu: '5m', memory: '8Mi' }, limits: { cpu: '50m', memory: '32Mi' } },
+        volumeMounts: [{ name: 'data', mountPath: '/canary' }],
+      }],
+      volumes: [{ name: 'data', persistentVolumeClaim: { claimName: pvcName } }],
+    },
+  };
+}
+
+async function waitForCanaryPod(ctx, name, timeoutMs = 120000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const pod = await k8sOrNull(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/pods/${encodeURIComponent(name)}`);
+    if (pod?.status?.phase === 'Succeeded') return pod;
+    if (pod?.status?.phase === 'Failed') {
+      const terminated = pod.status?.containerStatuses?.[0]?.state?.terminated;
+      throw Object.assign(new Error(`검증 Pod가 실패했습니다(exit ${terminated?.exitCode ?? 'unknown'}): ${terminated?.message || pod.status?.message || pod.status?.reason || 'unknown'}`), { code: 502 });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  throw Object.assign(new Error(`검증 Pod ${name} 완료 대기 시간이 초과되었습니다.`), { code: 504 });
+}
+
+async function waitForPvcBound(ctx, name, timeoutMs = 120000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const pvc = await k8sOrNull(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/persistentvolumeclaims/${encodeURIComponent(name)}`);
+    if (pvc?.status?.phase === 'Bound') return pvc;
+    if (pvc?.status?.phase === 'Lost') throw Object.assign(new Error(`검증 PVC ${name}이 Lost 상태입니다.`), { code: 502 });
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  throw Object.assign(new Error(`검증 PVC ${name} 바인딩 대기 시간이 초과되었습니다.`), { code: 504 });
+}
+
+async function waitForSnapshotReady(ctx, name, timeoutMs = 180000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const snapshot = await k8sOrNull(ctx, `/apis/snapshot.storage.k8s.io/v1/namespaces/${OPERATION_NAMESPACE}/volumesnapshots/${encodeURIComponent(name)}`);
+    if (snapshot?.status?.readyToUse) return snapshot;
+    if (snapshot?.status?.error) throw Object.assign(new Error(`VolumeSnapshot 실패: ${snapshot.status.error.message || 'unknown'}`), { code: 502 });
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  throw Object.assign(new Error(`VolumeSnapshot ${name} 준비 대기 시간이 초과되었습니다.`), { code: 504 });
+}
+
+async function storageCanaryPrerequisites(ctx, requireSnapshot = false) {
+  const [classes, drivers, snapshotClasses] = await Promise.all([
+    k8s(ctx, '/apis/storage.k8s.io/v1/storageclasses'),
+    k8sListOrEmpty(ctx, '/apis/storage.k8s.io/v1/csidrivers'),
+    requireSnapshot ? k8sListOrEmpty(ctx, '/apis/snapshot.storage.k8s.io/v1/volumesnapshotclasses') : Promise.resolve({ items: [] }),
+  ]);
+  const contract = evaluateStorageContract(classes.items || [], drivers.items || [], []);
+  if (!contract.defaultCsiBacked) throw Object.assign(new Error('기본 StorageClass가 등록된 CSI 드라이버에 연결되지 않아 실제 데이터 경로 검증을 실행할 수 없습니다.'), { code: 409 });
+  let snapshotClass = null;
+  if (requireSnapshot) {
+    snapshotClass = (snapshotClasses.items || []).find((item) => item.driver === contract.defaultClass.provisioner && item.deletionPolicy === 'Delete');
+    if (!snapshotClass) throw Object.assign(new Error(`CSI ${contract.defaultClass.provisioner}와 일치하고 deletionPolicy=Delete인 VolumeSnapshotClass가 필요합니다. Retain class는 검증 잔여물을 만들 수 있어 사용하지 않습니다.`), { code: 409 });
+  }
+  return {
+    storageClass: contract.defaultClass,
+    snapshotClass,
+    fingerprint: requireSnapshot
+      ? snapshotContractFingerprint(contract.defaultClass, snapshotClass)
+      : storageContractFingerprint(contract.defaultClass),
+  };
+}
+
+async function runStorageBindCanary(ctx, prerequisites = null) {
+  const { storageClass } = prerequisites || await storageCanaryPrerequisites(ctx, false);
+  const image = await currentRuntimeImage(ctx);
+  const base = canaryResourceName('bind');
+  const pvcName = `${base}-pvc`.slice(0, 63);
+  const podName = `${base}-pod`.slice(0, 63);
+  try {
+    await k8sRequest(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/persistentvolumeclaims`, { method: 'POST', body: canaryPvc(pvcName, storageClass.metadata.name) });
+    await k8sRequest(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/pods`, { method: 'POST', body: canaryPod(podName, pvcName, image, "printf '%s\\n' 'opensphere-his-storage-canary' > /canary/probe && grep -qx 'opensphere-his-storage-canary' /canary/probe") });
+    await waitForCanaryPod(ctx, podName);
+    const pvc = await waitForPvcBound(ctx, pvcName);
+    return { message: `CSI 동적 provision·mount·read/write 검증을 통과했습니다. ${storageClass.metadata.name} → ${storageClass.provisioner}, PV ${pvc.spec?.volumeName || 'bound'}` };
+  } finally {
+    await deleteIfPresent(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/pods/${encodeURIComponent(podName)}`).catch(() => false);
+    await deleteIfPresent(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/persistentvolumeclaims/${encodeURIComponent(pvcName)}`).catch(() => false);
+  }
+}
+
+async function runSnapshotRestoreCanary(ctx, prerequisites = null) {
+  const { storageClass, snapshotClass } = prerequisites || await storageCanaryPrerequisites(ctx, true);
+  const image = await currentRuntimeImage(ctx);
+  const base = canaryResourceName('snapshot');
+  const sourcePvc = `${base}-source`.slice(0, 63);
+  const writerPod = `${base}-writer`.slice(0, 63);
+  const snapshotName = `${base}-snap`.slice(0, 63);
+  const restorePvc = `${base}-restore`.slice(0, 63);
+  const readerPod = `${base}-reader`.slice(0, 63);
+  try {
+    await k8sRequest(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/persistentvolumeclaims`, { method: 'POST', body: canaryPvc(sourcePvc, storageClass.metadata.name) });
+    await k8sRequest(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/pods`, { method: 'POST', body: canaryPod(writerPod, sourcePvc, image, "printf '%s\\n' 'opensphere-his-snapshot-canary' > /canary/probe && sync") });
+    await waitForCanaryPod(ctx, writerPod);
+    await waitForPvcBound(ctx, sourcePvc);
+    await deleteIfPresent(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/pods/${encodeURIComponent(writerPod)}`);
+    await k8sRequest(ctx, `/apis/snapshot.storage.k8s.io/v1/namespaces/${OPERATION_NAMESPACE}/volumesnapshots`, {
+      method: 'POST',
+      body: { apiVersion: 'snapshot.storage.k8s.io/v1', kind: 'VolumeSnapshot', metadata: { name: snapshotName, namespace: OPERATION_NAMESPACE, labels: { 'app.kubernetes.io/managed-by': 'opensphere-cluster-manager', 'opensphere.io/his-canary': 'snapshot' } }, spec: { volumeSnapshotClassName: snapshotClass.metadata.name, source: { persistentVolumeClaimName: sourcePvc } } },
+    });
+    const snapshot = await waitForSnapshotReady(ctx, snapshotName);
+    await k8sRequest(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/persistentvolumeclaims`, { method: 'POST', body: canaryPvc(restorePvc, storageClass.metadata.name, { apiGroup: 'snapshot.storage.k8s.io', kind: 'VolumeSnapshot', name: snapshotName }) });
+    await k8sRequest(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/pods`, { method: 'POST', body: canaryPod(readerPod, restorePvc, image, "grep -qx 'opensphere-his-snapshot-canary' /canary/probe") });
+    await waitForCanaryPod(ctx, readerPod);
+    const restored = await waitForPvcBound(ctx, restorePvc);
+    return { message: `Snapshot→Restore와 데이터 무결성 검증을 통과했습니다. ${snapshotClass.metadata.name}, content ${snapshot.status?.boundVolumeSnapshotContentName || 'ready'}, restore PV ${restored.spec?.volumeName || 'bound'}` };
+  } finally {
+    for (const name of [readerPod, writerPod]) await deleteIfPresent(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/pods/${encodeURIComponent(name)}`).catch(() => false);
+    await deleteIfPresent(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/persistentvolumeclaims/${encodeURIComponent(restorePvc)}`).catch(() => false);
+    await deleteIfPresent(ctx, `/apis/snapshot.storage.k8s.io/v1/namespaces/${OPERATION_NAMESPACE}/volumesnapshots/${encodeURIComponent(snapshotName)}`).catch(() => false);
+    await deleteIfPresent(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/persistentvolumeclaims/${encodeURIComponent(sourcePvc)}`).catch(() => false);
+  }
+}
+
+async function executeCanaryValidation(ctx, actor, item, operation) {
+  let current = operation;
+  try {
+    current = await patchOperation(ctx, item, current, { phase: 'Validating', progress: 15, message: '격리된 임시 리소스로 실제 데이터 경로를 검증하고 있습니다.' });
+    const prerequisites = await storageCanaryPrerequisites(ctx, item.id === 'csi-snapshot');
+    current = await patchOperation(ctx, item, current, { validationFingerprint: prerequisites.fingerprint, progress: 25, message: '현재 StorageClass/CSI 계약 지문을 고정하고 임시 데이터 경로를 생성하고 있습니다.' });
+    const outcome = item.id === 'storage' ? await runStorageBindCanary(ctx, prerequisites) : await runSnapshotRestoreCanary(ctx, prerequisites);
+    await auditRequired(ctx, actor, 'HISCanaryValidated', item, operation.reason, `success:${outcome.message}`);
+    await ctx.publishNotify({ userActor: actor.username, action: 'HISCanaryValidated', target: `HIS/${item.id}`, result: 'success', reason: `${operation.reason} · ${outcome.message}` });
+    await patchOperation(ctx, item, current, { phase: 'Ready', progress: 100, message: outcome.message, error: '' });
+  } catch (error) {
+    const message = safeError(error);
+    try { await auditRequired(ctx, actor, 'HISCanaryValidationFailed', item, operation.reason, message); }
+    catch (auditError) { console.error(`[his-canary] failure audit unavailable id=${operation.id}: ${safeError(auditError)}`); }
+    try { await ctx.publishNotify({ userActor: actor.username, action: 'HISCanaryValidationFailed', target: `HIS/${item.id}`, result: 'error', reason: `${operation.reason} · ${message}` }); }
+    catch { /* best effort notification */ }
+    await patchOperation(ctx, item, current, { phase: 'Failed', progress: 100, message: '실제 데이터 경로 검증에 실패했습니다.', error: message });
+  }
+}
+
 async function executeObservabilityConfiguration(ctx, actor, item, operation, desired, dataReset) {
   let current = operation;
   try {
@@ -1917,6 +2189,16 @@ function createHisManager(ctx) {
       if (pathname === '/api/his/profiles') {
         return ctx.jsonRes(res, 200, await setProfileSelection(ctx, actor, body)), true;
       }
+      if (pathname === '/api/his/validate') {
+        const item = catalogItem(String(body?.id || ''));
+        if (!item || !['storage', 'csi-snapshot'].includes(item.id)) throw Object.assign(new Error('실검증을 지원하지 않는 HIS 항목입니다.'), { code: 404 });
+        const reason = reasonFrom(body);
+        await auditRequired(ctx, actor, 'HISCanaryValidationRequested', item, reason, 'requested');
+        const operation = await createOperation(ctx, item, actor, 'validate', reason);
+        ctx.jsonRes(res, 202, { ok: true, operation });
+        setImmediate(() => { void executeCanaryValidation(ctx, actor, item, operation); });
+        return true;
+      }
       const item = assertManagedItem(body);
 
       if (pathname === '/api/his/plan') {
@@ -2019,6 +2301,14 @@ module.exports = {
   compareVersions,
   kubernetesVersionSupported,
   diagnosticDetails,
+  evaluateStorageContract,
+  validationCanaryName,
+  applyValidationOperation,
+  gateValidationReadiness,
+  storageContractFingerprint,
+  snapshotContractFingerprint,
+  canaryPvc,
+  canaryPod,
   renderedResources,
   recoverableHelmCleanupError,
   stuckReleaseRecoveryStrategy,

@@ -178,11 +178,11 @@ const HIS_CATALOG = Object.freeze([
     required: true,
     probe: 'storage',
     domain: 'Storage',
-    compatibility: { kubernetes: 'storage.k8s.io/v1', policy: 'default dynamic provisioner required' },
+    compatibility: { kubernetes: 'storage.k8s.io/v1', policy: 'exactly one CSI-backed default dynamic provisioner required' },
     remediation: {
-      summary: 'StorageClass 선택은 데이터 수명주기 결정입니다. provisioner·binding·expansion·reclaim·topology를 함께 검토합니다.',
-      steps: ['StorageClass matrix와 기본값 중복을 확인합니다.', '동적 provisioner와 volumeBindingMode/topology를 검증합니다.', 'reclaim Delete와 비확장 class의 데이터 위험을 승인하고 PVC bind canary를 수행합니다.'],
-      verification: 'StorageClass matrix, default uniqueness, PVC inventory, expansion/reclaim/topology risk',
+      summary: 'StorageClass 선택은 데이터 수명주기 결정입니다. 등록된 CSI·binding·expansion·reclaim·topology를 함께 검토합니다.',
+      steps: ['StorageClass matrix와 기본값 중복을 확인합니다.', '기본 provisioner가 실제 CSIDriver와 일치하는지 검증합니다.', 'reclaim Delete와 비확장 class의 데이터 위험을 승인하고 PVC bind canary를 수행합니다.'],
+      verification: 'StorageClass/CSIDriver mapping, default uniqueness, PVC inventory, expansion/reclaim/topology risk',
     },
   },
   {

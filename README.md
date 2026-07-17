@@ -30,6 +30,19 @@ profile 선택은 `opensphere-his-profile-selection` ConfigMap에 저장되고 C
 백본에 요청·완료 이벤트를 모두 남긴다. 설치된 HelmManaged profile은 구성요소를 먼저
 삭제하기 전에는 선택 해제할 수 없다.
 
+Storage Core는 StorageClass 존재만으로 Ready가 되지 않는다. 기본 StorageClass의
+`provisioner`가 실제 `CSIDriver` 이름과 정확히 일치해야 하며, 샘플 CSI나 이름 추정으로
+상태를 우회하지 않는다. 비 CSI local-path/hostpath는 개발 편의 저장소로 표시할 수는
+있지만 HIS Core 요구조건을 충족하지 않는다.
+
+관리자는 CSI-backed 기본 StorageClass가 준비된 뒤 Storage 항목의 `실검증`으로 임시
+64Mi PVC와 비권한 Pod를 생성해 동적 provision·mount·read/write를 확인할 수 있다.
+Data Protection profile은 동일 경로에 더해 `deletionPolicy=Delete`인 승인된
+VolumeSnapshotClass로 snapshot→restore와 데이터 무결성을 검증한다. 검증 리소스는
+완료·실패 여부와 무관하게 정리하고 요청·성공·실패를 감사 백본에 기록한다.
+검증 성공은 현재 StorageClass/CSI 계약 지문에 결합되므로 class·driver·정책이 바뀌면
+자동으로 무효화되고 재검증 전까지 해당 Core/profile은 `Degraded`로 유지된다.
+
 공유 가능한 경로는 `/p/cluster-manager/<k8s|ceph|his>/<resource>` 형식입니다.
 
 ## 구조 (루트 Angular 프로젝트 + 배포 배선)

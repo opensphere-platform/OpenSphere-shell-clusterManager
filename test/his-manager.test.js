@@ -17,6 +17,13 @@ const {
   compareVersions,
   kubernetesVersionSupported,
   diagnosticDetails,
+  evaluateStorageContract,
+  validationCanaryName,
+  applyValidationOperation,
+  gateValidationReadiness,
+  storageContractFingerprint,
+  canaryPvc,
+  canaryPod,
   renderedResources,
   recoverableHelmCleanupError,
   stuckReleaseRecoveryStrategy,
@@ -96,6 +103,66 @@ test('diagnostic contract preserves characteristic facts, evidence and canaries'
   assert.equal(details.facts[0].value, '4/4');
   assert.equal(details.tables[0].rows[0].name, 'worker-1');
   assert.equal(details.canaries[0].state, 'Passed');
+});
+
+test('Storage Core requires the default StorageClass to be backed by an actual CSIDriver', () => {
+  const storageClass = (provisioner) => ({ metadata: { name: 'standard', annotations: { 'storageclass.kubernetes.io/is-default-class': 'true' } }, provisioner });
+  const driver = (name) => ({ metadata: { name } });
+  const legacy = evaluateStorageContract([storageClass('rancher.io/local-path')], [], []);
+  assert.equal(legacy.state, 'Degraded');
+  assert.equal(legacy.reason, 'DefaultStorageClassNotCsi');
+  assert.equal(legacy.rows[0].csiBacked, 'No');
+  const csi = evaluateStorageContract([storageClass('rbd.csi.ceph.com')], [driver('rbd.csi.ceph.com')], []);
+  assert.equal(csi.state, 'Ready');
+  assert.equal(csi.reason, 'CsiStorageReady');
+  assert.equal(csi.rows[0].csiBacked, 'Yes');
+  const pending = evaluateStorageContract([storageClass('rbd.csi.ceph.com')], [driver('rbd.csi.ceph.com')], [{ status: { phase: 'Pending' } }]);
+  assert.equal(pending.state, 'Degraded');
+  assert.equal(pending.reason, 'StorageContractDegraded');
+});
+
+test('completed validation operations replace only their matching canary evidence', () => {
+  const fingerprint = storageContractFingerprint({ metadata: { uid: 'uid-1', name: 'standard' }, provisioner: 'rbd.csi.ceph.com' });
+  const check = { state: 'Ready', reason: 'CsiStorageReady', details: { validationFingerprint: fingerprint, canaries: [
+    { name: 'PVC inventory', state: 'Passed', message: '0 unbound' },
+    { name: 'Dynamic provision/bind', state: 'NotRun', message: 'not run' },
+  ] } };
+  assert.equal(validationCanaryName('storage'), 'Dynamic provision/bind');
+  assert.equal(validationCanaryName('csi-snapshot'), 'Snapshot → restore');
+  const operation = { action: 'validate', phase: 'Ready', message: 'read/write passed', finishedAt: '2026-07-17T00:00:00Z', validationFingerprint: fingerprint };
+  const completed = applyValidationOperation(check, operation, 'storage');
+  assert.equal(completed.details.canaries[0].state, 'Passed');
+  assert.equal(completed.details.canaries[1].state, 'Passed');
+  assert.match(completed.details.canaries[1].message, /read\/write passed/);
+  const failed = applyValidationOperation(check, { action: 'validate', phase: 'Failed', error: 'mount failed' }, 'storage');
+  assert.equal(failed.details.canaries[1].state, 'Failed');
+  assert.equal(failed.details.canaries[1].message, 'mount failed');
+  const required = gateValidationReadiness(check, null, 'storage');
+  assert.equal(required.state, 'Degraded');
+  assert.equal(required.reason, 'StorageCanaryRequired');
+  const ready = gateValidationReadiness(check, operation, 'storage');
+  assert.equal(ready.state, 'Ready');
+  const changed = { ...check, details: { ...check.details, validationFingerprint: `${fingerprint}-changed` } };
+  const stale = gateValidationReadiness(changed, operation, 'storage');
+  assert.equal(stale.state, 'Degraded');
+  assert.equal(stale.details.canaries[1].state, 'NotRun');
+});
+
+test('storage canary manifests are bounded, non-privileged and accept no arbitrary workload shape', () => {
+  const pvc = canaryPvc('canary-pvc', 'rbd.csi.ceph.com');
+  assert.equal(pvc.spec.storageClassName, 'rbd.csi.ceph.com');
+  assert.equal(pvc.spec.resources.requests.storage, '64Mi');
+  assert.equal(pvc.spec.dataSource, undefined);
+  const restored = canaryPvc('restore-pvc', 'rbd.csi.ceph.com', { apiGroup: 'snapshot.storage.k8s.io', kind: 'VolumeSnapshot', name: 'canary-snapshot' });
+  assert.equal(restored.spec.dataSource.kind, 'VolumeSnapshot');
+  const pod = canaryPod('canary-pod', 'canary-pvc', 'example.invalid/cluster-manager@sha256:abc', 'true');
+  assert.equal(pod.spec.automountServiceAccountToken, false);
+  assert.equal(pod.spec.restartPolicy, 'Never');
+  assert.equal(pod.spec.securityContext.fsGroup, 1000);
+  assert.equal(pod.spec.containers[0].securityContext.allowPrivilegeEscalation, false);
+  assert.equal(pod.spec.containers[0].securityContext.readOnlyRootFilesystem, true);
+  assert.deepEqual(pod.spec.containers[0].securityContext.capabilities.drop, ['ALL']);
+  assert.equal(pod.spec.volumes[0].persistentVolumeClaim.claimName, 'canary-pvc');
 });
 
 test('mutation reason is mandatory and bounded', () => {

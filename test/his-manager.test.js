@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { HIS_CATALOG, catalogItem } = require('../his-catalog');
-const { reasonFrom, safeError, kubeconfigText, auditRequired, operationResourceName, operationActive, renderedResources } = require('../his-manager');
+const { reasonFrom, safeError, kubeconfigText, auditRequired, operationResourceName, operationActive, renderedResources, recoverableHelmCleanupError } = require('../his-manager');
 
 test('HIS catalog keeps PFS/plugin concepts outside the prerequisite catalog', () => {
   assert.ok(HIS_CATALOG.some((item) => item.mode === 'DetectOnly'));
@@ -57,6 +57,12 @@ type: string
   assert.deepEqual(renderedResources(rendered, 'monitoring'), [{
     apiVersion: 'v1', kind: 'Service', namespace: 'monitoring', name: 'grafana',
   }]);
+});
+
+test('stalled uninstall metadata is recoverable only for an uninstalling release', () => {
+  assert.equal(recoverableHelmCleanupError('uninstalling', 'failed to delete release: kube-prometheus-stack'), true);
+  assert.equal(recoverableHelmCleanupError('deployed', 'failed to delete release: kube-prometheus-stack'), false);
+  assert.equal(recoverableHelmCleanupError('failed', 'release: not found'), true);
 });
 
 test('durable audit request authenticates with the managed workload ServiceAccount token', async () => {

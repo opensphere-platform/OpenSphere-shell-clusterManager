@@ -453,6 +453,12 @@ async function deleteIfPresent(ctx, apiPath) {
   catch (error) { if (error.code === 404) return false; throw error; }
 }
 
+function recoverableHelmCleanupError(releaseStatus, message) {
+  const text = String(message || '');
+  return /has no deployed releases|release: not found|not found/i.test(text)
+    || (releaseStatus === 'uninstalling' && /failed to delete release/i.test(text));
+}
+
 async function recoverStuckRelease(ctx, actor, item, operation, release) {
   if (!release?.managed || !['uninstalling', 'failed', 'pending-install', 'pending-upgrade', 'pending-rollback'].includes(release.status)) {
     return operation;
@@ -466,7 +472,7 @@ async function recoverStuckRelease(ctx, actor, item, operation, release) {
   try {
     await withKubeconfig(ctx, (env) => command('helm', ['uninstall', item.release, '--namespace', item.namespace, '--no-hooks', '--wait', '--timeout', '2m'], { env, timeoutMs: 150000 }));
   } catch (error) {
-    if (!/has no deployed releases|release: not found|not found/i.test(error.safeMessage || error.message || '')) throw error;
+    if (!recoverableHelmCleanupError(release.status, error.safeMessage || error.message || '')) throw error;
   }
   const check = await probe(ctx, item.probe);
   const workloadPresent = (check.details?.components || []).some((component) => component.resourceName);
@@ -764,4 +770,5 @@ module.exports = {
   operationResourceName,
   operationActive,
   renderedResources,
+  recoverableHelmCleanupError,
 };

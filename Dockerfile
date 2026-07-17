@@ -20,15 +20,17 @@ RUN mkdir -p /his-charts \
     && helm pull ingress-nginx --repo https://kubernetes.github.io/ingress-nginx --version 4.15.1 --destination /his-charts \
     && helm pull metrics-server --repo https://kubernetes-sigs.github.io/metrics-server --version 3.13.1 --destination /his-charts \
     && helm pull oci://quay.io/jetstack/charts/cert-manager --version v1.20.0 --destination /his-charts \
+    && helm pull oci://ghcr.io/prometheus-community/charts/kube-prometheus-stack --version 86.0.1 --destination /his-charts \
     && echo '3eff0bd18151d6e6b1c441463410571443dda1ac78292cb189346628de784f0c  /his-charts/ingress-nginx-4.15.1.tgz' | sha256sum -c - \
     && echo '084e6edb680cf4e2acc30bd496568c53fdf663cbacf6e17876b25785c35b7a13  /his-charts/metrics-server-3.13.1.tgz' | sha256sum -c - \
-    && echo '1f1a268fd1642d76d0b9fd162aaedc91973a81b87d9e57c0fff246024ccd2ad4  /his-charts/cert-manager-v1.20.0.tgz' | sha256sum -c -
+    && echo '1f1a268fd1642d76d0b9fd162aaedc91973a81b87d9e57c0fff246024ccd2ad4  /his-charts/cert-manager-v1.20.0.tgz' | sha256sum -c - \
+    && echo '834c252b3e769516578f6199a374daf688b0bf7b7693089ebbf36aa7dcfd8d0d  /his-charts/kube-prometheus-stack-86.0.1.tgz' | sha256sum -c -
 
 FROM docker.io/library/node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2
 ARG OS_MODULE_DESCRIPTOR
 ARG OS_MODULE_SIGNATURE
 LABEL org.opencontainers.image.title="OpenSphere Cluster Manager" \
-      org.opencontainers.image.version="1.1.5" \
+      org.opencontainers.image.version="1.1.6" \
       org.opencontainers.image.source="https://github.com/opensphere-platform/OpenSphere-shell-clusterManager" \
       io.opensphere.module.descriptor=$OS_MODULE_DESCRIPTOR \
       io.opensphere.module.descriptor.signature=$OS_MODULE_SIGNATURE \

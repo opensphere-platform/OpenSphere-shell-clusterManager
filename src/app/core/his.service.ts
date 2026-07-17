@@ -20,6 +20,7 @@ export interface HisItem {
   description: string;
   mode: HisMode;
   required: boolean;
+  profile?: string;
   chartName?: string;
   chartVersion?: string;
   appVersion?: string;

@@ -10,6 +10,11 @@ test('HIS catalog keeps PFS/plugin concepts outside the prerequisite catalog', (
   assert.ok(HIS_CATALOG.some((item) => item.mode === 'HelmManaged'));
   assert.equal(catalogItem('foundation'), undefined);
   assert.equal(catalogItem('metrics-server').chartVersion, '3.13.1');
+  const observability = catalogItem('kube-prometheus-stack');
+  assert.equal(observability.mode, 'HelmManaged');
+  assert.equal(observability.required, false);
+  assert.equal(observability.profile, 'Observability');
+  assert.equal(observability.chartVersion, '86.0.1');
 });
 
 test('mutation reason is mandatory and bounded', () => {

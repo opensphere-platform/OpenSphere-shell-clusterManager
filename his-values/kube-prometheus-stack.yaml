@@ -1,0 +1,41 @@
+# OpenSphere HIS Observability profile.
+# The stack stays cluster-internal and discovers component-owned monitors across namespaces.
+grafana:
+  enabled: true
+  ingress:
+    enabled: false
+  persistence:
+    enabled: true
+    size: 5Gi
+
+alertmanager:
+  ingress:
+    enabled: false
+  alertmanagerSpec:
+    retention: 120h
+    storage:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 2Gi
+
+prometheus:
+  ingress:
+    enabled: false
+  prometheusSpec:
+    retention: 7d
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    serviceMonitorNamespaceSelector: {}
+    podMonitorNamespaceSelector: {}
+    ruleNamespaceSelector: {}
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 20Gi

@@ -135,6 +135,11 @@ function readyDaemonSet(ds) {
   return desired > 0 && Number(ds && ds.status && ds.status.numberReady || 0) >= desired;
 }
 
+function readyStatefulSet(sts) {
+  const desired = Number(sts && sts.spec && sts.spec.replicas || 1);
+  return Number(sts && sts.status && sts.status.readyReplicas || 0) >= desired;
+}
+
 function result(state, reason, message, observedVersion = '') {
   return { state, reason, message, observedVersion, retryable: state !== 'Ready', lastCheckedAt: new Date().toISOString() };
 }
@@ -197,6 +202,48 @@ async function probe(ctx, name) {
       if (e.code === 404) return result('Blocked', 'MetricsApiMissing', 'metrics.k8s.io APIService가 없습니다.');
       throw e;
     }
+  }
+  if (name === 'kubePrometheusStack') {
+    const crdNames = [
+      'prometheuses.monitoring.coreos.com',
+      'servicemonitors.monitoring.coreos.com',
+      'alertmanagers.monitoring.coreos.com',
+    ];
+    const crdChecks = await Promise.all(crdNames.map(async (crdName) => {
+      try { await k8s(ctx, `/apis/apiextensions.k8s.io/v1/customresourcedefinitions/${crdName}`); return true; }
+      catch (e) { if (e.code === 404) return false; throw e; }
+    }));
+    const [deployments, statefulsets, daemonsets] = await Promise.all([
+      k8s(ctx, '/apis/apps/v1/deployments'),
+      k8s(ctx, '/apis/apps/v1/statefulsets'),
+      k8s(ctx, '/apis/apps/v1/daemonsets'),
+    ]);
+    const deploymentItems = deployments.items || [];
+    const statefulSetItems = statefulsets.items || [];
+    const daemonSetItems = daemonsets.items || [];
+    const find = (items, pattern) => items.find((item) => pattern.test(item.metadata?.name || ''));
+    const components = [
+      { name: 'Prometheus Operator', item: find(deploymentItems, /prometheus.*operator|kube-prometheus-stack-operator/i), ready: availableDeployment },
+      { name: 'Grafana', item: find(deploymentItems, /grafana/i), ready: availableDeployment },
+      { name: 'kube-state-metrics', item: find(deploymentItems, /kube-state-metrics/i), ready: availableDeployment },
+      { name: 'Prometheus', item: find(statefulSetItems, /^prometheus-/i), ready: readyStatefulSet },
+      { name: 'Alertmanager', item: find(statefulSetItems, /^alertmanager-/i), ready: readyStatefulSet },
+      { name: 'node-exporter', item: find(daemonSetItems, /node-exporter/i), ready: readyDaemonSet },
+    ];
+    const present = components.filter((component) => component.item);
+    const ready = components.filter((component) => component.item && component.ready(component.item));
+    const crdsReady = crdChecks.every(Boolean);
+    const operator = components[0].item;
+    const observedVersion = operator?.spec?.template?.spec?.containers?.[0]?.image || '';
+    if (crdsReady && ready.length === components.length) {
+      const namespaces = [...new Set(components.map((component) => component.item?.metadata?.namespace).filter(Boolean))];
+      return result('Ready', 'ObservabilityReady', `공유 관측 스택 ${ready.length}/${components.length}개 구성요소가 Ready입니다. (${namespaces.join(', ')})`, observedVersion);
+    }
+    if (crdChecks.some(Boolean) || present.length) {
+      const missing = components.filter((component) => !component.item || !component.ready(component.item)).map((component) => component.name);
+      return result('Degraded', 'ObservabilityPartial', `관측 스택 일부만 준비되었습니다. 미준비: ${missing.join(', ') || 'CRD'}`, observedVersion);
+    }
+    return result('Blocked', 'ObservabilityMissing', '공유 kube-prometheus-stack이 없습니다. Observability profile에서 선택 설치할 수 있습니다.');
   }
   if (name === 'storage') {
     const list = await k8s(ctx, '/apis/storage.k8s.io/v1/storageclasses');

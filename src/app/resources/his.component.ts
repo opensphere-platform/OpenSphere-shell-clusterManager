@@ -54,6 +54,7 @@ import { HisItem, HisPlan, HisService, HisStatus } from '../core/his.service';
         <clr-dg-cell>
           <span class="label" [class.label-info]="item.mode === 'HelmManaged'">{{ item.mode }}</span>
           <span *ngIf="item.required" class="required">필수</span>
+          <span *ngIf="!item.required && item.profile" class="optional">선택 · {{ item.profile }}</span>
         </clr-dg-cell>
         <clr-dg-cell>
           <span class="label" [class.label-success]="item.check.state === 'Ready'" [class.label-danger]="item.check.state === 'Blocked'" [class.label-warning]="item.check.state === 'Degraded'">{{ item.check.state }}</span>
@@ -146,6 +147,7 @@ import { HisItem, HisPlan, HisService, HisStatus } from '../core/his.service';
     .summary { display: flex; align-items: center; gap: 0.75rem; padding: 0.55rem 0; color: #565656; font-size: 0.72rem; }
     .muted { color: #6f6f6f; font-size: 0.65rem; margin-top: 0.12rem; }
     .required { margin-left: 0.35rem; color: #a32100; font-size: 0.62rem; font-weight: 600; }
+    .optional { margin-left: 0.35rem; color: #00567a; font-size: 0.62rem; font-weight: 600; }
     .detail { padding: 0.6rem 1rem; line-height: 1.5; }
     .plan-meta { display: grid; grid-template-columns: 9rem 1fr; gap: 0.35rem 0.8rem; margin: 0.8rem 0; }
     .plan-meta dt { font-weight: 600; }

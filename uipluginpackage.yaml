@@ -14,7 +14,7 @@ spec:
   serviceAccountName: opensphere-cluster-manager
   displayName: "Cluster Manager"
   owner: opensphere-platform
-  version: 1.1.5
+  version: 1.1.6
   description: "OpenSphere cluster inventory, operations and HIS prerequisite management subShell"
   image:
     repository: ghcr.io/opensphere-platform/opensphere-shell-cluster-manager

@@ -84,9 +84,9 @@ docker push localhost:5000/cluster-manager:<tag>
 ## DUPA 자동등록
 `dupa-registry-controller`가 `uipluginpackage.yaml` reconcile → 서명검증(trust keyId `opensphere-plugins-v1`) → Deployment/Service 생성 → `/registry/plugins.json` 전사 → 메인 셸(opensphere-console)이 동적으로 nav 밴드·라우트·페이지 등록 (**셸 무수정**).
 
-Kanidm 신뢰 CA는 이미지에 포함하지 않는다. Console Extension Host가 Setup-managed
-`opensphere-console-auth-ca` Secret을 각 관리 워크로드에 read-only로 마운트하고,
-Cluster Manager는 그 CA로 BFF JWKS와 매 요청 live token introspection을 검증한다.
+Cluster Manager는 별도 IdP·JWKS·세션 저장소를 가지지 않는다. 모든 사용자 요청은
+`CONSOLE_IDENTITY_URL`의 Console Backend `/api/identity/session`으로 전달되어
+Supabase Auth 세션과 `console.operator_role`을 단일 기준으로 검증한다.
 
 ## 재서명 (ui-shell 변경 시)
 ```

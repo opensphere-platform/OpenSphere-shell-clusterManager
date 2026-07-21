@@ -31,118 +31,33 @@ const APISERVER = 'https://kubernetes.default.svc';
 const tok = () => fs.readFileSync(`${SA}/token`, 'utf8').trim();
 
 // ── Console 신원 검증 ──
-// Kanidm 콘솔 id_token(ES256) 전용 — cutover 완료, 레거시 Keycloak RS256 dual-accept 경로는 제거됨.
-const { createPublicKey, verify: cryptoVerify } = require('crypto');
-// Console 자격의 최종 발급자는 opensphere-console-auth BFF다. Kanidm core는 upstream
-// identity만 제공하므로 core JWKS가 아니라 BFF JWKS와 live introspection을 사용한다.
-const KANIDM_ISSUERS = (process.env.KANIDM_ISSUERS || process.env.KANIDM_ISS
-  || 'https://localhost:8090/oauth2/openid/opensphere-console,https://localhost:8444/oauth2/openid/opensphere-console,https://auth.console.opensphere.dev/oauth2/openid/opensphere-console')
-  .split(',').map((value) => value.trim()).filter(Boolean);
-const KANIDM_JWKS_URL = process.env.KANIDM_JWKS_URL || 'https://opensphere-console-auth.opensphere-console.svc:8443/oauth2/openid/opensphere-console/public_key.jwk';
-const KANIDM_TLS_SERVERNAME = process.env.KANIDM_TLS_SERVERNAME || 'kanidm.opensphere-console-auth.svc';
-const KANIDM_AZP = process.env.KANIDM_AZP || 'opensphere-console';
-const KANIDM_CA_PATH = process.env.KANIDM_CA_PATH || '/etc/opensphere/auth-ca/ca.crt';
-const TOKEN_INTROSPECTION_URL = process.env.TOKEN_INTROSPECTION_URL
-  || 'https://opensphere-console-auth.opensphere-console.svc:8443/bff/token/introspect';
-const TOKEN_INTROSPECTION_SERVERNAME = process.env.TOKEN_INTROSPECTION_SERVERNAME || KANIDM_TLS_SERVERNAME;
+// Cluster Manager는 독립 IdP/JWKS를 소유하지 않는다. Console Backend가 Supabase
+// Auth 세션과 console.operator_role을 함께 검증하는 단일 identity authority다.
+const CONSOLE_IDENTITY_URL = (process.env.CONSOLE_IDENTITY_URL
+  || 'http://opensphere-console-backend.opensphere-console.svc.cluster.local:8080').replace(/\/$/, '');
 const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
-// Kanidm JWKS — 자체서명 CA를 명시적 'ca' 옵션으로 신뢰(TLS 검증 비활성화 금지, NODE_EXTRA_CA_CERTS 미접촉).
-let _kjwks = null, _kjwksAt = 0;
-const KJWKS_TTL = 5 * 60 * 1000;
-function _kanidmGetJwks(force) {
-  return new Promise((resolve, reject) => {
-    if (!force && _kjwks && (Date.now() - _kjwksAt) < KJWKS_TTL) return resolve(_kjwks);
-    const u = new URL(KANIDM_JWKS_URL);
-    const opts = { hostname: u.hostname, port: u.port || 443, path: u.pathname + u.search, method: 'GET', servername: KANIDM_TLS_SERVERNAME };
-    try { opts.ca = fs.readFileSync(KANIDM_CA_PATH); } catch (e) { console.error('[auth] kanidm CA read failed: ' + e); }
-    const rq = https.request(opts, (resp) => {
-      const ch = []; let size = 0;
-      resp.on('data', (c) => { size += c.length; if (size <= 64 * 1024) ch.push(c); });
-      resp.on('end', () => {
-        if (size > 64 * 1024) return reject(new Error('JWKS response too large'));
-        if (resp.statusCode !== 200) return reject(new Error(`JWKS HTTP ${resp.statusCode}`));
-        try { const j = JSON.parse(Buffer.concat(ch).toString('utf8')); _kjwks = j.keys || (j.kty ? [j] : []); _kjwksAt = Date.now(); resolve(_kjwks); } catch (e) { reject(e); }
-      });
+async function verifySupabaseToken(rawToken, identityFetch = fetch) {
+  if (!rawToken) throw { code: 401, msg: 'no bearer token' };
+  let response;
+  try {
+    response = await identityFetch(`${CONSOLE_IDENTITY_URL}/api/identity/session`, {
+      headers: { authorization: `Bearer ${rawToken}`, accept: 'application/json' },
+      signal: AbortSignal.timeout(3000),
     });
-    rq.setTimeout(3000, () => rq.destroy(new Error('JWKS timeout')));
-    rq.on('error', reject); rq.end();
-  });
-}
-const b64urlJson = (s) => JSON.parse(Buffer.from(s, 'base64url').toString('utf8'));
-function assertClaims(header, claims, now = Date.now()) {
-  const aud = Array.isArray(claims.aud) ? claims.aud : claims.aud ? [claims.aud] : [];
-  if (header.alg !== 'ES256') throw { code: 401, msg: 'unexpected alg' };
-  if (!KANIDM_ISSUERS.includes(claims.iss)) throw { code: 401, msg: 'bad iss' };
-  if (claims.azp !== KANIDM_AZP && !aud.includes(KANIDM_AZP)) throw { code: 401, msg: 'bad azp/aud' };
-  if (!claims.exp || !claims.sub || !claims.iat) throw { code: 401, msg: 'missing required claim' };
-  if (claims.exp * 1000 < now) throw { code: 401, msg: 'token expired' };
-  if (claims.nbf && claims.nbf * 1000 > now + 30000) throw { code: 401, msg: 'token not yet valid' };
-  if (claims.typ !== undefined && claims.typ !== 'browser' && claims.typ !== 'pat' && claims.typ !== 'cli_session') {
-    throw { code: 401, msg: 'unsupported token type' };
+  } catch {
+    throw { code: 503, msg: 'Supabase identity authority unavailable' };
   }
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw { code: response.status === 403 ? 403 : 401, msg: body.error || 'invalid Supabase session' };
+  return {
+    username: body.username || body.subject || 'unknown',
+    subject: body.subject || '',
+    groups: Array.isArray(body.groups) ? body.groups : [],
+    provider: 'supabase',
+  };
 }
-function assertManagedTokenActive(claims, state) {
-  if (!state || state.active !== true) throw { code: 401, msg: 'credential inactive or revoked' };
-  if (state.sub !== claims.sub || state.username !== claims.preferred_username || state.exp !== claims.exp) {
-    throw { code: 401, msg: 'credential state mismatch' };
-  }
-  if (claims.typ === undefined || claims.typ === 'browser') {
-    if (state.type !== 'browser_session') throw { code: 401, msg: 'browser session state mismatch' };
-    return;
-  }
-  if (!claims.jti || state.jti !== claims.jti) throw { code: 401, msg: 'credential state mismatch' };
-  if (claims.typ === 'cli_session' && (!claims.device_id || state.deviceId !== claims.device_id)) {
-    throw { code: 401, msg: 'device state mismatch' };
-  }
-}
-function introspectManagedToken(jwt) {
-  return new Promise((resolve, reject) => {
-    const u = new URL(TOKEN_INTROSPECTION_URL);
-    const body = Buffer.from(new URLSearchParams({ token: jwt }).toString());
-    const options = {
-      hostname: u.hostname, port: u.port || 443, path: u.pathname + u.search, method: 'POST',
-      servername: TOKEN_INTROSPECTION_SERVERNAME,
-      headers: { 'content-type': 'application/x-www-form-urlencoded', 'content-length': body.length, accept: 'application/json' },
-    };
-    try { options.ca = fs.readFileSync(KANIDM_CA_PATH); } catch (e) { return reject(new Error(`authentication CA unavailable: ${e.code || 'read failed'}`)); }
-    const rq = https.request(options, (resp) => {
-      const chunks = []; let size = 0;
-      resp.on('data', (chunk) => { size += chunk.length; if (size <= 64 * 1024) chunks.push(chunk); });
-      resp.on('end', () => {
-        if (size > 64 * 1024) return reject(new Error('token introspection response too large'));
-        if (resp.statusCode !== 200) return reject(new Error(`token introspection HTTP ${resp.statusCode}`));
-        try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
-        catch { reject(new Error('token introspection returned invalid JSON')); }
-      });
-    });
-    rq.setTimeout(3000, () => rq.destroy(new Error('token introspection timeout')));
-    rq.on('error', reject); rq.write(body); rq.end();
-  });
-}
-const shortGroup = (value) => String(value).replace(/^\//, '').replace(/@.*$/, '');
-async function verifyToken(idToken) {
-  if (!idToken) throw { code: 401, msg: 'no id token' };
-  const parts = idToken.split('.');
-  if (parts.length !== 3) throw { code: 401, msg: 'malformed token' };
-  const header = b64urlJson(parts[0]);
-  const sig = Buffer.from(parts[2], 'base64url');
-  // ── Kanidm 콘솔 id_token (ES256) 전용 — alg pin (fail closed) ──
-  if (header.alg !== 'ES256') throw { code: 401, msg: 'unexpected alg' };
-  let jwk = (await _kanidmGetJwks()).find((k) => k.kid === header.kid);
-  if (!jwk) jwk = (await _kanidmGetJwks(true)).find((k) => k.kid === header.kid); // 키 롤오버 재시도
-  if (!jwk) throw { code: 401, msg: 'unknown kid (kanidm)' };
-  const pub = createPublicKey({ key: jwk, format: 'jwk' });
-  // ECDSA P-256: JWS 서명은 raw r||s(IEEE-P1363)이며 DER이 아님 → dsaEncoding 명시 필수.
-  const ok = cryptoVerify('SHA256', Buffer.from(`${parts[0]}.${parts[1]}`), { key: pub, dsaEncoding: 'ieee-p1363' }, sig);
-  if (!ok) throw { code: 401, msg: 'bad signature' };
-  const c = b64urlJson(parts[1]); // 검증된 클레임
-  assertClaims(header, c);
-  let state;
-  try { state = await introspectManagedToken(idToken); }
-  catch { throw { code: 401, msg: 'token introspection unavailable' }; }
-  assertManagedTokenActive(c, state);
-  // 권한 판단은 서명 당시 claim이 아니라 live introspection의 현재 그룹에서만 도출한다.
-  return { username: c.preferred_username || c.sub || 'unknown', groups: (state.groups || []).map(shortGroup) };
+async function verifyToken(rawToken) {
+  return verifySupabaseToken(rawToken);
 }
 const jsonRes = (res, code, obj) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
 
@@ -402,5 +317,5 @@ if (require.main === module) {
     setInterval(nodeHealthPublish, 60000);
   });
 } else {
-  module.exports = { assertClaims, assertManagedTokenActive, authorizeK8sProxyRequest, buildK8sReadHeaders };
+  module.exports = { verifySupabaseToken, authorizeK8sProxyRequest, buildK8sReadHeaders };
 }

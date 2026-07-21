@@ -2,34 +2,26 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { assertClaims, assertManagedTokenActive } = require('../server');
+const { verifySupabaseToken } = require('../server');
 
-function claims(overrides = {}) {
-  const now = Math.floor(Date.now() / 1000);
-  return {
-    iss: 'https://localhost:8090/oauth2/openid/opensphere-console',
-    sub: 'subject-1', preferred_username: 'cmars', aud: 'opensphere-console', azp: 'opensphere-console',
-    iat: now, nbf: now, exp: now + 900, typ: 'pat', jti: 'jti-1', ...overrides,
-  };
-}
-
-test('current Console issuer and managed PAT state are accepted together', () => {
-  const c = claims();
-  assert.doesNotThrow(() => assertClaims({ alg: 'ES256' }, c));
-  assert.doesNotThrow(() => assertManagedTokenActive(c, {
-    active: true, type: 'pat', sub: c.sub, username: c.preferred_username, exp: c.exp, jti: c.jti,
-  }));
+test('Cluster Manager delegates an authenticated request to the Console Supabase identity authority', async () => {
+  let call;
+  const actor = await verifySupabaseToken('supabase-access-token', async (url, init) => {
+    call = { url, init };
+    return { ok: true, status: 200, json: async () => ({ subject: 'subject-1', username: 'cmars', groups: ['console-admins'] }) };
+  });
+  assert.match(call.url, /\/api\/identity\/session$/);
+  assert.equal(call.init.headers.authorization, 'Bearer supabase-access-token');
+  assert.deepEqual(actor, { username: 'cmars', subject: 'subject-1', groups: ['console-admins'], provider: 'supabase' });
 });
 
-test('revoked or mismatched managed credentials fail closed', () => {
-  const c = claims();
-  assert.throws(() => assertManagedTokenActive(c, { active: false }), (error) => error.msg === 'credential inactive or revoked');
-  assert.throws(() => assertManagedTokenActive(c, {
-    active: true, type: 'pat', sub: c.sub, username: c.preferred_username, exp: c.exp, jti: 'other',
-  }), (error) => error.msg === 'credential state mismatch');
-});
-
-test('unsupported issuers and algorithms are rejected before live introspection', () => {
-  assert.throws(() => assertClaims({ alg: 'none' }, claims()), (error) => error.msg === 'unexpected alg');
-  assert.throws(() => assertClaims({ alg: 'ES256' }, claims({ iss: 'https://attacker.invalid' })), (error) => error.msg === 'bad iss');
+test('invalid sessions and unavailable identity authority fail closed', async () => {
+  await assert.rejects(
+    verifySupabaseToken('revoked-token', async () => ({ ok: false, status: 401, json: async () => ({ error: 'invalid Supabase session' }) })),
+    (error) => error.code === 401 && error.msg === 'invalid Supabase session',
+  );
+  await assert.rejects(
+    verifySupabaseToken('token', async () => { throw new Error('network down'); }),
+    (error) => error.code === 503 && error.msg === 'Supabase identity authority unavailable',
+  );
 });

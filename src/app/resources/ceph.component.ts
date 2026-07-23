@@ -2,7 +2,7 @@ import { CommonModule } from '@angular/common';
 import { Component, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ClarityModule } from '@clr/angular';
-import { CephPlan, CephService, CephStatus } from '../core/ceph.service';
+import { CEPH_PROVIDER_GUIDE, CephPlan, CephProviderGuide, CephService, CephStatus } from '../core/ceph.service';
 
 @Component({
   selector: 'app-res-ceph',
@@ -17,7 +17,7 @@ import { CephPlan, CephService, CephStatus } from '../core/ceph.service';
       </div>
       <div class="cm-ceph-page-head__actions">
         <button class="btn btn-outline" type="button" [disabled]="loading() || busy()" (click)="load()">다시 검사</button>
-        <button class="btn btn-primary" type="button" [disabled]="busy() || status()?.kubernetes?.ready !== true || !!status()?.connection" (click)="openConnect()">외부 Ceph 연결</button>
+        <button class="btn btn-primary" type="button" [disabled]="busy() || status()?.kubernetes?.ready !== true || status()?.ownerPrerequisites?.ready !== true || !!status()?.connection" (click)="openConnect()">외부 Ceph 연결</button>
       </div>
     </header>
 
@@ -26,6 +26,11 @@ import { CephPlan, CephService, CephStatus } from '../core/ceph.service';
     </div>
     <div *ngIf="notice()" class="alert alert-success" role="status">
       <div class="alert-items"><div class="alert-item static"><span class="alert-text">{{ notice() }}</span></div></div>
+    </div>
+    <div *ngIf="status()?.ownerPrerequisites?.ready === false" class="alert alert-warning" role="status">
+      <div class="alert-items"><div class="alert-item static"><span class="alert-text">
+        <strong>Ceph 제어 준비 미완료:</strong> {{ status()?.ownerPrerequisites?.blockers?.join(' · ') }}
+      </span></div></div>
     </div>
 
     <section class="dependency" *ngIf="status() as s">
@@ -53,6 +58,92 @@ import { CephPlan, CephService, CephStatus } from '../core/ceph.service';
         <strong>보안 경계:</strong> provider export는 허용된 ConfigMap·제한된 CSI Secret·StorageClass만 통과합니다. 원문 자격 증명은 Console/Backbone에 저장하지 않고 대상 Kubernetes Secret에만 기록됩니다. 외부 Ceph pool·filesystem·data는 생성하거나 삭제하지 않습니다.
       </span></div></div>
     </div>
+
+    <section class="readiness-board" *ngIf="status() as s">
+      <div class="card-head">
+        <div><h2>외부 Ceph 연결 준비</h2><p>Consumer Kubernetes와 Provider Ceph의 조건을 모두 충족해야 연결을 시작할 수 있습니다.</p></div>
+        <span class="label" [class.label-success]="s.ownerPrerequisites?.ready" [class.label-warning]="!s.ownerPrerequisites?.ready">
+          {{ s.ownerPrerequisites?.ready ? 'Consumer Ready' : 'Consumer 준비 필요' }}
+        </span>
+      </div>
+      <div class="readiness-grid">
+        <article class="readiness-panel">
+          <h3>Consumer Kubernetes 실측</h3>
+          <ul class="status-checks">
+            <li>
+              <span class="status-dot" [class.ready]="s.kubernetes.ready"></span>
+              <span><strong>Kubernetes</strong><small>{{ s.kubernetes.readyNodes || 0 }}/{{ s.kubernetes.nodes || 0 }} nodes Ready</small></span>
+              <a *ngIf="!s.kubernetes.ready" class="prereq-action" href="/p/cluster-manager">상태 점검</a>
+            </li>
+            <li>
+              <span class="status-dot" [class.ready]="consumerNamespacesReady(s)"></span>
+              <span><strong>전용 namespace</strong><small>rook-ceph · opensphere-ceph-imports</small></span>
+              <a *ngIf="!consumerNamespacesReady(s)" class="prereq-action" href="/manage/change-control?template=ceph-rook-prerequisite&amp;source=runtime-owner">일괄 설치 요청</a>
+            </li>
+            <li>
+              <span class="status-dot" [class.ready]="s.ownerPrerequisites?.cephClusterCrdReady"></span>
+              <span><strong>CephCluster CRD</strong><small>signed platform release가 사전 설치</small></span>
+              <a *ngIf="!s.ownerPrerequisites?.cephClusterCrdReady" class="prereq-action" href="/manage/change-control?template=ceph-rook-prerequisite&amp;source=crd">CRD 설치 요청</a>
+            </li>
+            <li>
+              <span class="status-dot" [class.ready]="s.ownerPrerequisites?.operatorReady"></span>
+              <span><strong>Rook operator {{ providerGuide(s).rookVersion }}</strong><small>rook-ceph namespace에서 Ready</small></span>
+              <a *ngIf="!s.ownerPrerequisites?.operatorReady" class="prereq-action" href="/manage/change-control?template=ceph-rook-prerequisite&amp;source=operator">Operator 설치 요청</a>
+            </li>
+            <li>
+              <span class="status-dot" [class.ready]="s.ownerPrerequisites?.missingPermissions?.length === 0"></span>
+              <span><strong>Cluster Manager RBAC</strong><small>{{ s.ownerPrerequisites?.missingPermissions?.length || 0 }}개 누락</small></span>
+              <a *ngIf="(s.ownerPrerequisites?.missingPermissions?.length || 0) > 0" class="prereq-action" href="/manage/change-control?template=ceph-rook-prerequisite&amp;source=runtime-rbac">RBAC 적용 요청</a>
+            </li>
+            <li>
+              <span class="status-dot optional" [class.ready]="s.ownerPrerequisites?.snapshotApiReady"></span>
+              <span><strong>VolumeSnapshot API</strong><small>선택 사항 · 없으면 snapshot class 생성을 생략</small></span>
+              <a *ngIf="!s.ownerPrerequisites?.snapshotApiReady" class="prereq-action optional" href="/manage/change-control">설치 검토</a>
+            </li>
+          </ul>
+          <div *ngIf="s.ownerPrerequisites?.ready === false" class="prereq-next">
+            <p><strong>설치가 필요한가요?</strong> Rook·CRD·RBAC는 브라우저에서 임의 Helm 명령으로 설치하지 않고, 서명된 플랫폼 변경으로 요청·승인·적용합니다.</p>
+            <div>
+              <a class="btn btn-sm btn-outline" href="/manual?doc=help-center%2Fperspective-02-k8s-cluster-ceph">설치 가이드</a>
+              <a class="btn btn-sm btn-primary" href="/manage/change-control?template=ceph-rook-prerequisite&amp;source=readiness">Rook 선행요소 설치 요청</a>
+              <button class="btn btn-sm btn-outline" type="button" [disabled]="loading() || busy()" (click)="load()">설치 후 다시 검사</button>
+            </div>
+          </div>
+          <div *ngIf="s.ownerPrerequisites?.blockers?.length" class="blocker-list">
+            <strong>현재 차단 사유</strong>
+            <ul><li *ngFor="let blocker of s.ownerPrerequisites.blockers">{{ blocker }}</li></ul>
+          </div>
+        </article>
+
+        <article class="readiness-panel">
+          <h3>대상 Ceph에서 받아야 할 정보</h3>
+          <dl class="provider-info">
+            <ng-container *ngFor="let item of providerGuide(s).requiredInformation">
+              <dt>{{ item.label }} <span *ngIf="item.secret" class="label label-info">민감</span></dt>
+              <dd>{{ item.description }}</dd>
+            </ng-container>
+          </dl>
+          <p class="scope-note"><strong>입력하지 않는 정보:</strong> {{ providerGuide(s).unsupportedInputs.join(' · ') }}</p>
+        </article>
+      </div>
+
+      <article class="provider-preparation">
+        <h3>대상 Ceph 필수 준비</h3>
+        <div class="preparation-grid">
+          <div *ngFor="let item of providerGuide(s).requiredPreparation">
+            <strong>{{ item.label }}</strong><span>{{ item.description }}</span>
+          </div>
+        </div>
+        <div class="network-contract">
+          <strong>필수 네트워크</strong>
+          <span>모든 Kubernetes node → MON TCP {{ providerGuide(s).network.monitorTcpPorts.join('/') }}, OSD·MDS public TCP {{ providerGuide(s).network.cephDaemonTcpRange }}</span>
+        </div>
+        <div class="command-block">
+          <span>Provider Ceph 관리자 실행 예시 · RBD 또는 CephFS 인자를 실제 이름으로 확정</span>
+          <code>{{ providerGuide(s).export.commandTemplate }}</code>
+        </div>
+      </article>
+    </section>
 
     <ng-container *ngIf="status() as s">
       <section class="connection-card" *ngIf="s.connection as connection; else emptyConnection">
@@ -94,7 +185,7 @@ import { CephPlan, CephService, CephStatus } from '../core/ceph.service';
         <section class="empty-state">
           <h2>외부 Ceph이 아직 연결되지 않았습니다</h2>
           <p>Kubernetes가 Ready인 경우 Ceph 관리자가 생성한 Rook provider export JSON으로 연결할 수 있습니다.</p>
-          <button class="btn btn-primary" type="button" [disabled]="!s.kubernetes.ready || busy()" (click)="openConnect()">연결 Wizard 시작</button>
+          <button class="btn btn-primary" type="button" [disabled]="!s.kubernetes.ready || s.ownerPrerequisites?.ready !== true || busy()" (click)="openConnect()">연결 Wizard 시작</button>
         </section>
       </ng-template>
     </ng-container>
@@ -109,8 +200,8 @@ import { CephPlan, CephService, CephStatus } from '../core/ceph.service';
         </ol>
 
         <section *ngIf="step() === 1" class="wizard-step">
-          <h4>1. 부모 Kubernetes 클러스터 확인</h4>
-          <p>Ceph 연결 리소스는 아래 Kubernetes 클러스터에만 설치됩니다. Console 자체에는 Ceph credential을 마운트하지 않습니다.</p>
+          <h4>1. Consumer와 Provider 연결 준비 확인</h4>
+          <p>Ceph 연결 리소스는 아래 Kubernetes 클러스터에만 설치됩니다. 대상 Ceph 관리자와 함께 storage·network·최소권한 export 준비를 확인하십시오.</p>
           <dl *ngIf="status() as s" class="connection-meta">
             <dt>Cluster fingerprint</dt><dd>{{ s.kubernetes.id }}</dd>
             <dt>Version</dt><dd>{{ s.kubernetes.version }}</dd>
@@ -119,6 +210,15 @@ import { CephPlan, CephService, CephStatus } from '../core/ceph.service';
           <div class="alert alert-danger" *ngIf="status()?.kubernetes?.ready !== true">
             <div class="alert-items"><div class="alert-item static"><span class="alert-text">Kubernetes가 Ready가 아니므로 Ceph 연결을 진행할 수 없습니다.</span></div></div>
           </div>
+          <div class="alert alert-danger" *ngIf="status()?.ownerPrerequisites?.ready !== true">
+            <div class="alert-items"><div class="alert-item static"><span class="alert-text">Rook namespace·CRD·operator·runtime RBAC가 준비되지 않아 연결을 진행할 수 없습니다.</span></div></div>
+          </div>
+          <fieldset class="prep-confirmations">
+            <legend>Provider Ceph 확인</legend>
+            <label><input type="checkbox" name="providerStorageConfirmed" [(ngModel)]="providerStorageConfirmed"> Ceph health, RBD pool 초기화 및/또는 CephFS/MDS Active를 확인했습니다.</label>
+            <label><input type="checkbox" name="providerNetworkConfirmed" [(ngModel)]="providerNetworkConfirmed"> 모든 Kubernetes node에서 MON 3300/6789 및 OSD·MDS 6800-7568/TCP 경로를 확인했습니다.</label>
+            <label><input type="checkbox" name="providerExportConfirmed" [(ngModel)]="providerExportConfirmed"> consumer 전용 cluster name과 restricted auth로 생성한 Rook {{ providerGuide(status()).rookVersion }} JSON export를 준비했습니다.</label>
+          </fieldset>
         </section>
 
         <section *ngIf="step() === 2" class="wizard-step">
@@ -141,6 +241,7 @@ import { CephPlan, CephService, CephStatus } from '../core/ceph.service';
             <dt>Namespace</dt><dd>{{ p.namespace }}</dd>
             <dt>FSID fingerprint</dt><dd><code>{{ p.fsidFingerprint }}</code></dd>
             <dt>MON endpoints</dt><dd>{{ p.monitorCount }}개</dd>
+            <dt>MON protocol</dt><dd>{{ (p.monitorProtocols || ['unknown']).join(' · ') }}</dd>
             <dt>Charts</dt><dd><span *ngFor="let chart of p.charts">{{ chart.chart }} {{ chart.version }} · </span></dd>
             <dt>Storage</dt><dd><span *ngFor="let storage of p.storage">{{ storage.name }} → {{ storage.pool }}{{ storage.filesystem ? ' / ' + storage.filesystem : '' }} · </span></dd>
             <dt>Snapshots</dt><dd>{{ p.snapshotSupported ? 'VolumeSnapshotClass 생성' : 'Snapshot API 미설치 — 생성 보류' }}</dd>
@@ -160,13 +261,20 @@ import { CephPlan, CephService, CephStatus } from '../core/ceph.service';
               <textarea clrTextarea name="connectReason" [(ngModel)]="connectReason" required minlength="8" maxlength="500" placeholder="승인 근거와 연결 목적(8자 이상)"></textarea>
             </clr-textarea-container>
           </form>
+          <div class="alert alert-info" *ngIf="stagedImportRef() as importRef">
+            <div class="alert-items"><div class="alert-item static"><span class="alert-text">
+              OAA 인계용 SecretRef가 생성되었습니다: <code>{{ importRef }}</code><br>
+              이 참조만 OAA 대화에 전달하십시오. provider export 원문은 전달하지 마십시오. 사용하지 않은 import는 1시간 후 만료·정리됩니다.
+            </span></div></div>
+          </div>
         </section>
       </div>
       <div class="modal-footer">
         <button class="btn btn-outline" type="button" [disabled]="busy()" (click)="connectOpen = false">취소</button>
         <button *ngIf="step() > 1" class="btn btn-outline" type="button" [disabled]="busy() || planLoading()" (click)="back()">이전</button>
-        <button *ngIf="step() === 1" class="btn btn-primary" type="button" [disabled]="status()?.kubernetes?.ready !== true" (click)="step.set(2)">다음</button>
+        <button *ngIf="step() === 1" class="btn btn-primary" type="button" [disabled]="status()?.kubernetes?.ready !== true || status()?.ownerPrerequisites?.ready !== true || !providerPreparationConfirmed()" (click)="step.set(2)">다음</button>
         <button *ngIf="step() === 2" class="btn btn-primary" type="button" [disabled]="providerExport.trim().length < 20 || planLoading()" (click)="validatePlan()">검증 및 계획</button>
+        <button *ngIf="step() === 3" class="btn btn-outline" type="button" [disabled]="busy() || connectReason.trim().length < 8 || !!stagedImportRef()" (click)="stageForOaa()">OAA 인계용 import 생성</button>
         <button *ngIf="step() === 3" class="btn btn-primary" type="button" [disabled]="busy() || connectReason.trim().length < 8" (click)="connect()">연결 실행</button>
       </div>
     </clr-modal>
@@ -184,14 +292,14 @@ import { CephPlan, CephService, CephStatus } from '../core/ceph.service';
           </clr-textarea-container>
           <clr-input-container>
             <label>확인 값</label>
-            <input clrInput name="disconnectConfirm" [(ngModel)]="disconnectConfirm" autocomplete="off" placeholder="DISCONNECT">
-            <clr-control-helper>DISCONNECT를 정확히 입력하십시오.</clr-control-helper>
+            <input clrInput name="disconnectConfirm" [(ngModel)]="disconnectConfirm" autocomplete="off" placeholder="disconnect Ceph external storage">
+            <clr-control-helper>disconnect Ceph external storage를 정확히 입력하십시오.</clr-control-helper>
           </clr-input-container>
         </form>
       </div>
       <div class="modal-footer">
         <button class="btn btn-outline" type="button" [disabled]="busy()" (click)="disconnectOpen = false">취소</button>
-        <button class="btn btn-danger" type="button" [disabled]="busy() || disconnectReason.trim().length < 8 || disconnectConfirm !== 'DISCONNECT'" (click)="disconnect()">안전하게 연결 해제</button>
+        <button class="btn btn-danger" type="button" [disabled]="busy() || disconnectReason.trim().length < 8 || disconnectConfirm !== 'disconnect Ceph external storage'" (click)="disconnect()">안전하게 연결 해제</button>
       </div>
     </clr-modal>
   `,
@@ -218,7 +326,7 @@ import { CephPlan, CephService, CephStatus } from '../core/ceph.service';
     .cm-ceph-summary { margin: 0; max-width: 63rem; color: #565656; line-height: 1.5; }
     .cm-ceph-eyebrow { margin: 0; color: #4c6fff; font-size: 0.65rem; font-weight: 600; line-height: 1.5; letter-spacing: 0.06em; text-transform: uppercase; }
     .cm-ceph-page-head__actions { display: flex; gap: 0.35rem; flex: 0 0 auto; }
-    .dependency, .connection-card, .empty-state { border: 1px solid #d8d8d8; background: #fff; padding: 0.85rem 1rem; margin-bottom: 0.8rem; }
+    .dependency, .connection-card, .empty-state, .readiness-board { border: 1px solid #d8d8d8; background: #fff; padding: 0.85rem 1rem; margin-bottom: 0.8rem; }
     .dependency-title { display: grid; grid-template-columns: 1.6rem minmax(0, 1fr) auto; gap: 0.6rem; align-items: center; }
     .dependency-title > div { display: flex; flex-direction: column; gap: 0.12rem; }
     .dependency-title span:not(.label):not(.sequence) { color: #6f6f6f; font-size: 0.66rem; }
@@ -233,6 +341,42 @@ import { CephPlan, CephService, CephStatus } from '../core/ceph.service';
     .card-head p { margin: 0.15rem 0 0; color: #6f6f6f; }
     .empty-state { text-align: center; padding: 2rem; }
     .empty-state p { color: #6f6f6f; }
+    .readiness-board h2 { margin: 0; font-size: 1rem; }
+    .readiness-board h3 { margin: 0 0 0.65rem; font-size: 0.8rem; color: #2d4048; }
+    .readiness-grid { display: grid; grid-template-columns: minmax(18rem, 0.9fr) minmax(24rem, 1.1fr); gap: 0.8rem; margin-top: 0.85rem; }
+    .readiness-panel, .provider-preparation { border: 1px solid #e3e6e8; padding: 0.8rem; background: #fafbfc; }
+    .status-checks { display: grid; gap: 0.45rem; margin: 0; padding: 0; list-style: none; }
+    .status-checks li { display: grid; grid-template-columns: 0.7rem minmax(0, 1fr) auto; gap: 0.5rem; align-items: start; }
+    .status-checks li > span:nth-child(2) { display: flex; flex-direction: column; gap: 0.08rem; }
+    .status-checks small { color: #6f6f6f; }
+    .status-dot { width: 0.55rem; height: 0.55rem; margin-top: 0.25rem; border-radius: 50%; background: #c92100; box-shadow: 0 0 0 2px #fff, 0 0 0 3px #c92100; }
+    .status-dot.ready { background: #318700; box-shadow: 0 0 0 2px #fff, 0 0 0 3px #318700; }
+    .status-dot.optional:not(.ready) { background: #f0a228; box-shadow: 0 0 0 2px #fff, 0 0 0 3px #f0a228; }
+    .prereq-action { color: #0065ab; font-size: 0.62rem; font-weight: 600; text-decoration: none; white-space: nowrap; }
+    .prereq-action:hover { text-decoration: underline; }
+    .prereq-action.optional { color: #805a00; }
+    .prereq-next { margin-top: 0.75rem; padding: 0.65rem; border: 1px solid #b8d8f0; background: #eef7fc; }
+    .prereq-next p { margin: 0 0 0.55rem; color: #3a4d55; line-height: 1.45; }
+    .prereq-next > div { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+    .prereq-next .btn { margin: 0; }
+    .provider-info { display: grid; grid-template-columns: 10rem minmax(0, 1fr); gap: 0.4rem 0.7rem; margin: 0; }
+    .provider-info dt { font-size: 0.68rem; }
+    .provider-info dd { color: #565656; }
+    .provider-info .label { margin-left: 0.25rem; vertical-align: middle; }
+    .scope-note { margin: 0.75rem 0 0; padding-top: 0.6rem; border-top: 1px solid #e3e6e8; color: #565656; }
+    .blocker-list { margin-top: 0.75rem; padding: 0.55rem; background: #fff3f0; color: #8a1f11; }
+    .blocker-list ul { margin: 0.3rem 0 0 1rem; padding: 0; }
+    .provider-preparation { margin-top: 0.8rem; }
+    .preparation-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.55rem; }
+    .preparation-grid > div { display: flex; flex-direction: column; gap: 0.12rem; padding-left: 0.65rem; border-left: 3px solid #4c6fff; }
+    .preparation-grid span { color: #565656; }
+    .network-contract { display: flex; flex-wrap: wrap; gap: 0.35rem 0.7rem; margin-top: 0.75rem; padding: 0.55rem 0.65rem; background: #eaf4ff; }
+    .command-block { display: grid; gap: 0.35rem; margin-top: 0.75rem; }
+    .command-block span { color: #565656; }
+    .command-block code { display: block; padding: 0.65rem; overflow-x: auto; background: #1b2a32; color: #eef5f7; white-space: nowrap; }
+    .prep-confirmations { display: grid; gap: 0.55rem; margin-top: 0.8rem; padding: 0.75rem; border: 1px solid #d8d8d8; }
+    .prep-confirmations legend { padding: 0 0.3rem; font-weight: 600; color: #3a4d55; }
+    .prep-confirmations label { display: grid; grid-template-columns: 1rem minmax(0, 1fr); gap: 0.45rem; align-items: start; }
     .wizard-progress { display: grid; grid-template-columns: repeat(3, 1fr); padding: 0; margin: 0 0 1rem; list-style: none; counter-reset: step; }
     .wizard-progress li { padding: 0.45rem 0.5rem; border-bottom: 3px solid #d8d8d8; color: #6f6f6f; font-size: 0.68rem; }
     .wizard-progress li.active { border-color: #4c6fff; color: #1b2a32; font-weight: 600; }
@@ -244,8 +388,11 @@ import { CephPlan, CephService, CephStatus } from '../core/ceph.service';
     code { font-size: 0.63rem; }
     @media (max-width: 62rem) {
       .cm-ceph-page-head, .card-head { flex-direction: column; }
+      .readiness-grid, .preparation-grid { grid-template-columns: 1fr; }
       .dependency dl, .connection-meta { grid-template-columns: 1fr; }
       .resource-list > div { grid-template-columns: 1fr; }
+      .status-checks li { grid-template-columns: 0.7rem minmax(0, 1fr); }
+      .prereq-action { grid-column: 2; justify-self: start; }
     }
   `],
 })
@@ -259,12 +406,16 @@ export class CephClustersComponent implements OnInit {
   readonly error = signal('');
   readonly notice = signal('');
   readonly step = signal(1);
+  readonly stagedImportRef = signal('');
   connectOpen = false;
   disconnectOpen = false;
   providerExport = '';
   connectReason = '';
   disconnectReason = '';
   disconnectConfirm = '';
+  providerStorageConfirmed = false;
+  providerNetworkConfirmed = false;
+  providerExportConfirmed = false;
 
   ngOnInit(): void { this.load(); }
 
@@ -282,8 +433,24 @@ export class CephClustersComponent implements OnInit {
     this.plan.set(null);
     this.providerExport = '';
     this.connectReason = '';
+    this.stagedImportRef.set('');
+    this.providerStorageConfirmed = false;
+    this.providerNetworkConfirmed = false;
+    this.providerExportConfirmed = false;
     this.error.set('');
     this.connectOpen = true;
+  }
+
+  providerGuide(status: CephStatus | null): CephProviderGuide {
+    return status?.providerGuide || CEPH_PROVIDER_GUIDE;
+  }
+
+  consumerNamespacesReady(status: CephStatus): boolean {
+    return Boolean(status.ownerPrerequisites?.namespaces?.runtime && status.ownerPrerequisites.namespaces.imports);
+  }
+
+  providerPreparationConfirmed(): boolean {
+    return this.providerStorageConfirmed && this.providerNetworkConfirmed && this.providerExportConfirmed;
   }
 
   back(): void {
@@ -304,9 +471,13 @@ export class CephClustersComponent implements OnInit {
     if (!this.plan() || this.connectReason.trim().length < 8) return;
     this.busy.set(true);
     this.error.set('');
-    this.ceph.connect(this.providerExport, this.connectReason.trim()).subscribe({
+    const request = this.stagedImportRef()
+      ? this.ceph.connectImport(this.stagedImportRef(), this.connectReason.trim())
+      : this.ceph.connect(this.providerExport, this.connectReason.trim());
+    request.subscribe({
       next: (result) => {
         this.providerExport = '';
+        this.stagedImportRef.set('');
         this.busy.set(false);
         this.connectOpen = false;
         this.notice.set('외부 Ceph 연결 리소스 설치와 실제 연결 검증이 완료되었습니다.');
@@ -321,6 +492,21 @@ export class CephClustersComponent implements OnInit {
     });
   }
 
+  stageForOaa(): void {
+    if (!this.plan() || this.connectReason.trim().length < 8 || this.stagedImportRef()) return;
+    this.busy.set(true);
+    this.error.set('');
+    this.ceph.stage(this.providerExport, this.connectReason.trim()).subscribe({
+      next: (staged) => {
+        this.providerExport = '';
+        this.busy.set(false);
+        this.stagedImportRef.set(staged.importRef);
+        this.notice.set('Ceph provider export를 전용 Kubernetes Secret에 staging했습니다. 화면의 SecretRef만 OAA에 전달하십시오.');
+      },
+      error: (failure) => { this.busy.set(false); this.error.set(this.message(failure)); },
+    });
+  }
+
   openDisconnect(): void {
     this.disconnectReason = '';
     this.disconnectConfirm = '';
@@ -329,10 +515,10 @@ export class CephClustersComponent implements OnInit {
   }
 
   disconnect(): void {
-    if (this.disconnectReason.trim().length < 8 || this.disconnectConfirm !== 'DISCONNECT') return;
+    if (this.disconnectReason.trim().length < 8 || this.disconnectConfirm !== 'disconnect Ceph external storage') return;
     this.busy.set(true);
     this.error.set('');
-    this.ceph.disconnect(this.disconnectReason.trim(), this.disconnectConfirm).subscribe({
+    this.ceph.disconnect(this.disconnectReason.trim()).subscribe({
       next: (result) => {
         this.busy.set(false);
         this.disconnectOpen = false;

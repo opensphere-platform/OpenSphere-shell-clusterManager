@@ -1,0 +1,101 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ceph-prerequisite-reconciler
+  namespace: opensphere-console
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ceph-prerequisite-reconciler
+rules:
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [get, create]
+  - apiGroups: [""]
+    resources: [serviceaccounts, configmaps, secrets]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [roles, rolebindings, clusterroles, clusterrolebindings]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [apiextensions.k8s.io]
+    resources: [customresourcedefinitions]
+    verbs: [get, list, watch, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ceph-prerequisite-reconciler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ceph-prerequisite-reconciler
+subjects:
+  - kind: ServiceAccount
+    name: ceph-prerequisite-reconciler
+    namespace: opensphere-console
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ceph-prerequisite-reconciler
+  namespace: opensphere-console
+  labels: { app: ceph-prerequisite-reconciler }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: ceph-prerequisite-reconciler } }
+  strategy: { type: Recreate }
+  template:
+    metadata: { labels: { app: ceph-prerequisite-reconciler } }
+    spec:
+      serviceAccountName: ceph-prerequisite-reconciler
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: reconciler
+          image: ghcr.io/opensphere-platform/opensphere-shell-cluster-manager@sha256:5ad64e012d3d2d2311558540a458c669e9193aa6d1b1e8f928940653c0d68eb3
+          imagePullPolicy: IfNotPresent
+          command: [node, /app/ceph-prerequisite-reconciler.js]
+          ports: [{ name: http, containerPort: 8080 }]
+          env:
+            - { name: GITEA_PATH, value: ceph-prerequisites }
+            - { name: GITEA_ORGANIZATION, value: opensphere }
+            - { name: GITEA_REPOSITORY, value: platform-declarations }
+            - name: GITEA_TOKEN
+              valueFrom: { secretKeyRef: { name: opensphere-gitea-control-plane, key: token } }
+            - name: RECONCILER_TOKEN
+              valueFrom: { secretKeyRef: { name: opensphere-gitea-control-plane, key: reconciler-token } }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+          readinessProbe: { httpGet: { path: /readyz, port: http }, initialDelaySeconds: 3, periodSeconds: 10 }
+          livenessProbe: { httpGet: { path: /healthz, port: http }, initialDelaySeconds: 10, periodSeconds: 20 }
+          resources:
+            requests: { cpu: 25m, memory: 64Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ceph-prerequisite-reconciler
+  namespace: opensphere-console
+spec:
+  selector: { app: ceph-prerequisite-reconciler }
+  ports: [{ name: http, port: 8080, targetPort: http }]

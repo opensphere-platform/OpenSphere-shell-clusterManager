@@ -5,11 +5,16 @@ const os = require('os');
 const net = require('net');
 const dns = require('dns').promises;
 const path = require('path');
+const { createHash } = require('crypto');
 const { spawn } = require('child_process');
 const yaml = require('js-yaml');
 const { HIS_CATALOG, catalogItem } = require('./his-catalog');
+const { hisTelemetryManifests } = require('./his-telemetry-manifests');
 
-const ADMIN_GROUP = 'opensphere-console-admins';
+const ADMIN_GROUPS = new Set(
+  String(process.env.CONSOLE_ADMIN_GROUPS || 'console-admins,opensphere-console-admins')
+    .split(',').map((value) => value.trim()).filter(Boolean),
+);
 const MAX_BODY = 256 * 1024;
 const MAX_OUTPUT = 1024 * 1024;
 const HELM_TIMEOUT_MS = 12 * 60 * 1000;
@@ -21,6 +26,10 @@ const OBSERVABILITY_CONFIG_NAME = 'opensphere-his-config-kube-prometheus-stack';
 const PROFILE_SELECTION_CONFIG_NAME = 'opensphere-his-profile-selection';
 const OBSERVABILITY_RESET_CONFIRMATION = 'RESET OBSERVABILITY DATA';
 const OBSERVABILITY_PUBLIC_CONFIRMATION = 'ENABLE PUBLIC GRAFANA';
+const OAA_HIS_READ_PERMISSION = 'console.his.read';
+const OAA_HIS_MANAGE_PERMISSION = 'console.his.manage';
+const LOKI_QUERY_URL = (process.env.HIS_LOKI_URL || 'http://opensphere-his-loki.monitoring.svc:3100').replace(/\/$/, '');
+const TEMPO_QUERY_URL = (process.env.HIS_TEMPO_URL || 'http://opensphere-his-tempo.monitoring.svc:3200').replace(/\/$/, '');
 const OIDC_SECRET_KEYS = Object.freeze([
   'GF_AUTH_GENERIC_OAUTH_CLIENT_ID',
   'GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET',
@@ -47,6 +56,13 @@ const DEFAULT_OBSERVABILITY_CONFIG = Object.freeze({
     tlsSecretName: '',
     oidcSecretName: '',
     allowedCidrs: Object.freeze([]),
+  }),
+  telemetry: Object.freeze({
+    enabled: true,
+    retention: '168h',
+    storageClassName: '',
+    lokiStorageSize: '10Gi',
+    tempoStorageSize: '10Gi',
   }),
 });
 
@@ -110,6 +126,7 @@ function validateObservabilityConfig(input) {
   const prometheus = source.prometheus || {};
   const alertmanager = source.alertmanager || {};
   const grafana = source.grafana || {};
+  const telemetry = source.telemetry || {};
   const remoteWrite = prometheus.remoteWrite || {};
   const exposureMode = String(grafana.exposureMode || DEFAULT_OBSERVABILITY_CONFIG.grafana.exposureMode);
   if (!['ClusterInternal', 'PrivateIngress', 'PublicIngress'].includes(exposureMode)) {
@@ -148,11 +165,57 @@ function validateObservabilityConfig(input) {
         ? [...new Set((Array.isArray(grafana.allowedCidrs) ? grafana.allowedCidrs : []).map(cidrValue))]
         : [],
     },
+    telemetry: {
+      enabled: telemetry.enabled !== false,
+      retention: durationValue(telemetry.retention || DEFAULT_OBSERVABILITY_CONFIG.telemetry.retention, 'Telemetry'),
+      storageClassName: k8sName(telemetry.storageClassName, 'Telemetry StorageClass', true),
+      lokiStorageSize: storageQuantity(telemetry.lokiStorageSize || DEFAULT_OBSERVABILITY_CONFIG.telemetry.lokiStorageSize, 'Loki').text,
+      tempoStorageSize: storageQuantity(telemetry.tempoStorageSize || DEFAULT_OBSERVABILITY_CONFIG.telemetry.tempoStorageSize, 'Tempo').text,
+    },
   };
   if (exposureMode === 'PrivateIngress' && !config.grafana.allowedCidrs.length) {
     throw Object.assign(new Error('Private Ingress에는 하나 이상의 허용 CIDR이 필요합니다.'), { code: 400 });
   }
   return config;
+}
+
+function requireClosedObject(input, allowedKeys, label) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw Object.assign(new Error(`${label} 값은 object여야 합니다.`), { code: 400 });
+  }
+  const extraKeys = Object.keys(input).filter((key) => !allowedKeys.includes(key));
+  if (extraKeys.length) {
+    throw Object.assign(new Error(`${label}에 허용되지 않은 필드가 있습니다: ${extraKeys.join(', ')}`), { code: 400 });
+  }
+  return input;
+}
+
+function normalizeOaaObservabilityConfig(input) {
+  const source = requireClosedObject(input, ['schemaVersion', 'prometheus', 'alertmanager', 'grafana', 'telemetry'], 'config');
+  if (source.schemaVersion !== undefined && source.schemaVersion !== 1) {
+    throw Object.assign(new Error('config.schemaVersion은 1이어야 합니다.'), { code: 400 });
+  }
+  if (source.prometheus !== undefined) {
+    requireClosedObject(source.prometheus, ['retention', 'storageClassName', 'storageSize', 'remoteWrite'], 'config.prometheus');
+    if (source.prometheus.remoteWrite !== undefined) {
+      requireClosedObject(source.prometheus.remoteWrite, ['enabled', 'url', 'secretName', 'secretKey'], 'config.prometheus.remoteWrite');
+    }
+  }
+  if (source.alertmanager !== undefined) {
+    requireClosedObject(source.alertmanager, ['retention', 'storageClassName', 'storageSize'], 'config.alertmanager');
+  }
+  if (source.grafana !== undefined) {
+    requireClosedObject(source.grafana, ['storageClassName', 'storageSize', 'exposureMode', 'hostname', 'ingressClassName', 'ingressNamespace', 'tlsSecretName', 'oidcSecretName', 'allowedCidrs'], 'config.grafana');
+  }
+  if (source.telemetry !== undefined) {
+    requireClosedObject(source.telemetry, ['enabled', 'retention', 'storageClassName', 'lokiStorageSize', 'tempoStorageSize'], 'config.telemetry');
+  }
+  return validateObservabilityConfig(source);
+}
+
+function oaaObservabilityConfirmation(config, resetData) {
+  const publicExposure = config.grafana.exposureMode === 'PublicIngress';
+  return `configure HIS observability public=${publicExposure} data-reset=${Boolean(resetData)}`;
 }
 
 function observabilityValues(rawConfig) {
@@ -251,6 +314,7 @@ function observabilityValues(rawConfig) {
       networkPolicy('alertmanager', 'alertmanager', [
         { protocol: 'TCP', port: 9093 }, { protocol: 'TCP', port: 9094 }, { protocol: 'UDP', port: 9094 },
       ]),
+      ...hisTelemetryManifests(config.telemetry),
     ],
   };
 }
@@ -458,7 +522,7 @@ function evaluateStorageContract(storageClasses = [], csiDrivers = [], pvcs = []
 function validationCanaryName(itemId) {
   return itemId === 'cluster-network' ? 'Cross-node / egress traffic'
     : itemId === 'cluster-dns' ? 'Node-wide DNS resolution'
-      : itemId === OBSERVABILITY_ITEM_ID ? 'Scrape/alert delivery'
+      : itemId === OBSERVABILITY_ITEM_ID ? 'Metrics / logs / traces delivery'
         : itemId === 'storage' ? 'Dynamic provision/bind'
           : itemId === 'csi-snapshot' ? 'Snapshot → restore' : '';
 }
@@ -845,6 +909,8 @@ async function probe(ctx, name) {
     }
   }
   if (name === 'kubePrometheusStack') {
+    const storedObservabilityConfig = await readObservabilityConfig(ctx);
+    const telemetryEnabled = storedObservabilityConfig?.telemetry?.enabled !== false;
     const crdNames = [
       'alertmanagerconfigs.monitoring.coreos.com',
       'alertmanagers.monitoring.coreos.com',
@@ -879,6 +945,11 @@ async function probe(ctx, name) {
       { name: 'Prometheus', kind: 'StatefulSet', item: find(statefulSetItems, /^prometheus-/i), ready: readyStatefulSet },
       { name: 'Alertmanager', kind: 'StatefulSet', item: find(statefulSetItems, /^alertmanager-/i), ready: readyStatefulSet },
       { name: 'node-exporter', kind: 'DaemonSet', item: find(daemonSetItems, /node-exporter/i), ready: readyDaemonSet },
+      ...(telemetryEnabled ? [
+        { name: 'Loki', kind: 'Deployment', item: find(deploymentItems, /^opensphere-his-loki$/i), ready: availableDeployment },
+        { name: 'Tempo', kind: 'Deployment', item: find(deploymentItems, /^opensphere-his-tempo$/i), ready: availableDeployment },
+        { name: 'OTLP Collector', kind: 'Deployment', item: find(deploymentItems, /^opensphere-his-otel-collector$/i), ready: availableDeployment },
+      ] : []),
     ];
     const present = components.filter((component) => component.item);
     const ready = components.filter((component) => component.item && component.ready(component.item));
@@ -924,7 +995,7 @@ async function probe(ctx, name) {
         capacity: pvc.status?.capacity?.storage || '',
         storageClass: pvc.spec?.storageClassName || '',
       })),
-      services: (serviceList.items || []).filter((service) => /kube-prometheus-stack|prometheus|alertmanager|grafana/i.test(service.metadata?.name || '')).map((service) => ({
+      services: (serviceList.items || []).filter((service) => /kube-prometheus-stack|prometheus|alertmanager|grafana|opensphere-his-(loki|tempo|otel-collector)/i.test(service.metadata?.name || '')).map((service) => ({
         name: service.metadata?.name || '',
         type: service.spec?.type || 'ClusterIP',
         clusterIP: service.spec?.clusterIP || '',
@@ -940,7 +1011,7 @@ async function probe(ctx, name) {
       security: ['Prometheus와 Alertmanager 직접 외부 공개 금지 · Grafana만 승인된 TLS/OIDC Ingress 허용'],
       canaries: [
         { name: 'Component readiness', state: ready.length === components.length ? 'Passed' : 'Failed', message: `${ready.length}/${components.length}` },
-        { name: 'Scrape/alert delivery', state: 'NotRun', message: 'on-demand synthetic alert canary가 필요합니다.' },
+        { name: 'Metrics / logs / traces delivery', state: 'NotRun', message: 'on-demand metric·alert·OTLP log·trace canary가 필요합니다.' },
       ],
       tables: [],
     };
@@ -1227,11 +1298,13 @@ function observabilityPvcComponent(name) {
   if (name === 'kube-prometheus-stack-grafana') return 'grafana';
   if (/^prometheus-.*-prometheus-0$/.test(name)) return 'prometheus';
   if (/^alertmanager-.*-alertmanager-0$/.test(name)) return 'alertmanager';
+  if (name === 'opensphere-his-loki-data') return 'loki';
+  if (name === 'opensphere-his-tempo-data') return 'tempo';
   return '';
 }
 
 async function observabilityLiveState(ctx) {
-  const [storageClassList, ingressClassList, pvcList, serviceList, ingressList, policyList, prometheusList, alertmanagerList] = await Promise.all([
+  const [storageClassList, ingressClassList, pvcList, serviceList, ingressList, policyList, prometheusList, alertmanagerList, deploymentList] = await Promise.all([
     k8sListOrEmpty(ctx, '/apis/storage.k8s.io/v1/storageclasses'),
     k8sListOrEmpty(ctx, '/apis/networking.k8s.io/v1/ingressclasses'),
     k8sListOrEmpty(ctx, '/api/v1/namespaces/monitoring/persistentvolumeclaims'),
@@ -1240,6 +1313,7 @@ async function observabilityLiveState(ctx) {
     k8sListOrEmpty(ctx, '/apis/networking.k8s.io/v1/namespaces/monitoring/networkpolicies'),
     k8sListOrEmpty(ctx, '/apis/monitoring.coreos.com/v1/namespaces/monitoring/prometheuses'),
     k8sListOrEmpty(ctx, '/apis/monitoring.coreos.com/v1/namespaces/monitoring/alertmanagers'),
+    k8sListOrEmpty(ctx, '/apis/apps/v1/namespaces/monitoring/deployments'),
   ]);
   const storageClasses = (storageClassList.items || []).map((storageClass) => ({
     name: storageClass.metadata?.name || '',
@@ -1271,6 +1345,7 @@ async function observabilityLiveState(ctx) {
   }).map((service) => service.metadata?.name || '');
   const prometheus = (prometheusList.items || []).find((item) => item.metadata?.name === 'kube-prometheus-stack-prometheus') || prometheusList.items?.[0] || null;
   const alertmanager = (alertmanagerList.items || []).find((item) => item.metadata?.name === 'kube-prometheus-stack-alertmanager') || alertmanagerList.items?.[0] || null;
+  const deploymentByName = new Map((deploymentList.items || []).map((item) => [item.metadata?.name || '', item]));
   return {
     installed: Boolean(prometheus || alertmanager || pvcs.grafana),
     storageClasses,
@@ -1298,6 +1373,11 @@ async function observabilityLiveState(ctx) {
     },
     networkPolicies: (policyList.items || []).filter((policy) => policy.metadata?.labels?.['opensphere.io/policy'] === 'observability-access').map((policy) => policy.metadata?.name || ''),
     directExternalServices,
+    telemetry: {
+      loki: availableDeployment(deploymentByName.get('opensphere-his-loki')),
+      tempo: availableDeployment(deploymentByName.get('opensphere-his-tempo')),
+      otlp: availableDeployment(deploymentByName.get('opensphere-his-otel-collector')),
+    },
   };
 }
 
@@ -1322,6 +1402,14 @@ function inferObservabilityConfig(live, stored) {
     config.grafana.ingressClassName = live.grafana.ingress.ingressClassName || 'nginx';
     config.grafana.tlsSecretName = live.grafana.ingress.tlsSecretName;
   }
+  if (live.pvcs.loki) {
+    config.telemetry.storageClassName = live.pvcs.loki.storageClassName;
+    config.telemetry.lokiStorageSize = live.pvcs.loki.requested || live.pvcs.loki.capacity || config.telemetry.lokiStorageSize;
+  }
+  if (live.pvcs.tempo) {
+    config.telemetry.storageClassName ||= live.pvcs.tempo.storageClassName;
+    config.telemetry.tempoStorageSize = live.pvcs.tempo.requested || live.pvcs.tempo.capacity || config.telemetry.tempoStorageSize;
+  }
   return validateObservabilityConfig(config);
 }
 
@@ -1344,6 +1432,11 @@ function flattenConfiguration(config) {
     'grafana.tlsSecretName': config.grafana.tlsSecretName || '—',
     'grafana.oidcSecretName': config.grafana.oidcSecretName || '—',
     'grafana.allowedCidrs': config.grafana.allowedCidrs.join(', ') || '—',
+    'telemetry.enabled': String(config.telemetry.enabled),
+    'telemetry.retention': config.telemetry.retention,
+    'telemetry.storageClassName': config.telemetry.storageClassName || '(cluster default)',
+    'telemetry.lokiStorageSize': config.telemetry.lokiStorageSize,
+    'telemetry.tempoStorageSize': config.telemetry.tempoStorageSize,
   };
 }
 
@@ -1382,6 +1475,26 @@ async function observabilityConfigurationPlan(ctx, rawConfig) {
     if (desiredSize.bytes > currentSize.bytes) {
       if (storageClass?.allowVolumeExpansion) resizeTargets.push({ component, pvcName: pvc.name, from: pvc.requested, to: desired[component].storageSize });
       else resetTargets.push(`${component}: '${desiredClassName}'이 온라인 확장을 지원하지 않아 ${pvc.requested} → ${desired[component].storageSize} 재배치 필요`);
+    }
+  }
+
+  if (desired.telemetry.enabled) {
+    const desiredClassName = desired.telemetry.storageClassName || defaultStorageClass?.name || '';
+    const storageClass = classByName.get(desiredClassName);
+    if (!desiredClassName) blockers.push('telemetry: 기본 StorageClass가 없으므로 명시적으로 선택해야 합니다.');
+    else if (!storageClass) blockers.push(`telemetry: StorageClass '${desiredClassName}'이 존재하지 않습니다.`);
+    else if (/local-path|hostpath/i.test(storageClass.provisioner)) warnings.push(`telemetry: '${desiredClassName}'은 노드 로컬 provisioner이므로 운영 내구성 저장소로 권장하지 않습니다.`);
+    for (const [component, field] of [['loki', 'lokiStorageSize'], ['tempo', 'tempoStorageSize']]) {
+      const pvc = live.pvcs[component];
+      if (!pvc) continue;
+      const desiredSize = storageQuantity(desired.telemetry[field], component);
+      const currentSize = storageQuantity(pvc.requested || pvc.capacity, component);
+      if (desiredClassName !== pvc.storageClassName) resetTargets.push(`${component}: StorageClass ${pvc.storageClassName} → ${desiredClassName}`);
+      if (desiredSize.bytes < currentSize.bytes) resetTargets.push(`${component}: 용량 축소 ${pvc.requested} → ${desired.telemetry[field]}`);
+      if (desiredSize.bytes > currentSize.bytes) {
+        if (storageClass?.allowVolumeExpansion) resizeTargets.push({ component, pvcName: pvc.name, from: pvc.requested, to: desired.telemetry[field] });
+        else resetTargets.push(`${component}: '${desiredClassName}'이 온라인 확장을 지원하지 않아 ${pvc.requested} → ${desired.telemetry[field]} 재배치 필요`);
+      }
     }
   }
 
@@ -1728,8 +1841,21 @@ function assertManagedItem(body) {
 async function actorFor(ctx, req, adminRequired) {
   const actor = await ctx.verifyToken(ctx.requestToken(req));
   const groups = Array.isArray(actor.groups) ? actor.groups : [];
-  if (adminRequired && !groups.includes(ADMIN_GROUP)) {
+  if (adminRequired && !groups.some((group) => ADMIN_GROUPS.has(group))) {
     throw Object.assign(new Error('HIS 변경은 Console 관리자만 수행할 수 있습니다.'), { code: 403 });
+  }
+  return actor;
+}
+
+async function actorForOaaOwner(ctx, req, mutation) {
+  const actor = await ctx.verifyToken(ctx.requestToken(req));
+  const permissions = new Set(Array.isArray(actor.permissions) ? actor.permissions : []);
+  const requiredPermission = mutation ? OAA_HIS_MANAGE_PERMISSION : OAA_HIS_READ_PERMISSION;
+  if (!permissions.has(requiredPermission)) {
+    throw Object.assign(new Error(`HIS OAA owner API에는 ${requiredPermission} 권한이 필요합니다.`), { code: 403 });
+  }
+  if (mutation && String(actor.assurance || 'aal1').toLowerCase() !== 'aal2') {
+    throw Object.assign(new Error('HIS OAA 변경은 AAL2 재인증이 필요합니다.'), { code: 403 });
   }
   return actor;
 }
@@ -2008,6 +2134,43 @@ async function waitForHttpJson(url, accepted, timeoutMs = 180000) {
   throw Object.assign(new Error(`관측 canary 응답 대기 시간이 초과되었습니다: ${last}`), { code: 504 });
 }
 
+async function postObservabilityJson(url, body) {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '');
+    throw Object.assign(new Error(`관측 canary 전송 실패 HTTP ${response.status}: ${detail.slice(0, 300)}`), { code: 502 });
+  }
+}
+
+function otlpCanaryPayloads(id, now = Date.now()) {
+  const traceId = createHash('sha256').update(`trace:${id}`).digest('hex').slice(0, 32);
+  const spanId = createHash('sha256').update(`span:${id}`).digest('hex').slice(0, 16);
+  const start = BigInt(now) * 1000000n;
+  const end = start + 1000000n;
+  const resource = { attributes: [
+    { key: 'service.name', value: { stringValue: 'opensphere-his-canary' } },
+    { key: 'opensphere.canary.id', value: { stringValue: id } },
+  ] };
+  return {
+    traceId,
+    logs: { resourceLogs: [{ resource, scopeLogs: [{ scope: { name: 'opensphere-his-canary' }, logRecords: [{
+      timeUnixNano: start.toString(), severityNumber: 9, severityText: 'INFO',
+      body: { stringValue: `opensphere-his-log-canary ${id}` },
+      attributes: [{ key: 'opensphere.canary.id', value: { stringValue: id } }],
+    }] }] }] },
+    traces: { resourceSpans: [{ resource, scopeSpans: [{ scope: { name: 'opensphere-his-canary' }, spans: [{
+      traceId, spanId, name: `opensphere-his-trace-canary-${id}`, kind: 1,
+      startTimeUnixNano: start.toString(), endTimeUnixNano: end.toString(), status: { code: 1 },
+      attributes: [{ key: 'opensphere.canary.id', value: { stringValue: id } }],
+    }] }] }] },
+  };
+}
+
 async function runObservabilityCanary(ctx) {
   const image = await currentRuntimeImage(ctx);
   const base = canaryResourceName('observe');
@@ -2032,7 +2195,23 @@ async function runObservabilityCanary(ctx) {
     const query = encodeURIComponent(`opensphere_his_canary{instance_id="${base}"}`);
     await waitForHttpJson(`http://kube-prometheus-stack-prometheus.monitoring.svc:9090/api/v1/query?query=${query}`, (value) => value.status === 'success' && (value.data?.result || []).some((entry) => entry.metric?.instance_id === base));
     await waitForHttpJson('http://kube-prometheus-stack-alertmanager.monitoring.svc:9093/api/v2/alerts', (value) => Array.isArray(value) && value.some((alert) => alert.labels?.alertname === 'OpenSphereHISCanary' && alert.labels?.opensphere_canary_id === base && alert.status?.state === 'active'));
-    return { message: `synthetic metric ${base}의 ServiceMonitor scrape, Prometheus rule 평가와 Alertmanager 전달을 통과했습니다.` };
+    const config = await readObservabilityConfig(ctx);
+    if (config?.telemetry?.enabled !== false) {
+      const payloads = otlpCanaryPayloads(base);
+      const collector = 'http://opensphere-his-otel-collector.monitoring.svc:4318';
+      await Promise.all([
+        postObservabilityJson(`${collector}/v1/logs`, payloads.logs),
+        postObservabilityJson(`${collector}/v1/traces`, payloads.traces),
+      ]);
+      const loki = new URL('http://opensphere-his-loki.monitoring.svc:3100/loki/api/v1/query_range');
+      loki.searchParams.set('query', `{service_name="opensphere-his-canary"} |= "${base}"`);
+      loki.searchParams.set('start', (BigInt(Date.now() - 300000) * 1000000n).toString());
+      loki.searchParams.set('end', (BigInt(Date.now() + 60000) * 1000000n).toString());
+      loki.searchParams.set('limit', '20');
+      await waitForHttpJson(loki.toString(), (value) => value.status === 'success' && (value.data?.result || []).some((stream) => (stream.values || []).some((entry) => String(entry?.[1] || '').includes(base))));
+      await waitForHttpJson(`http://opensphere-his-tempo.monitoring.svc:3200/api/traces/${payloads.traceId}`, (value) => Array.isArray(value.batches) && value.batches.length > 0);
+    }
+    return { message: `synthetic metric ${base}의 scrape·alert 전달과 OTLP log·trace 저장/조회를 통과했습니다.` };
   } finally {
     await deleteIfPresent(ctx, `/apis/monitoring.coreos.com/v1/namespaces/monitoring/prometheusrules/${encodeURIComponent(ruleName)}`).catch(() => false);
     await deleteIfPresent(ctx, `/apis/monitoring.coreos.com/v1/namespaces/monitoring/servicemonitors/${encodeURIComponent(monitorName)}`).catch(() => false);
@@ -2251,6 +2430,10 @@ async function executeObservabilityConfiguration(ctx, actor, item, operation, de
     if (check.state !== 'Ready') throw Object.assign(new Error(`운영 구성 적용 후 검증 실패: ${check.message}`), { code: 502 });
     const after = await observabilityConfigurationPlan(ctx, desired);
     if (after.blockers.length) throw Object.assign(new Error(`적용 후 정책 검증 실패: ${after.blockers.join(' ')}`), { code: 502 });
+    if (desired.telemetry.enabled && !Object.values(after.live.telemetry).every(Boolean)) {
+      const unavailable = Object.entries(after.live.telemetry).filter(([, ready]) => !ready).map(([name]) => name);
+      throw Object.assign(new Error(`적용 후 텔레메트리 검증 실패: ${unavailable.join(', ')} workload가 Ready가 아닙니다.`), { code: 502 });
+    }
     await writeObservabilityConfig(ctx, actor, desired, operation.reason);
     await auditRequired(ctx, actor, 'HISObservabilityConfigured', item, operation.reason, `success:${desired.grafana.exposureMode}`);
     await ctx.publishNotify({
@@ -2263,7 +2446,7 @@ async function executeObservabilityConfiguration(ctx, actor, item, operation, de
     await patchOperation(ctx, item, current, {
       phase: 'Ready',
       progress: 100,
-      message: `운영 구성이 적용되었습니다. Grafana ${desired.grafana.exposureMode}, Prometheus ${desired.prometheus.retention}, NetworkPolicy 3개 관리 중입니다.`,
+      message: `운영 구성이 적용되었습니다. Grafana ${desired.grafana.exposureMode}, Prometheus ${desired.prometheus.retention}, telemetry ${desired.telemetry.enabled ? 'enabled' : 'disabled'}, NetworkPolicy ${desired.telemetry.enabled ? 6 : 3}개 관리 중입니다.`,
       output: out.stdout.slice(-4000),
       error: '',
     });
@@ -2381,10 +2564,192 @@ async function executeOperation(ctx, actor, item, operation) {
   }
 }
 
+function observabilityQueryToken(value, field) {
+  const text = String(value || '').trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(text)) {
+    throw Object.assign(new Error(`${field} 값이 허용된 이름 형식이 아닙니다.`), { code: 400 });
+  }
+  return text;
+}
+
+function observabilityLimit(value) {
+  const parsed = Number(value || 100);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 200) throw Object.assign(new Error('limit은 1..200 정수여야 합니다.'), { code: 400 });
+  return parsed;
+}
+
+function observabilitySinceMinutes(value) {
+  const parsed = Number(value || 60);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 1440) throw Object.assign(new Error('sinceMinutes는 1..1440 정수여야 합니다.'), { code: 400 });
+  return parsed;
+}
+
+function redactObservabilityText(value) {
+  return String(value || '')
+    .replace(/\bBearer\s+[A-Za-z0-9._~+\/-]+=*/gi, 'Bearer [REDACTED]')
+    .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}\b/g, '[REDACTED_JWT]')
+    .replace(/\b(sk|rk|pk|ghp|glpat)-[A-Za-z0-9_-]{12,}\b/gi, '[REDACTED_TOKEN]')
+    .replace(/((?:password|passwd|api[_-]?key|access[_-]?token|client[_-]?secret)\s*[=:]\s*)[^\s,;]+/gi, '$1[REDACTED]')
+    .slice(0, 4000);
+}
+
+function buildObservabilityLogQuery(params) {
+  const template = String(params.get('template') || 'service.recent');
+  if (!['service.recent', 'service.errors', 'namespace.recent'].includes(template)) {
+    throw Object.assign(new Error('지원하지 않는 log query template입니다.'), { code: 400 });
+  }
+  if (template === 'namespace.recent') {
+    const namespace = observabilityQueryToken(params.get('namespace'), 'namespace');
+    return { template, query: `{k8s_namespace_name="${namespace}"}`, target: namespace };
+  }
+  const service = observabilityQueryToken(params.get('service'), 'service');
+  const suffix = template === 'service.errors' ? ' |~ "(?i)(error|exception|failed)"' : '';
+  return { template, query: `{service_name="${service}"}${suffix}`, target: service };
+}
+
+function projectLokiResponse(body, limit) {
+  const allowedLabels = new Set(['service_name', 'k8s_namespace_name', 'k8s_pod_name', 'k8s_container_name', 'severity_text']);
+  const entries = [];
+  for (const stream of body?.data?.result || []) {
+    const labels = Object.fromEntries(Object.entries(stream.stream || {}).filter(([key]) => allowedLabels.has(key)).map(([key, value]) => [key, String(value).slice(0, 256)]));
+    for (const value of stream.values || []) {
+      if (!Array.isArray(value) || value.length < 2) continue;
+      entries.push({ timestampUnixNano: String(value[0] || ''), line: redactObservabilityText(value[1]), labels });
+      if (entries.length >= limit) return entries;
+    }
+  }
+  return entries;
+}
+
+function otlpAttribute(attributes, key) {
+  const attribute = (attributes || []).find((item) => item?.key === key);
+  const value = attribute?.value || {};
+  return String(value.stringValue ?? value.intValue ?? value.boolValue ?? '').slice(0, 256);
+}
+
+function projectTempoTrace(body) {
+  const spans = [];
+  for (const batch of body?.batches || []) {
+    const service = otlpAttribute(batch.resource?.attributes, 'service.name');
+    const groups = batch.scopeSpans || batch.instrumentationLibrarySpans || [];
+    for (const group of groups) for (const span of group.spans || []) {
+      const start = BigInt(String(span.startTimeUnixNano || '0'));
+      const end = BigInt(String(span.endTimeUnixNano || '0'));
+      spans.push({
+        traceId: String(span.traceId || ''), spanId: String(span.spanId || ''), parentSpanId: String(span.parentSpanId || ''),
+        service, name: redactObservabilityText(span.name).slice(0, 256), statusCode: Number(span.status?.code || 0),
+        startTimeUnixNano: start.toString(), durationMs: end >= start ? Number(end - start) / 1e6 : 0,
+      });
+      if (spans.length >= 500) return spans;
+    }
+  }
+  return spans;
+}
+
+async function observabilityOwnerFetch(url) {
+  let response;
+  try { response = await fetch(url, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(15000) }); }
+  catch { throw Object.assign(new Error('HIS telemetry query service에 연결할 수 없습니다.'), { code: 503 }); }
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw Object.assign(new Error(`HIS telemetry query 실패 HTTP ${response.status}`), { code: 502 });
+  return body;
+}
+
+async function queryObservabilityLogs(req) {
+  const params = new URL(req.url, 'http://cluster-manager.local').searchParams;
+  const request = buildObservabilityLogQuery(params);
+  const limit = observabilityLimit(params.get('limit'));
+  const sinceMinutes = observabilitySinceMinutes(params.get('sinceMinutes'));
+  const now = Date.now();
+  const url = new URL(`${LOKI_QUERY_URL}/loki/api/v1/query_range`);
+  url.searchParams.set('query', request.query);
+  url.searchParams.set('start', (BigInt(now - sinceMinutes * 60000) * 1000000n).toString());
+  url.searchParams.set('end', (BigInt(now) * 1000000n).toString());
+  url.searchParams.set('limit', String(limit));
+  url.searchParams.set('direction', 'backward');
+  const body = await observabilityOwnerFetch(url);
+  const entries = projectLokiResponse(body, limit);
+  return { action: 'his-observability-logs', authority: 'HIS/Loki', observedAt: new Date().toISOString(), template: request.template, target: request.target, sinceMinutes, count: entries.length, entries };
+}
+
+async function queryObservabilityTraces(req) {
+  const params = new URL(req.url, 'http://cluster-manager.local').searchParams;
+  const template = String(params.get('template') || 'trace.by_id');
+  if (template === 'trace.by_id') {
+    const traceId = String(params.get('traceId') || '').trim().toLowerCase();
+    if (!/^[a-f0-9]{32}$/.test(traceId)) throw Object.assign(new Error('traceId는 32자리 hex 값이어야 합니다.'), { code: 400 });
+    const body = await observabilityOwnerFetch(`${TEMPO_QUERY_URL}/api/traces/${traceId}`);
+    const spans = projectTempoTrace(body);
+    return { action: 'his-observability-trace', authority: 'HIS/Tempo', observedAt: new Date().toISOString(), template, traceId, spanCount: spans.length, spans };
+  }
+  if (template !== 'service.recent') throw Object.assign(new Error('지원하지 않는 trace query template입니다.'), { code: 400 });
+  const service = observabilityQueryToken(params.get('service'), 'service');
+  const limit = Math.min(100, observabilityLimit(params.get('limit')));
+  const sinceMinutes = observabilitySinceMinutes(params.get('sinceMinutes'));
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const url = new URL(`${TEMPO_QUERY_URL}/api/search`);
+  url.searchParams.set('q', `{ resource.service.name = "${service}" }`);
+  url.searchParams.set('limit', String(limit));
+  url.searchParams.set('start', String(nowSeconds - sinceMinutes * 60));
+  url.searchParams.set('end', String(nowSeconds));
+  const body = await observabilityOwnerFetch(url);
+  const traces = (body.traces || []).slice(0, limit).map((trace) => ({
+    traceId: String(trace.traceID || trace.traceId || ''), rootServiceName: String(trace.rootServiceName || '').slice(0, 256),
+    rootTraceName: redactObservabilityText(trace.rootTraceName).slice(0, 256), startTimeUnixNano: String(trace.startTimeUnixNano || ''),
+    durationMs: Number(trace.durationMs || 0), spanSets: Number(trace.spanSets?.length || 0),
+  }));
+  return { action: 'his-observability-traces', authority: 'HIS/Tempo', observedAt: new Date().toISOString(), template, target: service, sinceMinutes, count: traces.length, traces };
+}
+
 function createHisManager(ctx) {
   return async function handle(req, res, pathname) {
     if (!pathname.startsWith('/api/his/')) return false;
     try {
+      if (req.method === 'GET' && pathname === '/api/his/oaa/capabilities') {
+        await actorForOaaOwner(ctx, req, false);
+        return ctx.jsonRes(res, 200, {
+          apiVersion: 'opensphere.io/oaa-his-owner/v1',
+          capabilities: ['observability-config-read', 'observability-plan', 'observability-configure'],
+          secretInputPolicy: 'SecretRefOnly',
+          mutationAssurance: 'aal2',
+        }), true;
+      }
+      if (req.method === 'GET' && pathname === '/api/his/oaa/observability/config') {
+        await actorForOaaOwner(ctx, req, false);
+        return ctx.jsonRes(res, 200, await observabilityConfiguration(ctx)), true;
+      }
+      if (req.method === 'POST' && pathname === '/api/his/oaa/observability/plan') {
+        await actorForOaaOwner(ctx, req, false);
+        const body = requireClosedObject(await readJson(req), ['config'], 'request');
+        return ctx.jsonRes(res, 200, await observabilityConfigurationPlan(ctx, normalizeOaaObservabilityConfig(body.config))), true;
+      }
+      if (req.method === 'POST' && pathname === '/api/his/oaa/observability/configure') {
+        const actor = await actorForOaaOwner(ctx, req, true);
+        const body = requireClosedObject(await readJson(req), ['config', 'resetData', 'confirm', 'reason'], 'request');
+        if (typeof body.resetData !== 'boolean') throw Object.assign(new Error('resetData는 boolean이어야 합니다.'), { code: 400 });
+        const reason = reasonFrom(body);
+        const desired = normalizeOaaObservabilityConfig(body.config);
+        const configurationPlan = await observabilityConfigurationPlan(ctx, desired);
+        const expectedConfirmation = oaaObservabilityConfirmation(desired, body.resetData);
+        if (String(body.confirm || '') !== expectedConfirmation) {
+          throw Object.assign(new Error(`HIS observability 변경 확인 값으로 '${expectedConfirmation}'를 입력해야 합니다.`), { code: 400 });
+        }
+        if (!configurationPlan.live.installed) throw Object.assign(new Error('Shared Observability가 설치되지 않았습니다.'), { code: 409 });
+        if (configurationPlan.blockers.length) throw Object.assign(new Error(configurationPlan.blockers.join(' ')), { code: 409 });
+        if (configurationPlan.requiresDataReset !== body.resetData) {
+          throw Object.assign(new Error(configurationPlan.requiresDataReset
+            ? '현재 계획에는 관측 데이터 재배치가 필요합니다. resetData=true로 명시적으로 승인해야 합니다.'
+            : '현재 계획에는 데이터 재배치가 필요하지 않으므로 resetData=false여야 합니다.'), { code: 409 });
+        }
+        const item = catalogItem(OBSERVABILITY_ITEM_ID);
+        const release = await helmStatus(ctx, item);
+        if (!release?.managed) throw Object.assign(new Error('Cluster Manager가 설치한 Shared Observability만 재구성할 수 있습니다.'), { code: 409 });
+        await auditRequired(ctx, actor, 'OAAHISObservabilityConfigureRequested', item, reason, `requested:${desired.grafana.exposureMode}:reset=${body.resetData}`);
+        const operation = await createOperation(ctx, item, actor, 'configure', reason);
+        ctx.jsonRes(res, 202, { ok: true, operation });
+        setImmediate(() => { void executeObservabilityConfiguration(ctx, actor, item, operation, desired, body.resetData); });
+        return true;
+      }
       if (req.method === 'GET' && pathname === '/api/his/status') {
         await actorFor(ctx, req, false);
         return ctx.jsonRes(res, 200, await allStatus(ctx)), true;
@@ -2392,6 +2757,14 @@ function createHisManager(ctx) {
       if (req.method === 'GET' && pathname === '/api/his/observability/config') {
         await actorFor(ctx, req, false);
         return ctx.jsonRes(res, 200, await observabilityConfiguration(ctx)), true;
+      }
+      if (req.method === 'GET' && pathname === '/api/his/observability/logs') {
+        await actorFor(ctx, req, false);
+        return ctx.jsonRes(res, 200, await queryObservabilityLogs(req)), true;
+      }
+      if (req.method === 'GET' && pathname === '/api/his/observability/traces') {
+        await actorFor(ctx, req, false);
+        return ctx.jsonRes(res, 200, await queryObservabilityTraces(req)), true;
       }
       if (req.method !== 'POST') throw Object.assign(new Error('method not allowed'), { code: 405 });
       const body = await readJson(req);
@@ -2531,8 +2904,13 @@ module.exports = {
   evaluateProfiles,
   evaluateStackStatus,
   validateObservabilityConfig,
+  normalizeOaaObservabilityConfig,
+  oaaObservabilityConfirmation,
   observabilityValues,
   observabilityPvcComponent,
+  buildObservabilityLogQuery,
+  projectLokiResponse,
+  projectTempoTrace,
   flattenConfiguration,
   DEFAULT_OBSERVABILITY_CONFIG,
   OBSERVABILITY_RESET_CONFIRMATION,

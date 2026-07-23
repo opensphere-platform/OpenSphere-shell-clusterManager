@@ -38,19 +38,20 @@ LABEL org.opencontainers.image.title="OpenSphere Cluster Manager" \
       org.opencontainers.image.source="https://github.com/opensphere-platform/OpenSphere-shell-clusterManager" \
       io.opensphere.module.descriptor=$OS_MODULE_DESCRIPTOR \
       io.opensphere.module.descriptor.signature=$OS_MODULE_SIGNATURE \
-      io.opensphere.module.descriptor.key-id="opensphere-plugins-v1"
+      io.opensphere.module.descriptor.key-id="opensphere-plugins-v4"
 RUN apk upgrade --no-cache
 WORKDIR /app
 RUN npm install --omit=dev --no-audit --no-fund --no-save ws@8.21.0 js-yaml@4.1.0 \
     && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 COPY --chmod=0644 server.js /app/server.js
-COPY --chmod=0644 his-manager.js his-catalog.js ceph-manager.js /app/
+COPY --chmod=0644 his-manager.js his-catalog.js his-telemetry-manifests.js ceph-manager.js ceph-prerequisite-reconciler.js /app/
 COPY his-values/ /app/his-values/
 COPY --from=helm-assets --chmod=0755 /usr/bin/helm /usr/local/bin/helm
 COPY --from=helm-assets /his-charts/ /app/his-charts/
 COPY --from=helm-assets /ceph-charts/ /app/ceph-charts/
-RUN chmod 0555 /app/his-values /app/his-charts /app/ceph-charts \
-    && chmod 0444 /app/his-values/* /app/his-charts/* /app/ceph-charts/*
+COPY deploy/ceph-runtime-chart/ /app/ceph-runtime-chart/
+RUN chmod 0555 /app/his-values /app/his-charts /app/ceph-charts /app/ceph-runtime-chart /app/ceph-runtime-chart/templates \
+    && chmod 0444 /app/his-values/* /app/his-charts/* /app/ceph-charts/* /app/ceph-runtime-chart/Chart.yaml /app/ceph-runtime-chart/templates/*
 COPY ui-shell/ /app/plugins/
 COPY --chmod=0644 module-package.json module-package.json.sig /app/plugins/
 COPY --from=build /app/dist/k8s-console-angular/browser /app/www

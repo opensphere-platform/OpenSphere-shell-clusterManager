@@ -36,8 +36,13 @@ const {
   evaluateProfiles,
   evaluateStackStatus,
   validateObservabilityConfig,
+  normalizeOaaObservabilityConfig,
+  oaaObservabilityConfirmation,
   observabilityValues,
   observabilityPvcComponent,
+  buildObservabilityLogQuery,
+  projectLokiResponse,
+  projectTempoTrace,
   DEFAULT_OBSERVABILITY_CONFIG,
 } = require('../his-manager');
 
@@ -156,7 +161,7 @@ test('network, DNS and observability readiness is gated by matching synthetic va
   const cases = [
     ['cluster-network', 'CniReady', 'Cross-node / egress traffic', 'NetworkCanaryRequired'],
     ['cluster-dns', 'DnsResolutionReady', 'Node-wide DNS resolution', 'DnsCanaryRequired'],
-    ['kube-prometheus-stack', 'ObservabilityReady', 'Scrape/alert delivery', 'ObservabilityCanaryRequired'],
+    ['kube-prometheus-stack', 'ObservabilityReady', 'Metrics / logs / traces delivery', 'ObservabilityCanaryRequired'],
   ];
   for (const [id, reason, canaryName, requiredReason] of cases) {
     const fingerprint = runtimeContractFingerprint(id, [{ kind: 'Deployment', metadata: { uid: `${id}-uid`, name: id, generation: 1 } }], ['contract']);
@@ -325,9 +330,29 @@ test('Observability configuration is allowlisted and secure by default', () => {
   assert.equal(values.grafana.ingress.enabled, false);
   assert.equal(values.prometheus.ingress.enabled, false);
   assert.equal(values.alertmanager.ingress.enabled, false);
-  assert.equal(values.extraManifests.length, 3);
+  assert.equal(values.extraManifests.length, 21);
   assert.equal(values.grafana.persistence.annotations['helm.sh/resource-policy'], 'keep');
   assert.deepEqual(values.prometheus.prometheusSpec.remoteWrite, []);
+  assert.equal(config.telemetry.enabled, true);
+  assert.equal(config.telemetry.retention, '168h');
+});
+
+test('OAA Observability owner input is recursively closed and confirmations expose high-risk choices', () => {
+  const config = normalizeOaaObservabilityConfig(DEFAULT_OBSERVABILITY_CONFIG);
+  assert.equal(oaaObservabilityConfirmation(config, false), 'configure HIS observability public=false data-reset=false');
+  assert.throws(() => normalizeOaaObservabilityConfig({ ...DEFAULT_OBSERVABILITY_CONFIG, command: 'kubectl get secrets' }), /허용되지 않은 필드/);
+  assert.throws(() => normalizeOaaObservabilityConfig({
+    ...DEFAULT_OBSERVABILITY_CONFIG,
+    prometheus: { ...DEFAULT_OBSERVABILITY_CONFIG.prometheus, remoteWrite: { enabled: false, token: 'raw-secret' } },
+  }), /허용되지 않은 필드/);
+  const publicConfig = normalizeOaaObservabilityConfig({
+    ...DEFAULT_OBSERVABILITY_CONFIG,
+    grafana: {
+      ...DEFAULT_OBSERVABILITY_CONFIG.grafana,
+      exposureMode: 'PublicIngress', hostname: 'grafana.example.com', tlsSecretName: 'grafana-tls', oidcSecretName: 'grafana-oidc',
+    },
+  });
+  assert.equal(oaaObservabilityConfirmation(publicConfig, true), 'configure HIS observability public=true data-reset=true');
 });
 
 test('private Grafana ingress requires TLS, OIDC references and CIDR restrictions', () => {
@@ -368,11 +393,39 @@ test('remote write only accepts HTTPS or cluster-local HTTP and secret reference
   assert.deepEqual(remoteWrite.authorization.credentials, { name: 'remote-write', key: 'token' });
 });
 
-test('Observability PVC names are bounded to the three managed data stores', () => {
+test('Observability PVC names are bounded to the five managed data stores', () => {
   assert.equal(observabilityPvcComponent('kube-prometheus-stack-grafana'), 'grafana');
   assert.equal(observabilityPvcComponent('prometheus-kube-prometheus-stack-prometheus-db-prometheus-kube-prometheus-stack-prometheus-0'), 'prometheus');
   assert.equal(observabilityPvcComponent('alertmanager-kube-prometheus-stack-alertmanager-db-alertmanager-kube-prometheus-stack-alertmanager-0'), 'alertmanager');
+  assert.equal(observabilityPvcComponent('opensphere-his-loki-data'), 'loki');
+  assert.equal(observabilityPvcComponent('opensphere-his-tempo-data'), 'tempo');
   assert.equal(observabilityPvcComponent('customer-database'), '');
+});
+
+test('HIS log queries are fixed-template, bounded and redact credential-shaped text', () => {
+  const errors = buildObservabilityLogQuery(new URLSearchParams({ template: 'service.errors', service: 'opensphere-console' }));
+  assert.equal(errors.query, '{service_name="opensphere-console"} |~ "(?i)(error|exception|failed)"');
+  assert.throws(() => buildObservabilityLogQuery(new URLSearchParams({ template: 'raw', service: 'x' })), /지원하지 않는/);
+  assert.throws(() => buildObservabilityLogQuery(new URLSearchParams({ template: 'service.recent', service: 'x"} |= ".+' })), /허용된 이름/);
+  const entries = projectLokiResponse({ data: { result: [{
+    stream: { service_name: 'opensphere-console', secret_label: 'must-not-leak' },
+    values: [['1770000000000000000', 'request failed api_key=sk-example1234567890 Bearer abc.def']],
+  }] } }, 10);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].labels.secret_label, undefined);
+  assert.doesNotMatch(entries[0].line, /sk-example|Bearer abc/);
+});
+
+test('HIS trace projection returns operational span facts without arbitrary attributes', () => {
+  const spans = projectTempoTrace({ batches: [{
+    resource: { attributes: [{ key: 'service.name', value: { stringValue: 'console' } }, { key: 'secret', value: { stringValue: 'do-not-return' } }] },
+    scopeSpans: [{ spans: [{ traceId: 'a'.repeat(32), spanId: 'b'.repeat(16), name: 'GET /health', startTimeUnixNano: '1000000', endTimeUnixNano: '3500000', status: { code: 1 }, attributes: [{ key: 'password', value: { stringValue: 'hidden' } }] }] }],
+  }] });
+  assert.deepEqual(spans[0], {
+    traceId: 'a'.repeat(32), spanId: 'b'.repeat(16), parentSpanId: '', service: 'console', name: 'GET /health', statusCode: 1,
+    startTimeUnixNano: '1000000', durationMs: 2.5,
+  });
+  assert.doesNotMatch(JSON.stringify(spans), /do-not-return|hidden/);
 });
 
 test('durable audit request authenticates with the managed workload ServiceAccount token', async () => {

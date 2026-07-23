@@ -278,6 +278,9 @@ type HisMutationAction = 'install' | 'upgrade' | 'recover' | 'rollback' | 'unins
           <ng-container *ngIf="observabilityConfig() as config">
             <section class="config-section">
               <div class="section-heading"><div><p class="eyebrow">DATA PLANE</p><h4>영구 저장소와 보존기간</h4></div><span>StorageClass 변경·축소는 명시적 데이터 재배치가 필요합니다.</span></div>
+              <clr-toggle-container>
+                <clr-toggle-wrapper><input type="checkbox" clrToggle name="telemetryEnabled" [(ngModel)]="config.telemetry.enabled"><label>HIS 중앙 로그·트레이스·OTLP 수집 사용</label></clr-toggle-wrapper>
+              </clr-toggle-container>
               <table class="table table-compact config-table">
                 <thead><tr><th>서비스</th><th>StorageClass</th><th>용량</th><th>보존기간</th><th>현재 PVC</th></tr></thead>
                 <tbody>
@@ -302,6 +305,20 @@ type HisMutationAction = 'install' | 'upgrade' | 'recover' | 'rollback' | 'unins
                     <td><span class="muted">해당 없음</span></td>
                     <td>{{ livePvc(state, 'grafana') }}</td>
                   </tr>
+                  <tr *ngIf="config.telemetry.enabled">
+                    <td><strong>Loki</strong><div class="muted">중앙 로그 저장·조회</div></td>
+                    <td><select clrSelect name="telemetryStorageClass" [(ngModel)]="config.telemetry.storageClassName"><option value="">Cluster default</option><option *ngFor="let sc of state.storageClasses" [value]="sc.name">{{ sc.name }}{{ sc.isDefault ? ' (default)' : '' }}</option></select><div class="storage-hint">{{ storageClassHint(state, config.telemetry.storageClassName) }}</div></td>
+                    <td><input clrInput name="lokiStorageSize" [(ngModel)]="config.telemetry.lokiStorageSize" placeholder="10Gi"></td>
+                    <td><input clrInput name="telemetryRetention" [(ngModel)]="config.telemetry.retention" placeholder="168h"></td>
+                    <td>{{ livePvc(state, 'loki') }}</td>
+                  </tr>
+                  <tr *ngIf="config.telemetry.enabled">
+                    <td><strong>Tempo</strong><div class="muted">분산 트레이스 저장·조회</div></td>
+                    <td><span>{{ config.telemetry.storageClassName || 'Cluster default' }}</span></td>
+                    <td><input clrInput name="tempoStorageSize" [(ngModel)]="config.telemetry.tempoStorageSize" placeholder="10Gi"></td>
+                    <td>{{ config.telemetry.retention }}</td>
+                    <td>{{ livePvc(state, 'tempo') }}</td>
+                  </tr>
                 </tbody>
               </table>
             </section>
@@ -323,7 +340,8 @@ type HisMutationAction = 'install' | 'upgrade' | 'recover' | 'rollback' | 'unins
                 <div class="section-heading"><div><p class="eyebrow">CURRENT SECURITY</p><h4>실행 정책 상태</h4></div></div>
                 <dl class="runtime-policy">
                   <dt>Grafana Service</dt><dd>{{ state.live.grafana.serviceType }}</dd>
-                  <dt>Managed NetworkPolicy</dt><dd>{{ state.live.networkPolicies.length }}/3</dd>
+                  <dt>Managed NetworkPolicy</dt><dd>{{ state.live.networkPolicies.length }}/{{ config.telemetry.enabled ? 6 : 3 }}</dd>
+                  <dt>Loki / Tempo / OTLP</dt><dd>{{ state.live.telemetry.loki ? 'Ready' : 'Not ready' }} / {{ state.live.telemetry.tempo ? 'Ready' : 'Not ready' }} / {{ state.live.telemetry.otlp ? 'Ready' : 'Not ready' }}</dd>
                   <dt>Grafana Ingress</dt><dd>{{ state.live.grafana.ingress?.hostname || '없음' }}</dd>
                   <dt>Prometheus 직접 공개</dt><dd>금지</dd>
                   <dt>Alertmanager 직접 공개</dt><dd>금지</dd>
@@ -360,7 +378,7 @@ type HisMutationAction = 'install' | 'upgrade' | 'recover' | 'rollback' | 'unins
                 <div class="destructive-confirm" *ngIf="configPlan.requiresDataReset">
                   <strong>데이터 초기화 재배치 필요</strong>
                   <ul><li *ngFor="let target of configPlan.resetTargets">{{ target }}</li></ul>
-                  <label><input type="checkbox" clrCheckbox name="resetData" [(ngModel)]="resetData"> 기존 Prometheus·Alertmanager·Grafana 데이터를 삭제하고 새 PVC를 생성합니다.</label>
+                  <label><input type="checkbox" clrCheckbox name="resetData" [(ngModel)]="resetData"> 영향받는 Prometheus·Alertmanager·Grafana·Loki·Tempo 데이터를 삭제하고 새 PVC를 생성합니다.</label>
                   <div class="reset-confirmation-field">
                     <span class="reset-confirmation-label">삭제 확인 문구</span>
                     <code class="reset-confirmation-token">{{ state.policy.resetConfirmation }}</code>
@@ -426,7 +444,7 @@ type HisMutationAction = 'install' | 'upgrade' | 'recover' | 'rollback' | 'unins
         <div class="alert alert-warning">
           <div class="alert-items"><div class="alert-item static"><span class="alert-text">
             <strong>{{ item.displayName }}</strong> 검증을 위해 범위가 고정된 synthetic 리소스를 생성하고 완료 후 자동 삭제합니다.
-            Network는 cross-node·egress·NetworkPolicy, DNS는 모든 Ready 노드, Observability는 scrape·rule·Alertmanager 전달을 검사합니다.
+            Network는 cross-node·egress·NetworkPolicy, DNS는 모든 Ready 노드, Observability는 metric scrape·alert와 OTLP log·trace 저장/조회를 검사합니다.
             Storage/Data Protection은 고정 64Mi PVC 및 deletionPolicy=Delete인 VolumeSnapshot만 사용합니다.
           </span></div></div>
         </div>
@@ -844,7 +862,7 @@ export class HisComponent implements OnInit, OnDestroy {
     return `${storageClass.provisioner} · ${storageClass.allowVolumeExpansion ? '온라인 확장 가능' : '온라인 확장 불가'} · reclaim ${storageClass.reclaimPolicy}`;
   }
 
-  livePvc(state: ObservabilityConfigurationState, component: 'prometheus' | 'alertmanager' | 'grafana'): string {
+  livePvc(state: ObservabilityConfigurationState, component: 'prometheus' | 'alertmanager' | 'grafana' | 'loki' | 'tempo'): string {
     const pvc = state.live.pvcs[component];
     return pvc ? `${pvc.requested || pvc.capacity} · ${pvc.storageClassName} · ${pvc.selectedNode || 'node pending'}` : '없음';
   }

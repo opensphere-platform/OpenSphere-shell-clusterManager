@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 const root = resolve(import.meta.dirname, '..');
 const keyPath = process.env.DUPA_SIGNING_KEY;
 if (!keyPath) throw new Error('DUPA_SIGNING_KEY must point to the approved P-256 signing key');
+const keyId = process.env.DUPA_SIGNING_KEY_ID || 'opensphere-plugins-v4';
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const signature = (text, key) => sign('sha256', Buffer.from(text), { key, dsaEncoding: 'ieee-p1363' }).toString('base64');
 const key = createPrivateKey(readFileSync(keyPath));
@@ -35,7 +36,7 @@ const descriptor = {
   permissionProfile: 'cluster-infrastructure-manager-v1',
   runtime: { port: 8080, healthPath: '/healthz', serviceAccountName: 'opensphere-cluster-manager', resources: { cpuRequest: '50m', memoryRequest: '128Mi', cpuLimit: '500m', memoryLimit: '512Mi' } },
   manifest: { path: '/plugins/ui-shell.manifest.json', sha256: hash(manifestText), signaturePath: '/plugins/ui-shell.manifest.json.sig' },
-  trust: { keyId: 'opensphere-plugins-v1' },
+  trust: { keyId },
   api: { basePath: manifest.apiBase },
   contributions: manifest.contributions,
 };

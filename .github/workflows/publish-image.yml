@@ -1,4 +1,4 @@
-name: Publish Cluster Manager image
+name: Publish Cluster Manager edge image
 
 on:
   workflow_dispatch:
@@ -9,10 +9,16 @@ on:
       - server.js
       - his-catalog.js
       - his-manager.js
+      - his-telemetry-manifests.js
+      - his-observability-binding-controller.js
       - ceph-manager.js
+      - Dockerfile.observability-binding-controller
+      - deploy/observability-binding-controller.yaml
+      - deploy/ceph-runtime-owner.yaml
       - his-values/**
       - package.json
       - package-lock.json
+      - angular.json
       - src/**
       - test/**
       - ui-shell/**
@@ -23,12 +29,57 @@ on:
 permissions:
   contents: read
   packages: write
+  id-token: write
+  attestations: write
+  artifact-metadata: write
+
+concurrency:
+  group: cluster-manager-edge-image
+  cancel-in-progress: false
 
 jobs:
-  publish:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm test
+      - run: npm run build
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: opensphere-platform/OpenSphere-SDK
+          path: OpenSphere-SDK
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Recreate signed module package from source
+        shell: bash
+        env:
+          SIGNING_KEY: ${{ secrets.DUPA_SIGNING_KEY_PEM }}
+          DUPA_SIGNING_KEY_ID: opensphere-plugins-v4
+          OPENSPHERE_SDK: ${{ github.workspace }}/OpenSphere-SDK
+        run: |
+          set -euo pipefail
+          printf '%s' "$SIGNING_KEY" > "$RUNNER_TEMP/opensphere-plugins-v4.pem"
+          chmod 600 "$RUNNER_TEMP/opensphere-plugins-v4.pem"
+          export DUPA_SIGNING_KEY="$RUNNER_TEMP/opensphere-plugins-v4.pem"
+          npm --prefix OpenSphere-SDK install --no-audit --no-fund
+          npm --prefix OpenSphere-SDK run build
+          npm ci --no-audit --no-fund
+          npm run package:module
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -37,17 +88,145 @@ jobs:
       - id: package
         shell: bash
         run: |
-          echo "descriptor=$(cat module-package.json)" >> "$GITHUB_OUTPUT"
+          echo "descriptor=$(jq -c . module-package.json)" >> "$GITHUB_OUTPUT"
           echo "signature=$(tr -d '\r\n' < module-package.json.sig)" >> "$GITHUB_OUTPUT"
-      - uses: docker/build-push-action@v6
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/opensphere-platform/opensphere-shell-cluster-manager
+          tags: type=sha,prefix=sha-
+          labels: |
+            io.opensphere.channel=edge
+            io.opensphere.source-revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+      - id: build
+        uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
           push: true
-          provenance: false
-          tags: |
-            ghcr.io/opensphere-platform/opensphere-shell-cluster-manager:1.3.3
-            ghcr.io/opensphere-platform/opensphere-shell-cluster-manager:edge
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             OS_MODULE_DESCRIPTOR=${{ steps.package.outputs.descriptor }}
             OS_MODULE_SIGNATURE=${{ steps.package.outputs.signature }}
+          provenance: mode=max
+          cache-from: type=gha,scope=opensphere-shell-cluster-manager
+          cache-to: type=gha,mode=max,scope=opensphere-shell-cluster-manager
+      - uses: actions/attest@v4
+        with:
+          subject-name: ghcr.io/opensphere-platform/opensphere-shell-cluster-manager
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
+        with:
+          image: ghcr.io/opensphere-platform/opensphere-shell-cluster-manager@${{ steps.build.outputs.digest }}
+          format: spdx-json
+          output-file: ${{ runner.temp }}/opensphere-shell-cluster-manager.spdx.json
+          upload-artifact: false
+      - uses: actions/attest@v4
+        with:
+          subject-name: ghcr.io/opensphere-platform/opensphere-shell-cluster-manager
+          subject-digest: ${{ steps.build.outputs.digest }}
+          sbom-path: ${{ runner.temp }}/opensphere-shell-cluster-manager.spdx.json
+          push-to-registry: true
+      - id: binding_meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/opensphere-platform/opensphere-his-binding-controller
+          tags: type=sha,prefix=sha-
+          labels: |
+            io.opensphere.channel=edge
+            io.opensphere.source-revision=${{ github.sha }}
+            io.opensphere.owner=his
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+      - id: binding_build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.observability-binding-controller
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.binding_meta.outputs.tags }}
+          labels: ${{ steps.binding_meta.outputs.labels }}
+          provenance: mode=max
+          cache-from: type=gha,scope=opensphere-his-binding-controller
+          cache-to: type=gha,mode=max,scope=opensphere-his-binding-controller
+      - uses: actions/attest@v4
+        with:
+          subject-name: ghcr.io/opensphere-platform/opensphere-his-binding-controller
+          subject-digest: ${{ steps.binding_build.outputs.digest }}
+          push-to-registry: true
+      - name: Generate HIS Binding Controller SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
+        with:
+          image: ghcr.io/opensphere-platform/opensphere-his-binding-controller@${{ steps.binding_build.outputs.digest }}
+          format: spdx-json
+          output-file: ${{ runner.temp }}/opensphere-his-binding-controller.spdx.json
+          upload-artifact: false
+      - uses: actions/attest@v4
+        with:
+          subject-name: ghcr.io/opensphere-platform/opensphere-his-binding-controller
+          subject-digest: ${{ steps.binding_build.outputs.digest }}
+          sbom-path: ${{ runner.temp }}/opensphere-his-binding-controller.spdx.json
+          push-to-registry: true
+      - name: Render digest-pinned HIS owner release bundle
+        env:
+          MANAGER_DIGEST: ${{ steps.build.outputs.digest }}
+          BINDING_DIGEST: ${{ steps.binding_build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/his-owner-release"
+          sed \
+            "s#image: opensphere-his-binding-controller:local-v3#image: ghcr.io/opensphere-platform/opensphere-his-binding-controller@$BINDING_DIGEST#" \
+            deploy/observability-binding-controller.yaml \
+            >"$RUNNER_TEMP/his-owner-release/observability-binding-controller.yaml"
+          grep -F "image: ghcr.io/opensphere-platform/opensphere-his-binding-controller@$BINDING_DIGEST" \
+            "$RUNNER_TEMP/his-owner-release/observability-binding-controller.yaml"
+          ! grep -F 'image: opensphere-his-binding-controller:local-v3' \
+            "$RUNNER_TEMP/his-owner-release/observability-binding-controller.yaml"
+          cp deploy/ceph-runtime-owner.yaml "$RUNNER_TEMP/his-owner-release/ceph-runtime-owner.yaml"
+          grep -F 'name: opensphere-ceph-runtime-owner' "$RUNNER_TEMP/his-owner-release/ceph-runtime-owner.yaml"
+          ! grep -E 'resources: \[\*\]|verbs: \[\*\]' "$RUNNER_TEMP/his-owner-release/ceph-runtime-owner.yaml"
+          jq -n \
+            --arg revision "$GITHUB_SHA" \
+            --arg manager "ghcr.io/opensphere-platform/opensphere-shell-cluster-manager@$MANAGER_DIGEST" \
+            --arg binding "ghcr.io/opensphere-platform/opensphere-his-binding-controller@$BINDING_DIGEST" \
+            '{schema:"infrastructure-owner-release.opensphere.io/v1alpha1",sourceRevision:$revision,clusterManagerImage:$manager,bindingControllerImage:$binding,manifests:{observabilityBindingController:"observability-binding-controller.yaml",cephRuntimeOwner:"ceph-runtime-owner.yaml"},prerequisites:{cephOperator:"signed platform-owned Rook operator and Ceph CRDs must be Ready before OAA capability publication"}}' \
+            >"$RUNNER_TEMP/his-owner-release/release.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: his-owner-release-${{ github.sha }}
+          path: ${{ runner.temp }}/his-owner-release
+          retention-days: 365
+      - uses: imjasonh/setup-crane@v0.4
+      - name: Publish immutable release tag, advance edge, and verify
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          BINDING_DIGEST: ${{ steps.binding_build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          crane auth login ghcr.io -u "${{ github.actor }}" -p "$GH_TOKEN"
+          release_epoch="$(git show -s --format=%ct "$GITHUB_SHA")"
+          release_tag="$(TZ=Asia/Seoul date -d "@$release_epoch" +%Y%m%d%H%M)"
+          [[ "$release_tag" =~ ^[0-9]{12}$ ]]
+          for release in \
+            "ghcr.io/opensphere-platform/opensphere-shell-cluster-manager|$DIGEST" \
+            "ghcr.io/opensphere-platform/opensphere-his-binding-controller|$BINDING_DIGEST"; do
+            IFS='|' read -r repository digest <<<"$release"
+            if crane digest "$repository:$release_tag" >/dev/null 2>&1; then
+              test "$(crane digest "$repository:$release_tag")" = "$digest"
+            else
+              crane tag "$repository@$digest" "$release_tag"
+            fi
+            test "$(crane digest "$repository:$release_tag")" = "$digest"
+            crane tag "$repository@$digest" edge
+            test "$(crane digest "$repository:edge")" = "$digest"
+            echo "- \`$repository:$release_tag\` → \`$digest\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "- \`$repository:edge\` → \`$digest\`" >> "$GITHUB_STEP_SUMMARY"
+          done

@@ -1,0 +1,165 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: observabilitybindings.observability.opensphere.io
+spec:
+  group: observability.opensphere.io
+  scope: Cluster
+  names:
+    plural: observabilitybindings
+    singular: observabilitybinding
+    kind: ObservabilityBinding
+    shortNames: [obsbinding]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [consumerRef, requestedCapabilities, owner]
+              properties:
+                owner: { type: string, enum: [HIS] }
+                consumerRef:
+                  type: object
+                  required: [apiVersion, kind, namespace, name]
+                  properties:
+                    apiVersion: { type: string }
+                    kind: { type: string }
+                    namespace: { type: string }
+                    name: { type: string }
+                requestedCapabilities:
+                  type: array
+                  items: { type: string, enum: [metrics, logs, traces, otlp] }
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: opensphere-his-binding-controller
+  namespace: opensphere-console
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: opensphere-his-binding-controller
+  namespace: opensphere-console
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [opensphere-his-operation-kube-prometheus-stack]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: opensphere-his-binding-controller
+  namespace: opensphere-console
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: opensphere-his-binding-controller }
+subjects:
+  - { kind: ServiceAccount, name: opensphere-his-binding-controller, namespace: opensphere-console }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: opensphere-his-binding-controller
+rules:
+  - apiGroups: [""]
+    resources: [services]
+    resourceNames: [kube-prometheus-stack-prometheus, opensphere-his-loki, opensphere-his-tempo, opensphere-his-otel-collector]
+    verbs: [get]
+  - apiGroups: [apps]
+    resources: [statefulsets]
+    resourceNames: [prometheus-kube-prometheus-stack-prometheus, alertmanager-kube-prometheus-stack-alertmanager]
+    verbs: [get]
+  - apiGroups: [apps]
+    resources: [deployments]
+    resourceNames: [kube-prometheus-stack-grafana, opensphere-his-loki, opensphere-his-tempo, opensphere-his-otel-collector]
+    verbs: [get]
+  - apiGroups: [observability.opensphere.io]
+    resources: [observabilitybindings]
+    verbs: [get, create, update, patch]
+  - apiGroups: [observability.opensphere.io]
+    resources: [observabilitybindings/status]
+    resourceNames: [opensphere-console]
+    verbs: [get, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: opensphere-his-binding-controller
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: opensphere-his-binding-controller }
+subjects:
+  - { kind: ServiceAccount, name: opensphere-his-binding-controller, namespace: opensphere-console }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opensphere-his-binding-controller
+  namespace: opensphere-console
+  labels:
+    app: opensphere-his-binding-controller
+    opensphere.io/owner: his
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: opensphere-his-binding-controller } }
+  template:
+    metadata:
+      labels:
+        app: opensphere-his-binding-controller
+        opensphere.io/owner: his
+    spec:
+      serviceAccountName: opensphere-his-binding-controller
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: controller
+          # Local developer profile. publish-image.yml renders the reviewed
+          # release artifact with the exact attested GHCR digest; production
+          # Change Control must consume that rendered manifest, never this tag.
+          image: opensphere-his-binding-controller:local-v3
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: CONSOLE_NAMESPACE, value: opensphere-console }
+            - { name: MONITORING_NAMESPACE, value: monitoring }
+            - { name: RECONCILE_INTERVAL_MS, value: "30000" }
+            - { name: EVIDENCE_REFRESH_MS, value: "60000" }
+            - { name: TELEMETRY_CANARY_REFRESH_MS, value: "300000" }
+          ports: [{ name: health, containerPort: 8080 }]
+          readinessProbe:
+            httpGet: { path: /readyz, port: health }
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: health }
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { cpu: 100m, memory: 96Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: opensphere-his-binding-controller
+  namespace: opensphere-console
+spec:
+  podSelector: { matchLabels: { app: opensphere-his-binding-controller } }
+  policyTypes: [Ingress]
+  ingress: []

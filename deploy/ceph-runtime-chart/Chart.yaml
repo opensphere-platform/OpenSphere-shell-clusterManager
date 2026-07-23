@@ -1,0 +1,6 @@
+apiVersion: v2
+name: opensphere-ceph-runtime
+description: OpenSphere external Ceph consumer namespaces and least-privilege runtime RBAC
+type: application
+version: 1.0.0
+appVersion: "1.0.0"

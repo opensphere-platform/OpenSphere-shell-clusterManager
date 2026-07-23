@@ -1,0 +1,146 @@
+name: Promote Cluster Manager and HIS Binding Controller image channel
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_channel: { required: true, type: choice, options: [edge, candidate] }
+      target_channel: { required: true, type: choice, options: [candidate, stable] }
+      expected_source_revision: { required: true, type: string }
+      conformance_evidence:
+        description: Immutable clean-install and upgrade E2E evidence URL
+        required: true
+        type: string
+      rollback_evidence:
+        description: Immutable rollback evidence URL
+        required: true
+        type: string
+      approval_reason:
+        description: QA/release approval reason (12+ characters)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+  artifact-metadata: write
+
+concurrency:
+  group: cluster-manager-channel-promotion
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    environment: opensphere-${{ inputs.target_channel }}-promotion
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate ordered promotion and evidence inputs
+        env:
+          SOURCE: ${{ inputs.source_channel }}
+          TARGET: ${{ inputs.target_channel }}
+          REVISION: ${{ inputs.expected_source_revision }}
+          CONFORMANCE: ${{ inputs.conformance_evidence }}
+          ROLLBACK: ${{ inputs.rollback_evidence }}
+          REASON: ${{ inputs.approval_reason }}
+        run: |
+          set -euo pipefail
+          test "$SOURCE:$TARGET" = "edge:candidate" -o "$SOURCE:$TARGET" = "candidate:stable"
+          [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$CONFORMANCE" =~ ^https://github.com/opensphere-platform/[^/]+/actions/runs/[0-9]+([/?].*)?$ ]]
+          [[ "$ROLLBACK" =~ ^https://github.com/opensphere-platform/[^/]+/actions/runs/[0-9]+([/?].*)?$ ]]
+          test "${#REASON}" -ge 12
+      - uses: imjasonh/setup-crane@v0.4
+      - name: Login to GHCR
+        env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
+        run: crane auth login ghcr.io -u "${{ github.actor }}" -p "$GH_TOKEN"
+      - id: verify
+        name: Verify Cluster Manager digest, architectures and attestations
+        env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
+        run: |
+          .github/scripts/verify-channel-promotion.sh \
+            ghcr.io/opensphere-platform/opensphere-shell-cluster-manager \
+            "${{ inputs.source_channel }}" "${{ inputs.expected_source_revision }}" \
+            opensphere-platform/OpenSphere-shell-clusterManager true digest
+      - id: verify_binding
+        name: Verify HIS Binding Controller digest, architectures and attestations
+        env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
+        run: |
+          .github/scripts/verify-channel-promotion.sh \
+            ghcr.io/opensphere-platform/opensphere-his-binding-controller \
+            "${{ inputs.source_channel }}" "${{ inputs.expected_source_revision }}" \
+            opensphere-platform/OpenSphere-shell-clusterManager false binding_digest
+      - name: Candidate/stable vulnerability and license gate
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0; SHA-pinned after 2026 incident
+        with:
+          image-ref: ghcr.io/opensphere-platform/opensphere-shell-cluster-manager@${{ steps.verify.outputs.digest }}
+          scanners: vuln,license
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          format: json
+          output: ${{ runner.temp }}/cluster-manager-trivy.json
+      - name: Candidate/stable HIS Binding Controller vulnerability and license gate
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0; SHA-pinned after 2026 incident
+        with:
+          image-ref: ghcr.io/opensphere-platform/opensphere-his-binding-controller@${{ steps.verify_binding.outputs.binding_digest }}
+          scanners: vuln,license
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          format: json
+          output: ${{ runner.temp }}/his-binding-controller-trivy.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cluster-manager-${{ inputs.source_channel }}-to-${{ inputs.target_channel }}-scan-evidence
+          path: |
+            ${{ runner.temp }}/cluster-manager-trivy.json
+            ${{ runner.temp }}/his-binding-controller-trivy.json
+          retention-days: 365
+      - name: Create append-only promotion ledger predicate
+        env:
+          DIGEST: ${{ steps.verify.outputs.digest }}
+          BINDING_DIGEST: ${{ steps.verify_binding.outputs.binding_digest }}
+          SOURCE: ${{ inputs.source_channel }}
+          TARGET: ${{ inputs.target_channel }}
+          REVISION: ${{ inputs.expected_source_revision }}
+          CONFORMANCE: ${{ inputs.conformance_evidence }}
+          ROLLBACK: ${{ inputs.rollback_evidence }}
+          REASON: ${{ inputs.approval_reason }}
+        run: |
+          set -euo pipefail
+          jq -n --arg digest "$DIGEST" --arg bindingDigest "$BINDING_DIGEST" --arg actor "$GITHUB_ACTOR" --arg from "$SOURCE" --arg to "$TARGET" \
+            --arg revision "$REVISION" --arg approvedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg reason "$REASON" \
+            --arg run "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --arg conformance "$CONFORMANCE" --arg rollback "$ROLLBACK" \
+            '{schemaVersion:1,image:"ghcr.io/opensphere-platform/opensphere-shell-cluster-manager",sourceDigest:$digest,pairedImages:[{image:"ghcr.io/opensphere-platform/opensphere-his-binding-controller",sourceDigest:$bindingDigest}],actor:$actor,fromChannel:$from,toChannel:$to,sourceRevision:$revision,approvedAt:$approvedAt,approvalReason:$reason,evidenceRefs:[$run,$conformance,$rollback],gates:{multiArchitecture:true,provenance:true,sbom:true,modulePackage:true,vulnerabilityLicense:true,cleanInstallUpgrade:true,rollbackBackupRestore:true}}' \
+            >"$RUNNER_TEMP/promotion.json"
+          jq -n --arg digest "$BINDING_DIGEST" --arg managerDigest "$DIGEST" --arg actor "$GITHUB_ACTOR" --arg from "$SOURCE" --arg to "$TARGET" \
+            --arg revision "$REVISION" --arg approvedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg reason "$REASON" \
+            --arg run "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --arg conformance "$CONFORMANCE" --arg rollback "$ROLLBACK" \
+            '{schemaVersion:1,image:"ghcr.io/opensphere-platform/opensphere-his-binding-controller",sourceDigest:$digest,pairedImages:[{image:"ghcr.io/opensphere-platform/opensphere-shell-cluster-manager",sourceDigest:$managerDigest}],actor:$actor,fromChannel:$from,toChannel:$to,sourceRevision:$revision,approvedAt:$approvedAt,approvalReason:$reason,evidenceRefs:[$run,$conformance,$rollback],gates:{multiArchitecture:true,provenance:true,sbom:true,modulePackage:false,vulnerabilityLicense:true,cleanInstallUpgrade:true,rollbackBackupRestore:true}}' \
+            >"$RUNNER_TEMP/binding-promotion.json"
+      - uses: actions/attest@v4
+        with:
+          subject-name: ghcr.io/opensphere-platform/opensphere-shell-cluster-manager
+          subject-digest: ${{ steps.verify.outputs.digest }}
+          predicate-type: https://opensphere.io/attestations/channel-promotion/v1
+          predicate-path: ${{ runner.temp }}/promotion.json
+          push-to-registry: true
+      - uses: actions/attest@v4
+        with:
+          subject-name: ghcr.io/opensphere-platform/opensphere-his-binding-controller
+          subject-digest: ${{ steps.verify_binding.outputs.binding_digest }}
+          predicate-type: https://opensphere.io/attestations/channel-promotion/v1
+          predicate-path: ${{ runner.temp }}/binding-promotion.json
+          push-to-registry: true
+      - name: Promote immutable digest and verify target
+        env:
+          TARGET: ${{ inputs.target_channel }}
+          DIGEST: ${{ steps.verify.outputs.digest }}
+          BINDING_DIGEST: ${{ steps.verify_binding.outputs.binding_digest }}
+        run: |
+          crane tag "ghcr.io/opensphere-platform/opensphere-shell-cluster-manager@$DIGEST" "$TARGET"
+          test "$(crane digest ghcr.io/opensphere-platform/opensphere-shell-cluster-manager:$TARGET)" = "$DIGEST"
+          crane tag "ghcr.io/opensphere-platform/opensphere-his-binding-controller@$BINDING_DIGEST" "$TARGET"
+          test "$(crane digest ghcr.io/opensphere-platform/opensphere-his-binding-controller:$TARGET)" = "$BINDING_DIGEST"

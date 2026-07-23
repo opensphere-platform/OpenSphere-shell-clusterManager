@@ -168,6 +168,13 @@ export interface ObservabilityConfig {
     oidcSecretName: string;
     allowedCidrs: string[];
   };
+  telemetry: {
+    enabled: boolean;
+    retention: string;
+    storageClassName: string;
+    lokiStorageSize: string;
+    tempoStorageSize: string;
+  };
 }
 
 export interface StorageClassOption {
@@ -189,6 +196,7 @@ export interface ObservabilityLiveState {
   grafana: { serviceType: string; ingress: null | { name: string; hostname: string; ingressClassName: string; tlsSecretName: string; exposureMode: GrafanaExposureMode } };
   networkPolicies: string[];
   directExternalServices: string[];
+  telemetry: { loki: boolean; tempo: boolean; otlp: boolean };
 }
 
 export interface ObservabilityConfigurationState {

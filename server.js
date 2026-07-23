@@ -53,6 +53,8 @@ async function verifySupabaseToken(rawToken, identityFetch = fetch) {
     username: body.username || body.subject || 'unknown',
     subject: body.subject || '',
     groups: Array.isArray(body.groups) ? body.groups : [],
+    permissions: Array.isArray(body.permissions) ? body.permissions : [],
+    assurance: String(body.assurance || 'aal1'),
     provider: 'supabase',
   };
 }

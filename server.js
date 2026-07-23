@@ -144,8 +144,12 @@ async function nodeHealthPublish() {
 }
 
 function serveFrom(root, rel, res) {
-  const fp = path.join(root, path.normalize('/' + rel).replace(/^(\.\.[/\\])+/, ''));
-  if (!fp.startsWith(root)) { res.writeHead(403); return res.end('forbidden'); }
+  let decoded;
+  try { decoded = decodeURIComponent(rel); } catch { res.writeHead(400); return res.end('bad path'); }
+  if (decoded.includes('\0')) { res.writeHead(400); return res.end('bad path'); }
+  const fp = path.resolve(root, decoded);
+  const relative = path.relative(root, fp);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) { res.writeHead(403); return res.end('forbidden'); }
   fs.stat(fp, (err, st) => {
     if (err || !st.isFile()) { res.writeHead(404); return res.end('not found'); }
     const mime = MIME[path.extname(fp)] || 'application/octet-stream';
@@ -214,7 +218,9 @@ async function k8sProxy(req, res, rawUrl) {
 }
 
 const server = http.createServer(async (req, res) => {
-  const p = new URL(req.url, `http://${req.headers.host}`).pathname;
+  let p;
+  try { p = new URL(req.url || '/', 'http://localhost').pathname; }
+  catch { return jsonRes(res, 400, { error: 'bad request target' }); }
   try {
     if (p === '/healthz') { res.writeHead(200); return res.end('ok'); }
     if (p === '/api/session') {

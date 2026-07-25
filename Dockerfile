@@ -9,7 +9,7 @@ COPY package.json package-lock.json ./
 RUN npm install --no-audit --no-fund
 COPY angular.json tsconfig.json tsconfig.app.json ./
 COPY src ./src
-RUN npx ng build --configuration production
+RUN npm run build
 
 # HIS Helm executor and the closed, checksum-pinned chart catalog. Runtime
 # installation does not accept arbitrary repositories and does not depend on

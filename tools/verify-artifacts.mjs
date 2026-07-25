@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const root = resolve(import.meta.dirname, '..');
@@ -10,8 +10,13 @@ const output = project.architect.build.options.outputPath;
 const outputRoot = typeof output === 'string' ? output : output.base;
 const appRoot = resolve(root, outputRoot, 'browser');
 const manifest = JSON.parse(readFileSync(resolve(root, 'ui-shell/ui-shell.manifest.json'), 'utf8'));
+const appSource = readFileSync(resolve(appRoot, 'main.js'), 'utf8');
+const relativeModule = /\b(?:from\s*|import\s*\()\s*["']\.{1,2}\//;
 
 if (hash(readFileSync(resolve(root, 'ui-shell/ui-shell.plugin.js'))) !== manifest.entrySha256) throw new Error('ui-shell.plugin.js does not match manifest.entrySha256');
+if (relativeModule.test(appSource)) throw new Error('app/main.js is not a closed single-file ESM artifact');
+const auxiliaryChunks = readdirSync(appRoot).filter((name) => /^chunk-[A-Z0-9_-]+\.js$/i.test(name));
+if (auxiliaryChunks.length) throw new Error(`undeclared browser chunks remain: ${auxiliaryChunks.join(', ')}`);
 const expected = new Map([
   ['app', { type: 'module', path: '../app/main.js', file: 'main.js' }],
   ['styles', { type: 'style', path: '../app/styles.css', file: 'styles.css' }],

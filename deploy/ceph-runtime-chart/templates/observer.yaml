@@ -1,0 +1,120 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opensphere-ceph-observer
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: opensphere-ceph-observer
+    app.kubernetes.io/component: cluster-observation
+data:
+  ceph-observer.py: |-
+{{ .Files.Get "files/ceph-observer.py" | indent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opensphere-ceph-observer
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: opensphere-ceph-observer
+    app.kubernetes.io/component: cluster-observation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: opensphere-ceph-observer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: opensphere-ceph-observer
+        app.kubernetes.io/component: cluster-observation
+      annotations:
+        checksum/observer-script: {{ .Files.Get "files/ceph-observer.py" | sha256sum | quote }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: observer
+          image: quay.io/cephcsi/cephcsi@sha256:886e6d2416d62dd7c8fbe659b6306b6c9451d6918e35ad5d1ac774520e11ef87
+          imagePullPolicy: IfNotPresent
+          command: [python3, /opt/opensphere/ceph-observer.py]
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: CACHE_SECONDS, value: "30" }
+            - { name: COMMAND_TIMEOUT_SECONDS, value: "8" }
+          ports:
+            - { name: http, containerPort: 8080, protocol: TCP }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits: { cpu: 250m, memory: 256Mi }
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          volumeMounts:
+            - { name: script, mountPath: /opt/opensphere, readOnly: true }
+            - { name: credentials, mountPath: /var/run/opensphere-ceph/credentials, readOnly: true }
+            - { name: monitors, mountPath: /var/run/opensphere-ceph/monitors, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: script
+          configMap:
+            name: opensphere-ceph-observer
+            defaultMode: 0555
+        - name: credentials
+          secret:
+            secretName: rook-ceph-operator-creds
+            optional: true
+            defaultMode: 0400
+        - name: monitors
+          configMap:
+            name: rook-ceph-mon-endpoints
+            optional: true
+        - name: tmp
+          emptyDir:
+            sizeLimit: 32Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: opensphere-ceph-observer
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: opensphere-ceph-observer
+spec:
+  selector:
+    app.kubernetes.io/name: opensphere-ceph-observer
+  ports:
+    - { name: http, port: 8080, targetPort: http, protocol: TCP }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: opensphere-ceph-observer-ingress
+  namespace: {{ .Release.Namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: opensphere-ceph-observer
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: opensphere-console
+          podSelector:
+            matchLabels:
+              app: cluster-manager
+      ports:
+        - { protocol: TCP, port: 8080 }

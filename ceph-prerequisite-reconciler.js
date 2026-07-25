@@ -20,8 +20,18 @@ const APISERVER = process.env.APISERVER || 'https://kubernetes.default.svc';
 const SA_PATH = '/var/run/secrets/kubernetes.io/serviceaccount';
 const HELM = process.env.HELM_BIN || '/usr/local/bin/helm';
 const ROOK_CHART = process.env.ROOK_CHART || '/app/ceph-charts/rook-ceph-v1.20.2.tgz';
+const CSI_DRIVERS_CHART = process.env.CSI_DRIVERS_CHART || '/app/ceph-charts/ceph-csi-drivers-1.0.4.tgz';
+const CSI_DRIVERS_VALUES = process.env.CSI_DRIVERS_VALUES || '/app/ceph-csi-drivers-values.yaml';
 const RUNTIME_CHART = process.env.RUNTIME_CHART || '/app/ceph-runtime-chart';
 const ROOK_CHART_SHA256 = '6e0f10f5ca54e618fb90dd149dc9dfbc8a4932955bff2227b692fb32069daf52';
+const CSI_DRIVERS_CHART_SHA256 = '76a1787baa7d62232eb073ab8260a455a016c02b59aae584a47be6791f05994b';
+const CSI_CRDS = Object.freeze([
+  'cephconnections.csi.ceph.io',
+  'clientprofiles.csi.ceph.io',
+  'clientprofilemappings.csi.ceph.io',
+  'drivers.csi.ceph.io',
+  'operatorconfigs.csi.ceph.io',
+]);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const EXPECTED_DESIRED_STATE = Object.freeze({
   contract: 'opensphere.ceph.rook-prerequisite/v1',
@@ -30,7 +40,13 @@ const EXPECTED_DESIRED_STATE = Object.freeze({
     version: 'v1.20.2', sha256: ROOK_CHART_SHA256,
   }),
   components: Object.freeze(['crds', 'operator', 'csi', 'runtime-rbac']),
-  verification: Object.freeze(['cephclusters.ceph.rook.io Established', 'deployment/rook-ceph-operator Ready']),
+  verification: Object.freeze([
+    'cephclusters.ceph.rook.io Established',
+    'all ceph-csi-operator CRDs Established',
+    'deployment/rook-ceph-operator Ready',
+    'deployment/ceph-csi-controller-manager Ready',
+    'drivers.csi.ceph.io/rook-ceph.rbd.csi.ceph.com configured',
+  ]),
 });
 
 let lastClaimAt = null;
@@ -132,29 +148,56 @@ function deploymentReady(deployment) {
 
 async function waitForRookReady() {
   const deadline = Date.now() + ROLLOUT_TIMEOUT_MS;
-  let crd;
+  let cephClusterCrd;
+  let csiCrds = [];
   let operator;
+  let csiOperator;
+  let rbdDriver;
   while (Date.now() < deadline) {
     try {
-      crd = await kubernetesGet('/apis/apiextensions.k8s.io/v1/customresourcedefinitions/cephclusters.ceph.rook.io');
-      operator = await kubernetesGet('/apis/apps/v1/namespaces/rook-ceph/deployments/rook-ceph-operator');
-      if (crdEstablished(crd) && deploymentReady(operator)) return { crd, operator };
+      [
+        cephClusterCrd,
+        csiCrds,
+        operator,
+        csiOperator,
+        rbdDriver,
+      ] = await Promise.all([
+        kubernetesGet('/apis/apiextensions.k8s.io/v1/customresourcedefinitions/cephclusters.ceph.rook.io'),
+        Promise.all(CSI_CRDS.map((name) => kubernetesGet(`/apis/apiextensions.k8s.io/v1/customresourcedefinitions/${name}`))),
+        kubernetesGet('/apis/apps/v1/namespaces/rook-ceph/deployments/rook-ceph-operator'),
+        kubernetesGet('/apis/apps/v1/namespaces/rook-ceph/deployments/ceph-csi-controller-manager'),
+        kubernetesGet('/apis/csi.ceph.io/v1/namespaces/rook-ceph/drivers/rook-ceph.rbd.csi.ceph.com'),
+      ]);
+      if (crdEstablished(cephClusterCrd)
+        && csiCrds.every(crdEstablished)
+        && deploymentReady(operator)
+        && deploymentReady(csiOperator)
+        && rbdDriver?.metadata?.name === 'rook-ceph.rbd.csi.ceph.com') {
+        return { cephClusterCrd, csiCrds, operator, csiOperator, rbdDriver };
+      }
     } catch (error) {
       lastError = String(error?.message || error).slice(0, 500);
     }
     await sleep(3000);
   }
-  throw new Error('Rook CRD/operator Ready observation timed out');
+  throw new Error('Rook and Ceph-CSI prerequisite readiness observation timed out');
 }
 
 async function installPrerequisites() {
   const observedDigest = fileSha256(ROOK_CHART);
   if (observedDigest !== ROOK_CHART_SHA256) throw new Error('bundled Rook chart SHA-256 mismatch');
+  const csiDriversDigest = fileSha256(CSI_DRIVERS_CHART);
+  if (csiDriversDigest !== CSI_DRIVERS_CHART_SHA256) throw new Error('bundled Ceph-CSI drivers chart SHA-256 mismatch');
   await runHelm([
     'upgrade', '--install', 'rook-ceph', ROOK_CHART,
     '--namespace', 'rook-ceph', '--create-namespace',
     '--atomic', '--wait', '--timeout', '10m', '--history-max', '3',
     '--set', 'crds.enabled=true',
+  ]);
+  await runHelm([
+    'upgrade', '--install', 'ceph-csi-drivers', CSI_DRIVERS_CHART,
+    '--namespace', 'rook-ceph', '--values', CSI_DRIVERS_VALUES,
+    '--atomic', '--wait', '--timeout', '10m', '--history-max', '3',
   ]);
   await runHelm([
     'upgrade', '--install', 'opensphere-ceph-runtime', RUNTIME_CHART,
@@ -166,11 +209,17 @@ async function installPrerequisites() {
     contract: EXPECTED_DESIRED_STATE.contract,
     rookVersion: 'v1.20.2',
     chartSha256: observedDigest,
+    csiDriversVersion: '1.0.4',
+    csiDriversChartSha256: csiDriversDigest,
     cephClusterCrd: 'Established',
+    csiOperatorCrds: observed.csiCrds.map((item) => item.metadata?.name),
     operator: 'Ready',
     operatorGeneration: observed.operator?.metadata?.generation || null,
     operatorObservedGeneration: observed.operator?.status?.observedGeneration || null,
     operatorReadyReplicas: observed.operator?.status?.readyReplicas || 0,
+    csiOperator: 'Ready',
+    csiOperatorReadyReplicas: observed.csiOperator?.status?.readyReplicas || 0,
+    rbdDriver: observed.rbdDriver?.metadata?.name || null,
     runtimeOwnerRelease: 'opensphere-ceph-runtime',
   };
 }

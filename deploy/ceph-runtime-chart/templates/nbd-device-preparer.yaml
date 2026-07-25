@@ -1,0 +1,91 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: opensphere-ceph-nbd-preparer
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: opensphere-ceph-nbd-preparer
+    app.kubernetes.io/component: node-storage-prerequisite
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: opensphere-ceph-nbd-preparer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: opensphere-ceph-nbd-preparer
+        app.kubernetes.io/component: node-storage-prerequisite
+    spec:
+      priorityClassName: system-node-critical
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: nbd-device-preparer
+          image: quay.io/cephcsi/cephcsi@sha256:886e6d2416d62dd7c8fbe659b6306b6c9451d6918e35ad5d1ac774520e11ef87
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+            allowPrivilegeEscalation: true
+          command:
+            - /bin/sh
+            - -ceu
+          args:
+            - |
+              modprobe nbd nbds_max=16 >/dev/null 2>&1 || true
+              while true; do
+                found=0
+                for device_file in /sys/class/block/nbd*/dev; do
+                  [ -f "${device_file}" ] || continue
+                  found=1
+                  device_name="$(basename "$(dirname "${device_file}")")"
+                  device_number="$(cat "${device_file}")"
+                  major="${device_number%%:*}"
+                  minor="${device_number##*:}"
+                  if [ ! -b "/host-dev/${device_name}" ]; then
+                    rm -f "/host-dev/${device_name}"
+                    mknod "/host-dev/${device_name}" b "${major}" "${minor}"
+                  fi
+                  chmod 0660 "/host-dev/${device_name}"
+                done
+                [ "${found}" -eq 1 ] || echo "NBD kernel devices are not available on this node." >&2
+                sleep 60
+              done
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -ceu
+                - test -b /host-dev/nbd0
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            failureThreshold: 12
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 64Mi
+          volumeMounts:
+            - name: host-dev
+              mountPath: /host-dev
+            - name: host-sys
+              mountPath: /sys
+              readOnly: true
+            - name: host-modules
+              mountPath: /lib/modules
+              readOnly: true
+      volumes:
+        - name: host-dev
+          hostPath:
+            path: /dev
+            type: Directory
+        - name: host-sys
+          hostPath:
+            path: /sys
+            type: Directory
+        - name: host-modules
+          hostPath:
+            path: /lib/modules
+            type: Directory

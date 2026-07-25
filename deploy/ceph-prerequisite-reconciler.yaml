@@ -13,17 +13,32 @@ rules:
     resources: [namespaces]
     verbs: [get, create]
   - apiGroups: [""]
-    resources: [serviceaccounts, configmaps, secrets]
+    resources: [serviceaccounts, services, configmaps, secrets, pods]
     verbs: [get, list, watch, create, update, patch, delete]
   - apiGroups: [apps]
-    resources: [deployments]
+    resources: [deployments, daemonsets, replicasets]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
     verbs: [get, list, watch, create, update, patch, delete]
   - apiGroups: [rbac.authorization.k8s.io]
     resources: [roles, rolebindings, clusterroles, clusterrolebindings]
     verbs: [get, list, watch, create, update, patch, delete]
+  # The signed, digest-pinned Rook chart owns RBAC objects. Kubernetes requires
+  # these explicit verbs when the chart grants permissions beyond this
+  # reconciler's own rule set or binds those roles to chart service accounts.
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [roles, clusterroles]
+    verbs: [escalate, bind]
   - apiGroups: [apiextensions.k8s.io]
     resources: [customresourcedefinitions]
     verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [csi.ceph.io]
+    resources: [cephconnections, clientprofiles, clientprofilemappings, drivers, operatorconfigs]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [storage.k8s.io]
+    resources: [csidrivers]
+    verbs: [get, list, watch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -61,7 +76,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: reconciler
-          image: ghcr.io/opensphere-platform/opensphere-shell-cluster-manager@sha256:5ad64e012d3d2d2311558540a458c669e9193aa6d1b1e8f928940653c0d68eb3
+          image: ghcr.io/opensphere-platform/opensphere-shell-cluster-manager@sha256:65ee3603c26794dc0bf2c8ded5a5f37e2db17f5a388f98c016483b31abca4958
           imagePullPolicy: IfNotPresent
           command: [node, /app/ceph-prerequisite-reconciler.js]
           ports: [{ name: http, containerPort: 8080 }]

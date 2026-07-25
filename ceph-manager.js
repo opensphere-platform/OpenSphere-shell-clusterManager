@@ -22,14 +22,26 @@ const IMPORT_NAMESPACE = 'opensphere-ceph-imports';
 const OPERATOR_RELEASE = 'rook-ceph';
 const CLUSTER_RELEASE = 'rook-ceph-external';
 const CONNECTION_CONFIGMAP = 'opensphere-ceph-connection';
+const OPERATION_CONFIGMAP = 'opensphere-ceph-operation';
 const CHART_VERSION = 'v1.20.2';
 const CLUSTER_CHART = process.env.ROOK_CLUSTER_CHART || `/app/ceph-charts/rook-ceph-cluster-${CHART_VERSION}.tgz`;
 const activeOperations = new Set();
+const CSI_CRDS = Object.freeze([
+  'cephconnections.csi.ceph.io',
+  'clientprofiles.csi.ceph.io',
+  'clientprofilemappings.csi.ceph.io',
+  'drivers.csi.ceph.io',
+  'operatorconfigs.csi.ceph.io',
+]);
 const OAA_CEPH_READ_PERMISSION = 'console.ceph.read';
 const OAA_CEPH_MANAGE_PERMISSION = 'console.ceph.manage';
 const IMPORT_SECRET_TYPE = 'opensphere.io/ceph-provider-export';
 const IMPORT_TTL_MS = 60 * 60 * 1000;
 const IMPORT_NAME_RE = /^opensphere-ceph-import-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const CEPH_OBSERVER_URL = String(
+  process.env.CEPH_OBSERVER_URL || 'http://opensphere-ceph-observer.rook-ceph.svc.cluster.local:8080',
+).replace(/\/+$/, '');
+const CEPH_OBSERVER_MAX_BYTES = 4 * 1024 * 1024;
 
 const MANAGED_LABELS = Object.freeze({
   'app.kubernetes.io/managed-by': 'opensphere-cluster-manager',
@@ -51,32 +63,21 @@ const IGNORED_EXPORTS = new Set([
 ]);
 
 const PROVIDER_GUIDE = Object.freeze({
-  schemaVersion: 1,
+  schemaVersion: 2,
   rookVersion: CHART_VERSION,
   consumerNamespace: NAMESPACE,
   requiredInformation: [
-    { id: 'fsid', label: 'Ceph FSID', description: '대상 Ceph 클러스터를 유일하게 식별하는 UUID', secret: false },
+    { id: 'fsid', label: 'Cluster ID (FSID)', description: '대상 Ceph 클러스터를 유일하게 식별하는 UUID', secret: false },
     { id: 'mon-endpoints', label: 'MON endpoint', description: '각 Monitor의 public-network 주소와 포트(msgr2 3300 권장, msgr1 6789 지원)', secret: false },
-    { id: 'storage', label: 'RBD pool / CephFS', description: '사용할 RBD data pool 및/또는 CephFS filesystem·data pool 이름', secret: false },
-    { id: 'cephx', label: '제한된 CephX 사용자', description: 'healthchecker와 선택한 CSI 유형의 node/provisioner 사용자 및 key', secret: true },
-    { id: 'provider-export', label: 'Rook provider export JSON', description: '동일 Rook 버전의 공식 스크립트가 생성한 JSON resource 배열', secret: true },
+    { id: 'user-id', label: 'CephX 사용자', description: 'Ceph 엔티티(client.<id>) 또는 ceph-csi userID(<id>). 시스템이 대상별 형식으로 변환', secret: false },
+    { id: 'user-key', label: 'User key', description: 'CephX 사용자 인증 key. Kubernetes Secret에만 저장', secret: true },
+    { id: 'pool', label: 'RBD pool', description: 'Kubernetes 볼륨에 사용할 기존 RBD pool 이름', secret: false },
   ],
-  requiredPreparation: [
-    { id: 'health', label: 'Ceph health', description: 'MON quorum과 OSD가 정상이며 연결 작업 시 HEALTH_OK 또는 승인된 경고 상태' },
-    { id: 'storage', label: 'Storage 준비', description: 'RBD pool은 생성·초기화되어 있고, CephFS 사용 시 filesystem/MDS가 Active' },
-    { id: 'network', label: 'Public network 경로', description: '모든 consumer node에서 MON과 OSD/MDS public 주소로 라우팅·방화벽 통신 가능' },
-    { id: 'least-privilege', label: 'Consumer별 최소 권한', description: '--restricted-auth-permission과 고유 --k8s-cluster-name으로 전용 CSI 사용자를 생성' },
-    { id: 'lifecycle', label: '운영 인계', description: 'export 생성 인자, Ceph/Rook 버전, key rotation·upgrade 절차와 담당자를 기록' },
-  ],
+  requiredPreparation: [],
   network: {
     monitorTcpPorts: [3300, 6789],
     cephDaemonTcpRange: '6800-7568',
     sourceScope: 'all-consumer-kubernetes-nodes',
-  },
-  export: {
-    format: 'json',
-    commandTemplate: `python3 create-external-cluster-resources.py --namespace ${NAMESPACE} --format json --k8s-cluster-name <consumer-cluster-name> --restricted-auth-permission true --rbd-data-pool-name <rbd-pool> [--cephfs-filesystem-name <cephfs-name>] [--v2-port-enable]`,
-    requiredFlags: ['--namespace', '--format json', '--k8s-cluster-name', '--restricted-auth-permission true'],
   },
   unsupportedInputs: ['client.admin keyring', 'monitor keyring', 'RGW/object-store credentials', 'Ceph dashboard credentials'],
 });
@@ -142,20 +143,36 @@ function requiredItem(items, kind, name) {
   return found;
 }
 
-function credential(item, expectedPrefix) {
+function normalizeCephClientIdentity(input, label = 'CephX 사용자') {
+  const raw = String(input || '').trim();
+  if (/^(?:mon|osd|mgr|mds)\./i.test(raw)) {
+    throw error(`${label}는 Ceph client 엔티티여야 합니다. 예: opensphere-dev 또는 client.opensphere-dev`);
+  }
+  const csiUserID = raw.startsWith('client.') ? raw.slice('client.'.length) : raw;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(csiUserID)) {
+    throw error(`${label} 형식이 올바르지 않습니다. Ceph 엔티티(client.<id>) 또는 CSI userID(<id>)를 입력하십시오.`);
+  }
+  if (csiUserID.toLowerCase() === 'admin') {
+    throw error('client.admin은 사용할 수 없습니다. 선택한 pool에만 권한이 제한된 CephX 사용자를 입력하십시오.');
+  }
+  return { cephEntity: `client.${csiUserID}`, csiUserID };
+}
+
+function credential(item, expectedPrefix, target = 'entity') {
   onlyKeys(item.data, ['userID', 'userKey'], `${item.kind}/${item.name}`);
-  const userID = String(item.data.userID || '');
-  if (!new RegExp(`^client\\.${expectedPrefix}(?:[-.][A-Za-z0-9.-]+)?$`).test(userID)) {
-    throw error(`${item.name}의 userID가 제한된 CSI 사용자 형식이 아닙니다.`);
+  const identity = normalizeCephClientIdentity(item.data.userID, `${item.name}의 userID`);
+  if (!new RegExp(`^${expectedPrefix}(?:[-.][A-Za-z0-9.-]+)?$`).test(identity.csiUserID)) {
+    throw error(`${item.name}의 userID가 예상한 ${expectedPrefix} 사용자 형식이 아닙니다.`);
   }
   const userKey = String(item.data.userKey || '');
   if (!/^[A-Za-z0-9+/_=-]{16,1024}$/.test(userKey)) throw error(`${item.name}의 userKey 형식이 올바르지 않습니다.`);
-  return { userID, userKey };
+  const userID = target === 'csi' ? identity.csiUserID : identity.cephEntity;
+  return { ...identity, userID, userKey };
 }
 
 function storageClass(item, secretNames) {
   const allowed = [
-    'pool', 'dataPool', 'fsName',
+    'pool', 'dataPool', 'fsName', 'mounter',
     'csi.storage.k8s.io/provisioner-secret-name',
     'csi.storage.k8s.io/controller-expand-secret-name',
     'csi.storage.k8s.io/node-stage-secret-name',
@@ -195,8 +212,12 @@ function validateProviderExport(input) {
   }
 
   const operator = requiredItem(items, 'Secret', 'rook-ceph-operator-creds');
-  const operatorCredential = credential(operator, 'healthchecker');
-  const secrets = [operator, mon];
+  const operatorCredential = credential(operator, 'healthchecker', 'entity');
+  const secrets = [
+    { ...operator, data: { userID: operatorCredential.cephEntity, userKey: operatorCredential.userKey } },
+    mon,
+  ];
+  let csiUserID = '';
   const credentialSpecs = [
     ['rook-csi-rbd-node', 'csi-rbd-node'],
     ['rook-csi-rbd-provisioner', 'csi-rbd-provisioner'],
@@ -205,7 +226,11 @@ function validateProviderExport(input) {
   ];
   for (const [name, prefix] of credentialSpecs) {
     const item = items.find((candidate) => candidate.kind === 'Secret' && candidate.name === name);
-    if (item) { credential(item, prefix); secrets.push(item); }
+    if (item) {
+      const csiCredential = credential(item, prefix, 'csi');
+      if (!csiUserID) csiUserID = csiCredential.csiUserID;
+      secrets.push({ ...item, data: { userID: csiCredential.csiUserID, userKey: csiCredential.userKey } });
+    }
   }
   const secretNames = new Set(secrets.map((item) => item.name));
   const storageClasses = items.filter((item) => item.kind === 'StorageClass').map((item) => storageClass(item, secretNames));
@@ -228,11 +253,87 @@ function validateProviderExport(input) {
     monitorData,
     monitorCount: monitorData.split(',').map((value) => value.trim()).filter(Boolean).length,
     monitorProtocols: monitorProtocols(monitorData),
-    operatorUser: operatorCredential.userID,
+    operatorUser: operatorCredential.cephEntity,
+    cephEntity: operatorCredential.cephEntity,
+    csiUserID,
+    userID: csiUserID,
     configMaps: [endpoints],
     secrets,
     storageClasses,
     ignored: items.filter((item) => IGNORED_EXPORTS.has(`${item.kind}/${item.name}`)).map((item) => `${item.kind}/${item.name}`),
+  };
+}
+
+function validateConnectionInput(input) {
+  const value = requireClosedObject(input, ['clusterID', 'monitors', 'userID', 'userKey', 'pool', 'storageClassName'], 'Ceph 접속 정보');
+  const fsid = String(value.clusterID || '').trim().toLowerCase();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(fsid)) {
+    throw error('Cluster ID(FSID)가 UUID 형식이 아닙니다.');
+  }
+
+  const monitorValues = Array.isArray(value.monitors)
+    ? value.monitors
+    : String(value.monitors || '').split(/[\r\n,]+/);
+  const monitors = monitorValues.map((item) => String(item || '').trim()).filter(Boolean);
+  if (monitors.length < 1 || monitors.length > 15) throw error('Monitor endpoint는 1~15개를 입력해야 합니다.');
+  const endpointPattern = /^(?:(v1|v2):)?(\[[0-9a-f:]+\]|[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?):(3300|6789)(?:\/0)?$/i;
+  const normalized = monitors.map((endpoint) => {
+    const match = endpoint.match(endpointPattern);
+    if (!match) throw error(`Monitor endpoint '${endpoint}' 형식이 올바르지 않습니다. host:3300 또는 host:6789 형식을 사용하십시오.`);
+    const protocol = String(match[1] || '').toLowerCase();
+    const port = Number(match[3]);
+    if ((protocol === 'v2' && port !== 3300) || (protocol === 'v1' && port !== 6789)) {
+      throw error(`Monitor endpoint '${endpoint}'의 protocol과 port가 일치하지 않습니다.`);
+    }
+    return `${protocol ? `${protocol}:` : ''}${match[2].toLowerCase()}:${port}`;
+  });
+  if (new Set(normalized).size !== normalized.length) throw error('중복된 Monitor endpoint가 있습니다.');
+
+  const identity = normalizeCephClientIdentity(value.userID);
+  const userKey = String(value.userKey || '').trim();
+  if (!/^[A-Za-z0-9+/_=-]{16,1024}$/.test(userKey)) throw error('User key 형식이 올바르지 않습니다.');
+  const pool = String(value.pool || '').trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(pool)) throw error('RBD pool 이름 형식이 올바르지 않습니다.');
+  const storageClassName = safeName(value.storageClassName || 'ceph-rbd', 'StorageClass 이름');
+  if (storageClassName.length > 240) throw error('StorageClass 이름은 240자 이하여야 합니다.');
+  const operatorCredentialData = { userID: identity.cephEntity, userKey };
+  const csiCredentialData = { userID: identity.csiUserID, userKey };
+  const storageClass = {
+    name: storageClassName,
+    kind: 'StorageClass',
+    data: {
+      pool,
+      mounter: 'rbd-nbd',
+      'csi.storage.k8s.io/provisioner-secret-name': 'rook-csi-rbd-provisioner',
+      'csi.storage.k8s.io/controller-expand-secret-name': 'rook-csi-rbd-provisioner',
+      'csi.storage.k8s.io/node-stage-secret-name': 'rook-csi-rbd-node',
+    },
+  };
+  const monitorData = normalized.map((endpoint, index) => `${String.fromCharCode(97 + index)}=${endpoint}`).join(',');
+  return {
+    fsid,
+    fsidFingerprint: crypto.createHash('sha256').update(fsid).digest('hex').slice(0, 16),
+    monitorData,
+    monitorEndpoints: normalized,
+    monitorCount: normalized.length,
+    monitorProtocols: monitorProtocols(monitorData),
+    operatorUser: identity.cephEntity,
+    cephEntity: identity.cephEntity,
+    csiUserID: identity.csiUserID,
+    userID: identity.csiUserID,
+    configMaps: [{
+      name: 'rook-ceph-mon-endpoints',
+      kind: 'ConfigMap',
+      data: { data: monitorData, maxMonId: String(normalized.length - 1), mapping: '{}' },
+    }],
+    secrets: [
+      { name: 'rook-ceph-mon', kind: 'Secret', data: { 'admin-secret': 'admin-secret', fsid, 'mon-secret': 'mon-secret' } },
+      { name: 'rook-ceph-operator-creds', kind: 'Secret', data: { ...operatorCredentialData } },
+      { name: 'rook-csi-rbd-node', kind: 'Secret', data: { ...csiCredentialData } },
+      { name: 'rook-csi-rbd-provisioner', kind: 'Secret', data: { ...csiCredentialData } },
+    ],
+    storageClasses: [storageClass],
+    ignored: [],
   };
 }
 
@@ -250,6 +351,91 @@ async function actorForOaaOwner(ctx, req, mutation) {
   if (!permissions.has(requiredPermission)) throw error(`Ceph OAA owner API에는 ${requiredPermission} 권한이 필요합니다.`, 403);
   if (mutation && String(actor.assurance || 'aal1').toLowerCase() !== 'aal2') throw error('Ceph OAA 변경은 AAL2 재인증이 필요합니다.', 403);
   return actor;
+}
+
+async function consoleChangeJson(ctx, req, method, apiPath, body) {
+  const token = ctx.requestToken(req);
+  const headers = {
+    authorization: `Bearer ${token}`,
+    accept: 'application/json',
+    ...(body ? { 'content-type': 'application/json' } : {}),
+  };
+  const correlationId = String(req.headers?.['x-os-correlation-id'] || '');
+  const idempotencyKey = String(req.headers?.['x-os-idempotency-key'] || '');
+  if (/^[A-Za-z0-9._:-]{1,128}$/.test(correlationId)) headers['x-os-correlation-id'] = correlationId;
+  if (method !== 'GET' && /^[A-Za-z0-9._:-]{8,200}$/.test(idempotencyKey)) headers['x-os-idempotency-key'] = idempotencyKey;
+
+  let response;
+  try {
+    response = await (ctx.consoleFetch || fetch)(`${ctx.consoleBackend}${apiPath}`, {
+      method,
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(10000),
+    });
+  } catch {
+    throw error('Console Change Control API에 연결할 수 없습니다.', 503);
+  }
+  const text = await response.text();
+  let value = {};
+  try { value = text ? JSON.parse(text) : {}; } catch { value = { error: text }; }
+  if (!response.ok) {
+    throw error(`Change Control 요청 실패(HTTP ${response.status}): ${value.error || response.statusText || '응답 오류'}`, response.status);
+  }
+  return value;
+}
+
+async function requestCephPrerequisiteChange(ctx, req, input) {
+  await actorFor(ctx, req, true);
+  const body = requireClosedObject(input, ['reason', 'source'], 'request');
+  const reason = reasonFrom(body);
+  const source = String(body.source || 'ceph-readiness').trim();
+  if (!/^[a-z0-9-]{1,64}$/.test(source)) throw error('설치 요청 source 형식이 올바르지 않습니다.');
+
+  const template = await consoleChangeJson(
+    ctx,
+    req,
+    'GET',
+    '/api/platform/change-templates/ceph-rook-prerequisite',
+  );
+  if (template.id !== 'ceph-rook-prerequisite'
+    || !template.consumerId
+    || !template.action
+    || !template.target
+    || !template.desiredState
+    || Array.isArray(template.desiredState)
+    || typeof template.desiredState !== 'object') {
+    throw error('Console이 유효한 Ceph 선행요소 변경 템플릿을 반환하지 않았습니다.', 502);
+  }
+  const sourceSuffix = ` [source:${source}]`;
+  return consoleChangeJson(ctx, req, 'POST', '/api/platform/changes', {
+    templateId: template.id,
+    consumerId: template.consumerId,
+    action: template.action,
+    target: template.target,
+    desiredState: template.desiredState,
+    reason: reason.length + sourceSuffix.length <= 500 ? `${reason}${sourceSuffix}` : reason,
+  });
+}
+
+async function cephPrerequisiteRequestStatus(ctx, req) {
+  try {
+    const result = await consoleChangeJson(
+      ctx,
+      req,
+      'GET',
+      '/api/platform/change-templates/ceph-rook-prerequisite/status',
+    );
+    return result?.current || null;
+  } catch (failure) {
+    return {
+      trackingAvailable: false,
+      phase: 'Unavailable',
+      status: 'unknown',
+      message: safeError(failure),
+      checkedAt: new Date().toISOString(),
+    };
+  }
 }
 
 function requireClosedObject(input, allowedKeys, label) {
@@ -374,9 +560,13 @@ function configMapManifest(item) {
   return { apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: item.name, namespace: NAMESPACE, labels: MANAGED_LABELS }, data: item.data };
 }
 
-async function stageProviderImport(ctx, providerExport, actor) {
+function crdEstablished(crd) {
+  return Boolean(crd && (crd.status?.conditions || []).some((item) => item.type === 'Established' && item.status === 'True'));
+}
+
+async function stageConnectionImport(ctx, connectionInput, actor) {
   await pruneExpiredImports(ctx);
-  const connection = validateProviderExport(providerExport);
+  const connection = validateConnectionInput(connectionInput);
   const name = `opensphere-ceph-import-${crypto.randomUUID()}`;
   const expiresAt = new Date(Date.now() + IMPORT_TTL_MS).toISOString();
   await kube(ctx, 'POST', `/api/v1/namespaces/${IMPORT_NAMESPACE}/secrets`, {
@@ -384,9 +574,13 @@ async function stageProviderImport(ctx, providerExport, actor) {
     metadata: {
       name, namespace: IMPORT_NAMESPACE,
       labels: { 'app.kubernetes.io/managed-by': 'opensphere-cluster-manager', 'opensphere.io/ceph-import': 'staged' },
-      annotations: { 'opensphere.io/staged-by': actor.username, 'opensphere.io/fsid-fingerprint': connection.fsidFingerprint, 'opensphere.io/expires-at': expiresAt },
+      annotations: {
+        'opensphere.io/staged-by': actor.username,
+        'opensphere.io/fsid-fingerprint': connection.fsidFingerprint,
+        'opensphere.io/expires-at': expiresAt,
+      },
     },
-    stringData: { providerExport: JSON.stringify(providerExport) },
+    stringData: { connectionInput: JSON.stringify(connectionInput) },
   });
   return {
     importRef: `${IMPORT_NAMESPACE}/${name}`,
@@ -413,19 +607,19 @@ async function connectionFromImportRef(ctx, importRef) {
   const name = importNameFromRef(importRef);
   const secret = await optionalKube(ctx, `/api/v1/namespaces/${IMPORT_NAMESPACE}/secrets/${encodeURIComponent(name)}`);
   if (!secret || secret.type !== IMPORT_SECRET_TYPE || secret.metadata?.labels?.['opensphere.io/ceph-import'] !== 'staged') {
-    throw error('유효한 staged Ceph provider import를 찾지 못했습니다.', 404);
+    throw error('유효한 staged Ceph 접속 정보를 찾지 못했습니다.', 404);
   }
   const expiresAt = Date.parse(String(secret.metadata?.annotations?.['opensphere.io/expires-at'] || ''));
   if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
     await deleteProviderImport(ctx, name).catch(() => undefined);
-    throw error('staged Ceph provider import가 만료되었습니다. 관리자 UI에서 다시 staging하십시오.', 410);
+    throw error('staged Ceph 접속 정보가 만료되었습니다. 관리자 UI에서 다시 검증하십시오.', 410);
   }
-  const encoded = String(secret.data?.providerExport || '');
-  if (!encoded || encoded.length > 256 * 1024) throw error('staged Ceph provider import payload가 없거나 너무 큽니다.', 409);
-  let providerExport;
-  try { providerExport = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')); }
-  catch { throw error('staged Ceph provider import payload가 손상되었습니다.', 409); }
-  return { name, connection: validateProviderExport(providerExport) };
+  const encoded = String(secret.data?.connectionInput || '');
+  if (!encoded || encoded.length > 32 * 1024) throw error('staged Ceph 접속 정보가 없거나 너무 큽니다.', 409);
+  let connectionInput;
+  try { connectionInput = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')); }
+  catch { throw error('staged Ceph 접속 정보가 손상되었습니다.', 409); }
+  return { name, connection: validateConnectionInput(connectionInput) };
 }
 
 async function deleteProviderImport(ctx, name) {
@@ -452,6 +646,7 @@ function storageClassManifest(item) {
   else {
     parameters.imageFormat = '2';
     parameters.imageFeatures = 'layering';
+    if (item.data.mounter) parameters.mounter = item.data.mounter;
     parameters['csi.storage.k8s.io/fstype'] = 'ext4';
     if (item.data.dataPool) parameters.dataPool = item.data.dataPool;
   }
@@ -520,11 +715,19 @@ function helmMetadataAccessDenied(failure) {
 
 async function helmStatus(ctx, release, namespace, tolerateMetadataAccessDenied = false) {
   try {
-    const out = await withKubeconfig(ctx, (env) => command('helm', ['status', release, '--namespace', namespace, '--output', 'json'], { env, timeoutMs: 30000 }));
-    const value = JSON.parse(out.stdout || '{}');
-    return { installed: true, status: value.info?.status || 'unknown', chart: value.chart?.metadata?.version || '', revision: value.version || 0 };
+    // `helm status --output json` embeds the complete rendered manifest. Rook
+    // CRDs can make that response exceed the bounded command-output buffer,
+    // leaving a truncated document that cannot be parsed. `helm list` returns
+    // only the release metadata required by this readiness projection.
+    const filter = `^${release.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`;
+    const out = await withKubeconfig(ctx, (env) => command('helm', ['list', '--namespace', namespace, '--all', '--filter', filter, '--output', 'json'], { env, timeoutMs: 30000 }));
+    const values = JSON.parse(out.stdout || '[]');
+    const value = Array.isArray(values) ? values.find((item) => item?.name === release) : null;
+    if (!value) return { installed: false, status: 'not-installed', chart: '', revision: 0 };
+    const chart = String(value.chart || '');
+    const version = chart.match(/-(v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$/)?.[1] || chart;
+    return { installed: true, status: value.status || 'unknown', chart: version, revision: Number(value.revision || 0) || 0 };
   } catch (e) {
-    if (/release: not found|not found/i.test(e.safeMessage || e.message || '')) return { installed: false, status: 'not-installed', chart: '', revision: 0 };
     if (tolerateMetadataAccessDenied && helmMetadataAccessDenied(e)) {
       return { installed: null, status: 'metadata-access-blocked', chart: '', revision: 0, reason: 'HelmMetadataAccessDenied' };
     }
@@ -600,6 +803,8 @@ async function cephStatus(ctx) {
 
 function planFor(connection, snapshotSupported) {
   const snapshotClasses = snapshotSupported ? connection.storageClasses.map((item) => `${item.name}-snapshot`) : [];
+  const cephEntity = connection.cephEntity || connection.operatorUser || '';
+  const csiUserID = connection.csiUserID || connection.userID || cephEntity.replace(/^client\./, '');
   const resources = [
     ...connection.configMaps.map((item) => ({ kind: 'ConfigMap', namespace: NAMESPACE, name: item.name })),
     ...connection.secrets.map((item) => ({ kind: 'Secret', namespace: NAMESPACE, name: item.name, secretRefOnly: true })),
@@ -609,9 +814,14 @@ function planFor(connection, snapshotSupported) {
   return {
     mode: 'RookExternal', namespace: NAMESPACE,
     parent: 'Kubernetes',
+    clusterID: connection.fsid,
     fsidFingerprint: connection.fsidFingerprint,
+    monitors: connection.monitorEndpoints || String(connection.monitorData || '').split(',').map((item) => item.replace(/^[^=]+=/, '')),
     monitorCount: connection.monitorCount,
     monitorProtocols: connection.monitorProtocols,
+    cephEntity,
+    csiUserID,
+    userID: csiUserID,
     storage: connection.storageClasses.map((item) => ({ name: item.name, pool: item.data.pool, filesystem: item.data.fsName || '' })),
     secretRefs: connection.secrets.map((item) => `${NAMESPACE}/${item.name}`),
     charts: [
@@ -724,6 +934,248 @@ async function disconnect(ctx, metadata) {
   return { ok: true, retained: ['remote Ceph pools', 'remote Ceph filesystems', 'remote Ceph data'], removed: ['consumer Rook external cluster', 'consumer CSI secrets', 'consumer StorageClasses', 'consumer VolumeSnapshotClasses'] };
 }
 
+function record(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function list(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function finiteNumber(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function boundedText(value, fallback = '', limit = 512) {
+  const text = String(value ?? fallback).trim();
+  return text.slice(0, limit);
+}
+
+function observerSectionError(section, result) {
+  const reason = boundedText(result.reason, 'Unavailable', 64);
+  const messages = {
+    PermissionDenied: '연결된 CephX 계정에 이 정보를 조회할 권한이 없습니다.',
+    Unsupported: '대상 Ceph 클러스터가 이 관측 기능을 제공하지 않습니다.',
+    Timeout: 'Ceph가 관측 제한 시간 안에 응답하지 않았습니다.',
+    NotConfigured: 'Ceph 연결 정보가 아직 관측기에 준비되지 않았습니다.',
+    ObserverUnavailable: 'Ceph 관측 명령을 실행할 수 없습니다.',
+    ResponseTooLarge: 'Ceph 응답이 안전한 처리 크기를 초과했습니다.',
+    InvalidResponse: 'Ceph가 해석할 수 없는 응답을 반환했습니다.',
+    CommandFailed: 'Ceph가 이 관측 요청을 처리하지 못했습니다.',
+  };
+  return {
+    section,
+    reason,
+    message: messages[reason] || 'Ceph 관측 정보를 사용할 수 없습니다.',
+  };
+}
+
+function fingerprint(value) {
+  const text = boundedText(value, '', 256);
+  return text ? crypto.createHash('sha256').update(text).digest('hex').slice(0, 16) : '';
+}
+
+function normalizeCephInsights(snapshot) {
+  const source = record(snapshot);
+  if (finiteNumber(source.schemaVersion, -1) !== 1) throw error('Ceph 관측 응답 계약을 인식할 수 없습니다.', 502);
+  const results = record(source.results);
+  const sectionNames = ['status', 'health', 'capacity', 'osds', 'pgs', 'hosts', 'services', 'versions'];
+  const available = (name) => record(results[name]).available === true;
+  const data = (name) => available(name) ? record(results[name]).data : {};
+  const dataList = (name) => available(name) ? list(results[name].data) : [];
+  const sectionErrors = sectionNames
+    .filter((name) => !available(name))
+    .map((name) => observerSectionError(name, record(results[name])));
+
+  const status = data('status');
+  const health = data('health');
+  const capacity = data('capacity');
+  const osdTree = data('osds');
+  const pgStats = data('pgs');
+  const pgSummary = record(pgStats.pg_summary);
+  const versions = data('versions');
+  const statusOdsMap = record(record(status.osdmap).osdmap || status.osdmap);
+  const statusPgMap = record(status.pgmap);
+
+  const capacityStats = record(capacity.stats);
+  const totalBytes = finiteNumber(capacityStats.total_bytes);
+  const usedBytes = finiteNumber(capacityStats.total_used_bytes);
+  const availableBytes = finiteNumber(capacityStats.total_avail_bytes, Math.max(0, totalBytes - usedBytes));
+  const pools = list(capacity.pools).map((value) => {
+    const pool = record(value);
+    const stats = record(pool.stats);
+    const bytesUsed = finiteNumber(stats.bytes_used, finiteNumber(stats.stored));
+    const maxAvailableBytes = finiteNumber(stats.max_avail);
+    return {
+      id: finiteNumber(pool.id, -1),
+      name: boundedText(pool.name, '이름 없음', 253),
+      bytesUsed,
+      storedBytes: finiteNumber(stats.stored),
+      maxAvailableBytes,
+      objects: finiteNumber(stats.objects),
+      percentUsed: finiteNumber(stats.percent_used, maxAvailableBytes + bytesUsed > 0
+        ? (bytesUsed / (maxAvailableBytes + bytesUsed)) * 100
+        : 0),
+    };
+  }).sort((a, b) => b.bytesUsed - a.bytesUsed || a.name.localeCompare(b.name));
+
+  const osdNodes = list(osdTree.nodes).map(record);
+  const hostNodes = osdNodes.filter((node) => node.type === 'host');
+  const osdToHost = new Map();
+  for (const host of hostNodes) {
+    for (const child of list(host.children)) osdToHost.set(finiteNumber(child, -1), boundedText(host.name, 'unknown', 253));
+  }
+  const osdItems = osdNodes
+    .filter((node) => node.type === 'osd')
+    .map((node) => ({
+      id: finiteNumber(node.id, -1),
+      name: boundedText(node.name, `osd.${finiteNumber(node.id, -1)}`, 253),
+      host: osdToHost.get(finiteNumber(node.id, -1)) || boundedText(node.host, 'unknown', 253),
+      status: boundedText(node.status, 'unknown', 32).toLowerCase(),
+      in: finiteNumber(node.reweight, 0) > 0,
+      deviceClass: boundedText(node.device_class, 'unknown', 64),
+      utilization: finiteNumber(node.utilization),
+      totalBytes: finiteNumber(node.kb) * 1024,
+      usedBytes: finiteNumber(node.kb_used) * 1024,
+      availableBytes: finiteNumber(node.kb_avail) * 1024,
+    }))
+    .sort((a, b) => a.id - b.id);
+  const osdTotal = finiteNumber(statusOdsMap.num_osds, osdItems.length);
+  const osdUp = finiteNumber(statusOdsMap.num_up_osds, osdItems.filter((item) => item.status === 'up').length);
+  const osdIn = finiteNumber(statusOdsMap.num_in_osds, osdItems.filter((item) => item.in).length);
+  const osdUtilizations = osdItems.map((item) => item.utilization).filter(Number.isFinite);
+  const byHost = hostNodes.map((host) => {
+    const hostName = boundedText(host.name, 'unknown', 253);
+    const hostOsds = osdItems.filter((item) => item.host === hostName);
+    const total = hostOsds.reduce((sum, item) => sum + item.totalBytes, 0);
+    const used = hostOsds.reduce((sum, item) => sum + item.usedBytes, 0);
+    return {
+      name: hostName,
+      osds: hostOsds.length,
+      up: hostOsds.filter((item) => item.status === 'up').length,
+      in: hostOsds.filter((item) => item.in).length,
+      totalBytes: total,
+      usedBytes: used,
+      utilization: total > 0 ? (used / total) * 100 : 0,
+    };
+  }).sort((a, b) => a.name.localeCompare(b.name));
+
+  const pgStates = list(pgStats.pgs_by_state || pgStats.num_pg_by_state || pgSummary.num_pg_by_state || statusPgMap.pgs_by_state).map((value) => {
+    const state = record(value);
+    return {
+      state: boundedText(state.state_name || state.name, 'unknown', 128),
+      count: finiteNumber(state.count, finiteNumber(state.num)),
+    };
+  }).sort((a, b) => b.count - a.count || a.state.localeCompare(b.state));
+  const pgTotal = finiteNumber(pgStats.num_pgs, finiteNumber(pgSummary.num_pgs,
+    finiteNumber(statusPgMap.num_pgs, pgStates.reduce((sum, state) => sum + state.count, 0))));
+  const healthyPgCount = pgStates
+    .filter((state) => state.state.split('+').every((part) => part === 'active' || part === 'clean'))
+    .reduce((sum, state) => sum + state.count, 0);
+
+  const hosts = dataList('hosts').map((value) => {
+    const host = record(value);
+    return {
+      hostname: boundedText(host.hostname, 'unknown', 253),
+      address: boundedText(host.addr, '확인 불가', 256),
+      labels: list(host.labels).map((label) => boundedText(label, '', 64)).filter(Boolean).slice(0, 64),
+      status: boundedText(host.status, 'online', 64) || 'online',
+    };
+  }).sort((a, b) => a.hostname.localeCompare(b.hostname));
+
+  const services = dataList('services').map((value) => {
+    const service = record(value);
+    return {
+      type: boundedText(service.daemon_type, 'unknown', 64),
+      id: boundedText(service.daemon_id, '', 253),
+      hostname: boundedText(service.hostname, 'unknown', 253),
+      status: finiteNumber(service.status, 0),
+      statusDescription: boundedText(service.status_desc, 'unknown', 128),
+      version: boundedText(service.version, '', 256),
+      lastRefresh: boundedText(service.last_refresh, '', 64),
+    };
+  }).sort((a, b) => a.type.localeCompare(b.type) || a.hostname.localeCompare(b.hostname) || a.id.localeCompare(b.id));
+
+  const versionCounts = [];
+  for (const [daemonType, value] of Object.entries(versions)) {
+    for (const [version, count] of Object.entries(record(value))) {
+      versionCounts.push({
+        daemonType: boundedText(daemonType, 'unknown', 64),
+        version: boundedText(version, 'unknown', 256),
+        count: finiteNumber(count),
+      });
+    }
+  }
+
+  const healthStatus = boundedText(record(status.health).status || health.status || health.overall_status, 'UNKNOWN', 64);
+  const fsid = boundedText(status.fsid, '', 256);
+  return {
+    schemaVersion: 1,
+    observedAt: boundedText(source.observedAt, new Date().toISOString(), 64),
+    durationMs: finiteNumber(source.durationMs),
+    cached: source.cached === true,
+    cacheAgeSeconds: finiteNumber(source.cacheAgeSeconds),
+    partial: sectionErrors.length > 0,
+    capabilities: sectionNames.filter(available),
+    cluster: {
+      health: healthStatus,
+      fsidFingerprint: fingerprint(fsid),
+      monitors: finiteNumber(record(status.monmap).num_mons, list(record(status.monmap).mons).length),
+      managers: {
+        active: boundedText(record(status.mgrmap).active_name, '', 253),
+        standbys: list(record(status.mgrmap).standbys).length,
+      },
+      versions: versionCounts,
+    },
+    capacity: {
+      totalBytes,
+      usedBytes,
+      availableBytes,
+      percentUsed: totalBytes > 0 ? (usedBytes / totalBytes) * 100 : 0,
+    },
+    pools,
+    osds: {
+      total: osdTotal,
+      up: osdUp,
+      down: Math.max(0, osdTotal - osdUp),
+      in: osdIn,
+      out: Math.max(0, osdTotal - osdIn),
+      averageUtilization: osdUtilizations.length ? osdUtilizations.reduce((sum, value) => sum + value, 0) / osdUtilizations.length : 0,
+      maxUtilization: osdUtilizations.length ? Math.max(...osdUtilizations) : 0,
+      items: osdItems,
+      byHost,
+    },
+    pgs: {
+      total: pgTotal,
+      healthy: healthyPgCount,
+      unhealthy: Math.max(0, pgTotal - healthyPgCount),
+      states: pgStates,
+    },
+    hosts,
+    services,
+    sectionErrors,
+  };
+}
+
+async function cephInsights(ctx, forceRefresh = false) {
+  let response;
+  try {
+    response = await (ctx.cephObserverFetch || fetch)(
+      `${CEPH_OBSERVER_URL}/snapshot${forceRefresh ? '?refresh=1' : ''}`,
+      { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(25_000) },
+    );
+  } catch {
+    throw error('Ceph 관측 서비스에 연결할 수 없습니다.', 503);
+  }
+  if (!response.ok) throw error(`Ceph 관측 서비스가 HTTP ${response.status}를 반환했습니다.`, 502);
+  const text = await response.text();
+  if (Buffer.byteLength(text, 'utf8') > CEPH_OBSERVER_MAX_BYTES) throw error('Ceph 관측 응답이 허용 크기를 초과했습니다.', 502);
+  let snapshot;
+  try { snapshot = JSON.parse(text); } catch { throw error('Ceph 관측 서비스가 올바른 JSON을 반환하지 않았습니다.', 502); }
+  return normalizeCephInsights(snapshot);
+}
+
 function createCephManager(ctx) {
   const importCleanupTimer = setInterval(() => {
     void pruneExpiredImports(ctx).catch(() => undefined);
@@ -745,20 +1197,43 @@ function createCephManager(ctx) {
       }
       if (req.method === 'GET' && pathname === '/api/ceph/oaa/status') {
         await actorForOaaOwner(ctx, req, false);
-        const [status, prerequisites] = await Promise.all([cephStatus(ctx), cephOwnerPrerequisites(ctx)]);
-        ctx.jsonRes(res, 200, { ...status, ownerPrerequisites: prerequisites });
+        const [status, prerequisites, installationRequest] = await Promise.all([
+          cephStatus(ctx),
+          cephOwnerPrerequisites(ctx),
+          cephPrerequisiteRequestStatus(ctx, req),
+        ]);
+        ctx.jsonRes(res, 200, { ...status, ownerPrerequisites: { ...prerequisites, installationRequest } });
+        return true;
+      }
+      if (req.method === 'GET' && pathname === '/api/ceph/oaa/insights') {
+        await actorForOaaOwner(ctx, req, false);
+        const requestUrl = new URL(req.url || pathname, 'http://cluster-manager.local');
+        const refresh = requestUrl.searchParams.get('refresh') === '1';
+        ctx.jsonRes(res, 200, await cephInsights(ctx, refresh));
+        return true;
+      }
+      if (req.method === 'POST' && pathname === '/api/ceph/prerequisites/request') {
+        const result = await requestCephPrerequisiteChange(ctx, req, await readJson(req));
+        ctx.jsonRes(res, 202, result);
         return true;
       }
       if (req.method === 'POST' && pathname === '/api/ceph/imports') {
         const actor = await actorForOaaOwner(ctx, req, true);
-        const body = requireClosedObject(await readJson(req), ['providerExport', 'confirm', 'reason'], 'request');
-        if (String(body.confirm || '') !== 'stage Ceph provider export') throw error("Ceph provider export staging 확인 값으로 'stage Ceph provider export'를 입력해야 합니다.");
+        const body = requireClosedObject(await readJson(req), ['connection', 'confirm', 'reason'], 'request');
+        if (String(body.confirm || '') !== 'stage Ceph connection') throw error("Ceph 접속 정보 staging 확인 값으로 'stage Ceph connection'을 입력해야 합니다.");
         const reason = reasonFrom(body);
         const prerequisites = await cephOwnerPrerequisites(ctx);
         if (!prerequisites.ready) throw error(`Ceph runtime prerequisites are not ready: ${prerequisites.blockers.join(' ')}`, 409);
-        const connection = validateProviderExport(body.providerExport);
-        await auditRequired(ctx, actor, 'CephProviderImportStaged', reason, { fsidFingerprint: connection.fsidFingerprint, storageClasses: connection.storageClasses.map((item) => item.name) });
-        ctx.jsonRes(res, 201, await stageProviderImport(ctx, body.providerExport, actor));
+        const connection = validateConnectionInput(body.connection);
+        await auditRequired(ctx, actor, 'CephConnectionStaged', reason, {
+          fsidFingerprint: connection.fsidFingerprint,
+          monitorCount: connection.monitorCount,
+          userID: connection.userID,
+          cephEntity: connection.cephEntity,
+          csiUserID: connection.csiUserID,
+          storageClasses: connection.storageClasses.map((item) => item.name),
+        });
+        ctx.jsonRes(res, 201, await stageConnectionImport(ctx, body.connection, actor));
         return true;
       }
       if (req.method === 'POST' && pathname === '/api/ceph/oaa/plan') {
@@ -815,7 +1290,8 @@ function createCephManager(ctx) {
       const body = await readJson(req);
       const actor = await actorFor(ctx, req, true);
       if (pathname === '/api/ceph/plan') {
-        const connection = validateProviderExport(body.providerExport);
+        const request = requireClosedObject(body, ['connection'], 'request');
+        const connection = validateConnectionInput(request.connection);
         const snapshotSupported = await snapshotApiAvailable(ctx);
         ctx.jsonRes(res, 200, planFor(connection, snapshotSupported));
         return true;
@@ -825,8 +1301,17 @@ function createCephManager(ctx) {
       activeOperations.add('external');
       try {
         if (pathname === '/api/ceph/connect') {
-          const connection = validateProviderExport(body.providerExport);
-          await auditRequired(ctx, actor, 'CephExternalConnectRequested', reason, { fsidFingerprint: connection.fsidFingerprint, chartVersion: CHART_VERSION, storageClasses: connection.storageClasses.map((item) => item.name) });
+          const request = requireClosedObject(body, ['connection', 'reason'], 'request');
+          const connection = validateConnectionInput(request.connection);
+          await auditRequired(ctx, actor, 'CephExternalConnectRequested', reason, {
+            fsidFingerprint: connection.fsidFingerprint,
+            monitorCount: connection.monitorCount,
+            userID: connection.userID,
+            cephEntity: connection.cephEntity,
+            csiUserID: connection.csiUserID,
+            chartVersion: CHART_VERSION,
+            storageClasses: connection.storageClasses.map((item) => item.name),
+          });
           const status = await installConnection(ctx, connection, actor);
           await ctx.publishNotify({ userActor: actor.username, action: 'CephExternalConnected', target: 'CephExternal/rook-ceph', result: status.state, reason: `${reason} · ${status.message}` });
           ctx.jsonRes(res, status.state === 'Ready' ? 200 : 502, { ok: status.state === 'Ready', status });
@@ -855,6 +1340,7 @@ function createCephManager(ctx) {
 module.exports = {
   createCephManager,
   validateProviderExport,
+  validateConnectionInput,
   planFor,
   storageClassManifest,
   snapshotClassManifest,
@@ -864,5 +1350,9 @@ module.exports = {
   cephOwnerPrerequisites,
   providerGuide,
   helmMetadataAccessDenied,
+  requestCephPrerequisiteChange,
+  cephPrerequisiteRequestStatus,
+  normalizeCephInsights,
+  cephInsights,
   CHART_VERSION,
 };

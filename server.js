@@ -127,6 +127,7 @@ const cephManager = createCephManager({
   apiServer: APISERVER,
   caPath: `${SA}/ca.crt`,
   controller: CONTROLLER,
+  consoleBackend: CONSOLE_IDENTITY_URL,
   publishNotify,
 });
 const _notifiedNodes = new Set();

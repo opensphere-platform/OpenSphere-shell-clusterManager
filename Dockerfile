@@ -23,25 +23,27 @@ RUN mkdir -p /his-charts /ceph-charts \
     && helm pull oci://ghcr.io/prometheus-community/charts/kube-prometheus-stack --version 86.0.1 --destination /his-charts \
     && helm pull rook-ceph --repo https://charts.rook.io/release --version v1.20.2 --destination /ceph-charts \
     && helm pull rook-ceph-cluster --repo https://charts.rook.io/release --version v1.20.2 --destination /ceph-charts \
+    && helm pull ceph-csi-drivers --repo https://ceph.github.io/ceph-csi-operator --version 1.0.4 --destination /ceph-charts \
     && echo '3eff0bd18151d6e6b1c441463410571443dda1ac78292cb189346628de784f0c  /his-charts/ingress-nginx-4.15.1.tgz' | sha256sum -c - \
     && echo '084e6edb680cf4e2acc30bd496568c53fdf663cbacf6e17876b25785c35b7a13  /his-charts/metrics-server-3.13.1.tgz' | sha256sum -c - \
     && echo '1f1a268fd1642d76d0b9fd162aaedc91973a81b87d9e57c0fff246024ccd2ad4  /his-charts/cert-manager-v1.20.0.tgz' | sha256sum -c - \
     && echo '834c252b3e769516578f6199a374daf688b0bf7b7693089ebbf36aa7dcfd8d0d  /his-charts/kube-prometheus-stack-86.0.1.tgz' | sha256sum -c - \
     && echo '6e0f10f5ca54e618fb90dd149dc9dfbc8a4932955bff2227b692fb32069daf52  /ceph-charts/rook-ceph-v1.20.2.tgz' | sha256sum -c - \
-    && echo 'fca482746239bfc9fb2d888f1f5fc206fcc6305934674759f122b011ece87827  /ceph-charts/rook-ceph-cluster-v1.20.2.tgz' | sha256sum -c -
+    && echo 'fca482746239bfc9fb2d888f1f5fc206fcc6305934674759f122b011ece87827  /ceph-charts/rook-ceph-cluster-v1.20.2.tgz' | sha256sum -c - \
+    && echo '76a1787baa7d62232eb073ab8260a455a016c02b59aae584a47be6791f05994b  /ceph-charts/ceph-csi-drivers-1.0.4.tgz' | sha256sum -c -
 
 FROM docker.io/library/node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2
 ARG OS_MODULE_DESCRIPTOR
 ARG OS_MODULE_SIGNATURE
 LABEL org.opencontainers.image.title="OpenSphere Cluster Manager" \
-      org.opencontainers.image.version="1.3.3" \
+      org.opencontainers.image.version="1.3.4" \
       org.opencontainers.image.source="https://github.com/opensphere-platform/OpenSphere-shell-clusterManager" \
       io.opensphere.module.descriptor=$OS_MODULE_DESCRIPTOR \
       io.opensphere.module.descriptor.signature=$OS_MODULE_SIGNATURE \
       io.opensphere.module.descriptor.key-id="opensphere-plugins-v4"
 RUN apk upgrade --no-cache
 WORKDIR /app
-RUN npm install --omit=dev --no-audit --no-fund --no-save ws@8.21.0 js-yaml@4.1.0 \
+RUN npm install --omit=dev --no-audit --no-fund --no-save ws@8.21.0 js-yaml@4.3.0 \
     && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 COPY --chmod=0644 server.js /app/server.js
 COPY --chmod=0644 his-manager.js his-catalog.js his-telemetry-manifests.js ceph-manager.js ceph-prerequisite-reconciler.js /app/
@@ -50,8 +52,9 @@ COPY --from=helm-assets --chmod=0755 /usr/bin/helm /usr/local/bin/helm
 COPY --from=helm-assets /his-charts/ /app/his-charts/
 COPY --from=helm-assets /ceph-charts/ /app/ceph-charts/
 COPY deploy/ceph-runtime-chart/ /app/ceph-runtime-chart/
-RUN chmod 0555 /app/his-values /app/his-charts /app/ceph-charts /app/ceph-runtime-chart /app/ceph-runtime-chart/templates \
-    && chmod 0444 /app/his-values/* /app/his-charts/* /app/ceph-charts/* /app/ceph-runtime-chart/Chart.yaml /app/ceph-runtime-chart/templates/*
+COPY --chmod=0444 deploy/ceph-csi-drivers-values.yaml /app/ceph-csi-drivers-values.yaml
+RUN chmod 0555 /app/his-values /app/his-charts /app/ceph-charts /app/ceph-runtime-chart /app/ceph-runtime-chart/files /app/ceph-runtime-chart/templates \
+    && chmod 0444 /app/his-values/* /app/his-charts/* /app/ceph-charts/* /app/ceph-runtime-chart/Chart.yaml /app/ceph-runtime-chart/files/* /app/ceph-runtime-chart/templates/* /app/ceph-csi-drivers-values.yaml
 COPY ui-shell/ /app/plugins/
 COPY --chmod=0644 module-package.json module-package.json.sig /app/plugins/
 COPY --from=build /app/dist/k8s-console-angular/browser /app/www

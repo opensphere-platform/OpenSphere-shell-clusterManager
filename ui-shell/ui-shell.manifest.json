@@ -5,11 +5,11 @@
   "hostRef": "main",
   "hostApiVersion": "1.0.0",
   "hostCompat": ">=1.0.0 <2.0.0",
-  "version": "1.3.3",
+  "version": "1.3.4",
   "title": "Cluster Manager",
   "description": "OpenSphere Kubernetes, external Ceph Storage, and HIS management views.",
   "entry": "ui-shell.plugin.js",
-  "entrySha256": "349d7ab0a5339fd11a608749a1122f73c27fac7a2217d203ed6a0d61ab1abb5e",
+  "entrySha256": "04a0dd99313da862ea6644eec9b4a005edcad4bc6c32b5a217e1723dc58869db",
   "shellCompat": ">=0.2.0 <0.9.0",
   "sdkVersion": "0.2.0",
   "permissions": [
@@ -63,5 +63,19 @@
       "traces": false,
       "reason": "Cluster Manager observability contract is not published"
     }
-  }
+  },
+  "assets": [
+    {
+      "id": "app",
+      "path": "../app/main.js",
+      "type": "module",
+      "sha256": "6fcb6b94fdd62572e9db2b60674c6c516258d0defc191d04052280615f9fed2c"
+    },
+    {
+      "id": "styles",
+      "path": "../app/styles.css",
+      "type": "style",
+      "sha256": "4f728bc4bcb8b9f4588bc04a380f74f0c3f87aa2e0f28f903415a45e4efc6599"
+    }
+  ]
 }

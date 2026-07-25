@@ -12,6 +12,9 @@ test('production build closes the browser module graph before packaging', () => 
 
   assert.match(pkg.scripts.build, /tools\/bundle-app\.mjs/);
   assert.match(dockerfile, /RUN npm run build/);
+  assert.match(dockerfile, new RegExp(`org\\.opencontainers\\.image\\.version="${pkg.version}"`));
+  const descriptor = JSON.parse(readFileSync(resolve(root, 'module-package.json'), 'utf8'));
+  assert.match(dockerfile, new RegExp(`io\\.opensphere\\.module\\.descriptor\\.key-id="${descriptor.trust.keyId}"`));
   assert.match(verifier, /closed single-file ESM artifact/);
   assert.match(verifier, /undeclared browser chunks remain/);
 });

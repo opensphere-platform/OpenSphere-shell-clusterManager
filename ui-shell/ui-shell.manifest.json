@@ -69,7 +69,7 @@
       "id": "app",
       "path": "../app/main.js",
       "type": "module",
-      "sha256": "6fcb6b94fdd62572e9db2b60674c6c516258d0defc191d04052280615f9fed2c"
+      "sha256": "0a38c1757f5c97c7a7124939b70221e838263da9b76de4689fcb3eb9824cf9b5"
     },
     {
       "id": "styles",

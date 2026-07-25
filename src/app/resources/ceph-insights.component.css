@@ -14,6 +14,10 @@ app-ceph-insights {
 
 .insights-hero {
   display: flex;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
   align-items: center;
   justify-content: space-between;
   gap: 24px;
@@ -145,7 +149,20 @@ app-ceph-insights {
   border: 1px solid #c6c6c6;
   background: #fff;
 }
-.chart-card > header { display: flex; justify-content: space-between; gap: 16px; align-items: start; }
+.chart-card > header {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: start;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #161616;
+}
 .chart-card h3, .data-panel h3 { margin: 0 0 4px; color: #161616; font-size: 18px; font-weight: 600; }
 .chart-card p { margin: 0; color: #6f6f6f; }
 .chart-card > header > strong { color: #0f62fe; font-size: 25px; }

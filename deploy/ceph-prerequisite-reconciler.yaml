@@ -76,7 +76,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: reconciler
-          image: ghcr.io/opensphere-platform/opensphere-shell-cluster-manager@sha256:65ee3603c26794dc0bf2c8ded5a5f37e2db17f5a388f98c016483b31abca4958
+          image: ghcr.io/opensphere-platform/opensphere-shell-cluster-manager@sha256:5f4aa23cdf30bc2e6b34a14c7b272225b04db363125aa79478c7df1fefc9f67e
           imagePullPolicy: IfNotPresent
           command: [node, /app/ceph-prerequisite-reconciler.js]
           ports: [{ name: http, containerPort: 8080 }]

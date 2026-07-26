@@ -834,26 +834,37 @@ test('H-04: each mutation has a bounded durable Kubernetes terminal audit mirror
   assert.match(source, /redactedAuditMetadata/);
 });
 
-test('Ceph Monitoring is an independent Ceph menu with a fixed Grafana allowlist', () => {
+test('Ceph Monitoring dashboards live in the second-level navigation tree with a fixed Grafana allowlist', () => {
   const nav = fs.readFileSync(path.resolve(__dirname, '../src/app/nav.ts'), 'utf8');
+  const app = fs.readFileSync(path.resolve(__dirname, '../src/app/app.component.ts'), 'utf8');
   const catalog = fs.readFileSync(path.resolve(__dirname, '../src/app/resources/ceph-monitoring.catalog.ts'), 'utf8');
   const component = fs.readFileSync(path.resolve(__dirname, '../src/app/resources/ceph-monitoring.component.ts'), 'utf8');
 
-  assert.match(nav, /id: 'ceph-monitoring', label: 'Ceph Monitoring'/);
+  assert.match(nav, /id: 'ceph-monitoring',\s*label: 'Ceph Monitoring'/);
+  assert.match(nav, /tree: CEPH_DASHBOARD_GROUPS\.map/);
+  assert.match(nav, /id: `ceph-monitoring-\$\{dashboard\.uid\}`/);
+  assert.match(app, /class="cm-tree-root"/);
+  assert.match(app, /class="cm-tree-section"/);
+  assert.match(app, /\[ngComponentOutletInputs\]="activeInputs\(\)"/);
+  assert.match(app, /findNavLocation/);
   assert.match(catalog, /CEPH_GRAFANA_ORIGIN = 'https:\/\/ceph\.triangles\.com'/);
   assert.match(catalog, /CEPH_GRAFANA_BASE_PATH = '\/grafana'/);
   assert.match(catalog, /uid: 'edtb0oxdq'/);
   assert.match(catalog, /uid: '718Bruins'/);
   assert.match(catalog, /uid: '41FrpeUiz'/);
   assert.match(catalog, /uid: 'WAkugZpiz'/);
-  assert.match(component, /CEPH_DASHBOARDS\.find\(item => item\.uid === dashboard\.uid\)/);
+  assert.match(component, /readonly dashboardUid = input/);
+  assert.match(component, /CEPH_DASHBOARDS\.find\(dashboard => dashboard\.uid === this\.dashboardUid\(\)\)/);
+  assert.match(component, /\[selected\]="item\.value === range\(\)"/);
+  assert.match(component, /\[selected\]="item\.value === refresh\(\)"/);
+  assert.doesNotMatch(component, /dashboard-menu|dashboard-groups|Dashboard 검색/);
   assert.doesNotMatch(component, /searchParams|get\('url'\)|location\.search/);
 });
 
 test('Ceph Monitoring embeds read-only Grafana with explicit browser security boundaries', () => {
   const component = fs.readFileSync(path.resolve(__dirname, '../src/app/resources/ceph-monitoring.component.ts'), 'utf8');
 
-  assert.match(component, /sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"/);
+  assert.doesNotMatch(component, /sandbox=/);
   assert.match(component, /referrerpolicy="no-referrer"/);
   assert.match(component, /rel="noopener noreferrer"/);
   assert.match(component, /anonymous Viewer/);

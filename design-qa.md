@@ -56,3 +56,35 @@
 No actionable P0, P1 or P2 visual mismatch remains. The narrow viewport still retains the product's persistent management navigation; this is existing shell behavior and does not break the corrected title bar.
 
 final result: passed
+
+---
+
+# Design QA — Ceph Monitoring navigation
+
+- Source: `C:\Users\cmars\AppData\Local\Temp\codex-clipboard-ec3e5f1f-59fb-4f07-ab5c-30b3f7ecb123.png`
+- Implementation: `D:\@PROJECT\OpenSphere\OpenSphere-Platform-V2\.codex-tmp\ceph-monitoring-tree-preview\implementation-tree.png`
+- Comparison: `D:\@PROJECT\OpenSphere\OpenSphere-Platform-V2\.codex-tmp\ceph-monitoring-tree-preview\comparison.png`
+- Viewport: Chrome desktop, 2292 × 1977
+- State: `Ceph Storage > Storage (Ceph/ODF) > Ceph Monitoring > 클러스터`
+
+## Evidence
+
+- `Ceph Monitoring` is a tree in the existing Cluster Manager second-level navigation, immediately after `Ceph Clusters`.
+- Dashboard categories expand within that navigation; selecting a leaf updates the route and embedded Grafana dashboard.
+- The page-level dashboard list, search field, nested sidebar, and its additional frame were removed.
+- Grafana renders in the remaining full-width content region.
+- Time range and refresh controls update the selected option and Grafana query.
+- Automated verification: 96 tests passed; Angular production build passed.
+
+## Findings and resolution history
+
+1. P1 — Dashboard menu was duplicated inside the page and created a nested-frame layout.
+   - Resolved by moving the dashboard catalog into the existing second-level navigation tree.
+2. P1 — Embedded Grafana failed while iframe sandboxing was enabled.
+   - Resolved by removing the incompatible sandbox restriction while retaining the fixed HTTPS allowlist, `no-referrer`, and `noopener`.
+3. P2 — Native select controls visually selected the first option although the generated URL used the signal defaults.
+   - Resolved by binding each option's selected state to the current time-range and refresh signals.
+
+## Final result
+
+Passed — no open P0, P1, or P2 visual or core-interaction issues.

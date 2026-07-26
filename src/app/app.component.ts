@@ -1,7 +1,7 @@
 import { CommonModule } from '@angular/common';
 import { Component, ViewEncapsulation, signal, computed, inject, OnDestroy } from '@angular/core';
 import { ClarityModule } from '@clr/angular';
-import { NAV, NavItem, NavGroup, ManagementView } from './nav';
+import { NAV, NavItem, NavGroup, NavTreeSection, ManagementView } from './nav';
 import { NAV_ICON } from './nav-icons';
 import { OverviewComponent } from './resources/overview.component';
 import { K8sService } from './core/k8s.service';
@@ -37,6 +37,14 @@ import { K8sService } from './core/k8s.service';
       color: #1b2438; font-weight: 600;
       background: rgba(76, 111, 255, 0.10);
       box-shadow: inset 3px 0 0 #4c6fff;
+    }
+    .cm-nav .cm-tree-root { margin-top: 0.12rem; border-top: 1px solid #eceef2; }
+    .cm-nav .cm-tree-root > .nav-group-trigger { font-weight: 600; }
+    .cm-nav .cm-tree-section > .nav-group-trigger {
+      min-height: 1.9rem; padding-left: 1.35rem; color: #4a5568; font-size: 0.66rem; font-weight: 600;
+    }
+    .cm-nav .cm-tree-section a[clrVerticalNavLink] {
+      min-height: 1.9rem; padding-left: 2.15rem; font-size: 0.68rem;
     }
 
     .cm-brand { display: flex; align-items: center; gap: 0.35rem; min-height: 3.05rem; padding: 0.55rem 0.9rem; color: #1b2438; border-bottom: 1px solid #e0e0e0; }
@@ -94,9 +102,29 @@ import { K8sService } from './core/k8s.service';
           <svg viewBox="0 0 24 24" class="os-tree-ic" clrVerticalNavIcon><path [attr.d]="secIcon(g.group)"/></svg>
           {{ g.group }}
           <clr-vertical-nav-group-children>
-            <a *ngFor="let it of g.items" clrVerticalNavLink
-               [class.active]="active().id === it.id"
-               (click)="select(it)" (keydown.enter)="select(it)">{{ it.label }}</a>
+            <ng-container *ngFor="let it of g.items">
+              <a *ngIf="!it.tree" clrVerticalNavLink
+                 [class.active]="active().id === it.id"
+                 (click)="select(it)" (keydown.enter)="select(it)">{{ it.label }}</a>
+
+              <clr-vertical-nav-group *ngIf="it.tree" class="cm-tree-root"
+                  [clrVerticalNavGroupExpanded]="isOpen(treeKey(it)) || treeContainsActive(it)"
+                  (clrVerticalNavGroupExpandedChange)="setOpen(treeKey(it), $event)">
+                {{ it.label }}
+                <clr-vertical-nav-group-children>
+                  <clr-vertical-nav-group *ngFor="let section of it.tree" class="cm-tree-section"
+                      [clrVerticalNavGroupExpanded]="isOpen(sectionKey(it, section)) || sectionContainsActive(section)"
+                      (clrVerticalNavGroupExpandedChange)="setOpen(sectionKey(it, section), $event)">
+                    {{ section.label }}
+                    <clr-vertical-nav-group-children>
+                      <a *ngFor="let child of section.items" clrVerticalNavLink
+                         [class.active]="active().id === child.id"
+                         (click)="select(child)" (keydown.enter)="select(child)">{{ child.label }}</a>
+                    </clr-vertical-nav-group-children>
+                  </clr-vertical-nav-group>
+                </clr-vertical-nav-group-children>
+              </clr-vertical-nav-group>
+            </ng-container>
           </clr-vertical-nav-group-children>
         </clr-vertical-nav-group>
       </clr-vertical-nav>
@@ -112,7 +140,9 @@ import { K8sService } from './core/k8s.service';
           </ng-container>
         </nav>
         <app-overview *ngIf="viewScope() === 'k8s' && active().id === 'overview'" (open)="openId($event)"></app-overview>
-        <ng-container *ngIf="active().id !== 'overview'" [ngComponentOutlet]="active().component"></ng-container>
+        <ng-container *ngIf="active().id !== 'overview'"
+          [ngComponentOutlet]="active().component"
+          [ngComponentOutletInputs]="activeInputs()"></ng-container>
       </section>
     </div>
   `,
@@ -130,6 +160,8 @@ export class AppComponent implements OnDestroy {
   readonly viewScope = signal<ManagementView>('k8s');
   /** 클러스터에 실제 존재하는 apiGroup 집합(GET /apis 디스커버리) — nav 항목별 capability-gate·VM 스코프 결정. */
   readonly availableGroups = signal<Set<string>>(new Set());
+  readonly activeInputs = computed<Record<string, unknown>>(() =>
+    this.active().dashboardUid ? { dashboardUid: this.active().dashboardUid } : {});
   /** 현재 관리 관점 그룹 + **항목별 capability-gate**(it.requires apiGroup이 클러스터에 실재할 때만) + 빈 그룹 숨김.
    *  → 실 CRD가 있는 페이지만 노출(없으면 자동 숨김). 더미·phantom 없음(§3.3 — 실구현된 것만). */
   readonly filteredNav = computed<NavGroup[]>(() => {
@@ -149,8 +181,10 @@ export class AppComponent implements OnDestroy {
     out.push({ label: root, link: 'overview' });
     if (a.id === 'overview') { out.push({ label: this.viewLabel(), link: null }); return out; }
     out.push({ label: this.viewLabel(), link: 'overview' });
-    const g = this.filteredNav().find((x) => x.items.some((it) => it.id === a.id));
+    const location = this.findNavLocation(a.id);
+    const g = location?.group;
     if (g) out.push({ label: g.group, link: 'group', groupId: g.group });
+    if (location?.parent) out.push({ label: location.parent.label, link: null });
     out.push({ label: a.label, link: null });
     return out;
   });
@@ -200,19 +234,22 @@ export class AppComponent implements OnDestroy {
   setOpen(group: string, open: boolean) {
     this.expanded.update(s => { const n = new Set(s); open ? n.add(group) : n.delete(group); return n; });
   }
+  treeKey(item: NavItem): string { return `tree:${item.id}`; }
+  sectionKey(item: NavItem, section: NavTreeSection): string { return `tree:${item.id}:${section.id}`; }
+  treeContainsActive(item: NavItem): boolean {
+    return !!item.tree?.some(section => section.items.some(child => child.id === this.active().id));
+  }
+  sectionContainsActive(section: NavTreeSection): boolean {
+    return section.items.some(child => child.id === this.active().id);
+  }
   /** 개요 카드/링크 클릭 → 항목 id로 이동(없으면 무시). 대상의 관리 관점도 함께 전환. */
   openId(id: string) {
     if (id === 'overview') { this.goViewHome('k8s'); return; }
-    for (const g of NAV) {
-      const it = g.items.find(x => x.id === id);
-      if (it) {
-        if (it.requires && !this.availableGroups().has(it.requires)) return;
-        this.viewScope.set(g.view ?? 'k8s');
-        this.expanded.update(s => new Set(s).add(g.group));
-        this.active.set(it);
-        this.syncUrl();
-        return;
-      }
+    const location = this.findNavLocation(id);
+    if (location) {
+      if (location.item.requires && !this.availableGroups().has(location.item.requires)) return;
+      this.activateLocation(location);
+      this.syncUrl();
     }
   }
 
@@ -236,14 +273,11 @@ export class AppComponent implements OnDestroy {
       this.viewScope.set(targetView);
       if (!res || res === 'overview') { this.activateViewHome(targetView); }
       else {
-        for (const g of NAV) {
-          const it = g.items.find(x => x.id === res);
-          const itemView = g.view ?? 'k8s';
-          if (it && itemView === targetView && (!it.requires || this.availableGroups().has(it.requires))) {
-            this.active.set(it);
-            this.expanded.update(s => new Set(s).add(g.group));
-            return;
-          }
+        const location = this.findNavLocation(res);
+        if (location && (location.group.view ?? 'k8s') === targetView
+          && (!location.item.requires || this.availableGroups().has(location.item.requires))) {
+          this.activateLocation(location);
+          return;
         }
         this.activateViewHome(targetView);
       }
@@ -277,5 +311,40 @@ export class AppComponent implements OnDestroy {
       this.expanded.update(s => new Set(s).add(group.group));
       this.active.set(item);
     }
+  }
+
+  private findNavLocation(id: string): {
+    group: NavGroup;
+    item: NavItem;
+    parent?: NavItem;
+    section?: NavTreeSection;
+  } | undefined {
+    for (const group of NAV) {
+      for (const item of group.items) {
+        if (item.id === id) return { group, item };
+        for (const section of item.tree ?? []) {
+          const child = section.items.find(candidate => candidate.id === id);
+          if (child) return { group, item: child, parent: item, section };
+        }
+      }
+    }
+    return undefined;
+  }
+
+  private activateLocation(location: {
+    group: NavGroup;
+    item: NavItem;
+    parent?: NavItem;
+    section?: NavTreeSection;
+  }): void {
+    this.viewScope.set(location.group.view ?? 'k8s');
+    this.expanded.update(current => {
+      const next = new Set(current);
+      next.add(location.group.group);
+      if (location.parent) next.add(this.treeKey(location.parent));
+      if (location.parent && location.section) next.add(this.sectionKey(location.parent, location.section));
+      return next;
+    });
+    this.active.set(location.item);
   }
 }

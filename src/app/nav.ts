@@ -47,6 +47,7 @@ import { VolumeSnapshotsComponent } from './resources/volumesnapshots.component'
 import { VolumeSnapshotClassesComponent } from './resources/volumesnapshotclasses.component';
 import { CephClustersComponent } from './resources/ceph.component';
 import { CephMonitoringComponent } from './resources/ceph-monitoring.component';
+import { CEPH_DASHBOARD_GROUPS, CEPH_DASHBOARDS } from './resources/ceph-monitoring.catalog';
 import { MtvProvidersComponent } from './resources/mtv-providers.component';
 import { MtvPlansComponent } from './resources/mtv-plans.component';
 import { PrometheusRulesComponent } from './resources/mon-alerts.component';
@@ -56,9 +57,36 @@ import { HisComponent } from './resources/his.component';
 /** Cluster Manager의 최상위 관리 관점. 각 관점은 독립된 메뉴·라우트·기본 화면을 갖는다. */
 export type ManagementView = 'k8s' | 'ceph' | 'his';
 /** 앱 내부 사이드바 네비. requires=이 항목이 요구하는 apiGroup — 클러스터에 실재할 때만 노출(capability-gate, §3.3 실구현만). */
-export interface NavItem { id: string; label: string; component: Type<any>; requires?: string; }
+export interface NavTreeSection { id: string; label: string; items: NavItem[]; }
+export interface NavItem {
+  id: string;
+  label: string;
+  component: Type<any>;
+  requires?: string;
+  dashboardUid?: string;
+  tree?: NavTreeSection[];
+}
 /** view: 상단 관리 관점 선택기에 연결되는 전문 화면 영역. 기본값은 k8s. */
 export interface NavGroup { group: string; items: NavItem[]; view?: ManagementView; }
+
+const CEPH_MONITORING_TREE: NavItem = {
+  id: 'ceph-monitoring',
+  label: 'Ceph Monitoring',
+  component: CephMonitoringComponent,
+  dashboardUid: CEPH_DASHBOARDS[0].uid,
+  tree: CEPH_DASHBOARD_GROUPS.map(section => ({
+    id: section.id,
+    label: section.label,
+    items: CEPH_DASHBOARDS
+      .filter(dashboard => dashboard.category === section.id)
+      .map(dashboard => ({
+        id: `ceph-monitoring-${dashboard.uid}`,
+        label: dashboard.label,
+        component: CephMonitoringComponent,
+        dashboardUid: dashboard.uid,
+      })),
+  })),
+};
 
 export const NAV: NavGroup[] = [
   {
@@ -149,7 +177,7 @@ export const NAV: NavGroup[] = [
       { id: 'volumesnapshotclasses', label: 'Volume Snapshot Classes', component: VolumeSnapshotClassesComponent, requires: 'snapshot.storage.k8s.io' },
       // Ceph가 아직 없더라도 전문 관점과 진단 진입점은 항상 보여야 한다.
       { id: 'ceph', label: 'Ceph Clusters', component: CephClustersComponent },
-      { id: 'ceph-monitoring', label: 'Ceph Monitoring', component: CephMonitoringComponent },
+      CEPH_MONITORING_TREE,
     ],
   },
   {

@@ -205,9 +205,6 @@ import { CephInsightsComponent } from './ceph-insights.component';
           <h2>Ceph 스토리지 서비스 준비도</h2>
           <p>설치된 드라이버와 실제 PVC에서 선택 가능한 구성을 별도로 검사합니다. 드라이버만 설치된 상태는 사용 가능으로 계산하지 않습니다.</p>
         </div>
-        <span class="coverage-badge" [class.complete]="coverage.state === 'Ready'">
-          {{ coverage.ready }}/{{ coverage.installed }}종 사용 가능
-        </span>
       </div>
 
       <div *ngIf="coverage.needsConfiguration > 0" class="service-warning" role="alert">
@@ -247,20 +244,26 @@ import { CephInsightsComponent } from './ceph-insights.component';
 
           <section *ngIf="service.driverInstalled && !service.ready" class="provider-request">
             <div class="provider-request-head">
-              <div><strong>Ceph 관리자에게 요청할 정보</strong><span>아래 항목을 값과 함께 회신받으십시오.</span></div>
+              <div>
+                <strong>Ceph 관리자에게 요청할 정보 <span class="requirement-count">{{ service.providerRequirements.length }}개</span></strong>
+                <span>필요한 값과 최소 권한 조건을 한 번에 전달할 수 있습니다.</span>
+              </div>
               <button class="btn btn-sm btn-outline" type="button" (click)="copyProviderRequest(service)">요청 문구 복사</button>
             </div>
-            <dl>
-              <ng-container *ngFor="let item of service.providerRequirements">
-                <dt>{{ item.label }} <span *ngIf="item.secret" class="sensitive">Secret</span></dt>
-                <dd>{{ item.description }}</dd>
-              </ng-container>
-            </dl>
-            <div class="provider-contract" *ngIf="service.id === 'cephfs'">
-              <strong>권한 조건</strong>
-              <span><code>client.admin</code>은 사용하지 않습니다. Provisioner는 CephFS subvolume 관리, Node 계정은 해당 filesystem mount에 필요한 최소 CephX caps만 가져야 합니다.</span>
-              <span>MDS 상태는 관리자가 서약하는 값이 아니라 연결 후 시스템이 관측합니다.</span>
-            </div>
+            <details class="provider-request-details">
+              <summary>요청 정보와 권한 조건 보기</summary>
+              <dl>
+                <ng-container *ngFor="let item of service.providerRequirements">
+                  <dt>{{ item.label }} <span *ngIf="item.secret" class="sensitive">Secret</span></dt>
+                  <dd>{{ item.description }}</dd>
+                </ng-container>
+              </dl>
+              <div class="provider-contract" *ngIf="service.id === 'cephfs'">
+                <strong>권한 조건</strong>
+                <span><code>client.admin</code>은 사용하지 않습니다. Provisioner는 CephFS subvolume 관리, Node 계정은 해당 filesystem mount에 필요한 최소 CephX caps만 가져야 합니다.</span>
+                <span>MDS 상태는 관리자가 서약하는 값이 아니라 연결 후 시스템이 관측합니다.</span>
+              </div>
+            </details>
             <div class="service-actions">
               <button *ngIf="service.id === 'cephfs'" class="btn btn-primary" type="button" [disabled]="busy()" (click)="openCephFsConfiguration()">CephFS 구성 추가</button>
               <button class="btn btn-outline" type="button" [disabled]="loading() || busy()" (click)="load()">정보 반영 후 다시 검사</button>
@@ -723,47 +726,47 @@ import { CephInsightsComponent } from './ceph-insights.component';
     .preparation-grid > div { display: flex; flex-direction: column; gap: 0.12rem; padding-left: 0.65rem; border-left: 3px solid #4c6fff; }
     .preparation-grid span { color: #565656; }
     .network-contract { display: flex; flex-wrap: wrap; gap: 0.35rem 0.7rem; margin-top: 0.75rem; padding: 0.55rem 0.65rem; background: #eaf4ff; }
-    .service-coverage { border-top: 4px solid #0f62fe; }
     .service-coverage-head { align-items: center; }
     .service-coverage-head h2 { margin: 0; color: #1b2a32; font-size: 1.05rem; }
     .service-coverage-head p:not(.section-kicker) { margin: 0.18rem 0 0; max-width: 55rem; color: #565656; line-height: 1.45; }
     .section-kicker { margin: 0 0 0.15rem; color: #0f62fe; font-size: 0.6rem; font-weight: 700; letter-spacing: 0.08em; }
-    .coverage-badge { flex: 0 0 auto; padding: 0.35rem 0.65rem; border: 1px solid #f1c21b; border-radius: 1rem; background: #fff8d6; color: #6b4d00; font-weight: 700; }
-    .coverage-badge.complete { border-color: #69a03a; background: #f1f8e9; color: #266900; }
-    .service-warning { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.65rem; margin-top: 0.8rem; padding: 0.65rem 0.75rem; border-left: 4px solid #f1c21b; background: #fff8d6; color: #4f3b00; }
-    .service-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 0.8rem; margin-top: 0.8rem; }
-    .service-card { min-width: 0; padding: 0.85rem; border: 1px solid #c9d2d8; border-top: 4px solid #8d9ba3; background: #fff; }
-    .service-card.service-ready { border-top-color: #318700; }
-    .service-card.service-gap { border-top-color: #f1c21b; }
+    .service-warning { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.65rem; margin-top: 0.8rem; padding: 0.6rem 0.7rem; border-left: 3px solid #f1c21b; background: #fffdf5; color: #4f3b00; }
+    .service-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; gap: 0; margin-top: 0.8rem; border: 1px solid #c9d2d8; }
+    .service-card { min-width: 0; padding: 0.9rem; border: 0; background: #fff; }
+    .service-card + .service-card { border-left: 1px solid #c9d2d8; }
     .storage-service-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.75rem; padding: 0; background: #fff; color: #1b2a32; }
     .service-identity { display: grid; min-width: 0; grid-template-columns: 2rem minmax(0, 1fr); gap: 0.55rem; align-items: center; }
     .service-identity img { display: block; width: 1.75rem; height: 1.75rem; object-fit: contain; }
     .service-identity h3 { margin: 0; color: #1b2a32; font-size: 0.86rem; }
     .service-identity p { margin: 0.16rem 0 0; color: #565656; line-height: 1.4; }
-    .service-state { flex: 0 0 auto; padding: 0.15rem 0.45rem; border-radius: 0.8rem; background: #e5e8ea; color: #3a4d55; font-size: 0.62rem; font-weight: 700; }
+    .service-state { flex: 0 0 auto; padding: 0.15rem 0.45rem; border-radius: 0.8rem; background: #e5e8ea; color: #3a4d55; font-size: 0.68rem; font-weight: 700; }
     .service-state.ready { background: #dff0d4; color: #266900; }
     .service-state.gap { background: #fff0c2; color: #6b4d00; }
-    .service-checkpoints { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.35rem; margin: 0.8rem 0 0; padding: 0; list-style: none; }
-    .service-checkpoints li { display: grid; grid-template-columns: 1.2rem minmax(0, 1fr); gap: 0.04rem 0.35rem; padding: 0.45rem; border: 1px solid #d8d8d8; background: #f4f7f8; }
-    .service-checkpoints li > span { display: grid; grid-row: 1 / 3; width: 1.15rem; height: 1.15rem; place-items: center; border-radius: 50%; background: #8d9ba3; color: #fff; font-size: 0.58rem; }
-    .service-checkpoints li.complete { border-color: #a8cf8b; background: #f1f8e9; }
+    .service-checkpoints { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0.8rem 0 0; padding: 0.45rem 0; border-top: 1px solid #e3e6e8; border-bottom: 1px solid #e3e6e8; list-style: none; }
+    .service-checkpoints li { display: grid; grid-template-columns: 1.2rem minmax(0, 1fr); gap: 0.04rem 0.35rem; padding: 0.18rem 0.55rem; background: transparent; }
+    .service-checkpoints li + li { border-left: 1px solid #e3e6e8; }
+    .service-checkpoints li > span { display: grid; grid-row: 1 / 3; width: 1.15rem; height: 1.15rem; place-items: center; border-radius: 50%; background: #8d9ba3; color: #fff; font-size: 0.68rem; }
     .service-checkpoints li.complete > span { background: #318700; }
-    .service-checkpoints strong { font-size: 0.64rem; line-height: 1.2; }
-    .service-checkpoints small { color: #6f6f6f; font-size: 0.58rem; }
+    .service-checkpoints strong { font-size: 0.7rem; line-height: 1.2; }
+    .service-checkpoints small { color: #6f6f6f; font-size: 0.68rem; }
     .service-class-list { display: grid; gap: 0.35rem; margin-top: 0.7rem; }
-    .service-class-list > div { display: flex; flex-direction: column; gap: 0.12rem; padding: 0.45rem 0.55rem; border-left: 3px solid #318700; background: #f4f7f8; }
+    .service-class-list > div { display: flex; flex-direction: column; gap: 0.12rem; padding: 0.45rem 0; border-bottom: 1px solid #e3e6e8; background: transparent; }
     .service-class-list span { color: #565656; }
-    .service-blockers { margin-top: 0.7rem; padding: 0.55rem 0.65rem; border-left: 3px solid #da1e28; background: #fff1f1; color: #750e13; }
+    .service-blockers { margin-top: 0.7rem; padding: 0.5rem 0.6rem; border-left: 3px solid #f1c21b; background: #fffdf5; color: #4f3b00; }
     .service-blockers ul { margin: 0.3rem 0 0 1rem; padding: 0; }
-    .provider-request { margin-top: 0.7rem; padding: 0.7rem; border: 1px solid #8ab4f8; background: #edf5ff; }
+    .provider-request { margin-top: 0.7rem; padding-top: 0.7rem; border-top: 1px solid #d8d8d8; background: transparent; }
     .provider-request-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.6rem; }
     .provider-request-head > div { display: flex; flex-direction: column; gap: 0.08rem; }
-    .provider-request-head span { color: #565656; }
+    .provider-request-head span:not(.requirement-count) { color: #565656; }
     .provider-request-head .btn { flex: 0 0 auto; margin: 0; }
-    .provider-request dl { display: grid; grid-template-columns: minmax(9rem, 0.7fr) minmax(0, 1.3fr); gap: 0.35rem 0.65rem; margin: 0.65rem 0 0; }
+    .requirement-count { margin-left: 0.25rem; color: #565656; font-size: 0.68rem; font-weight: 500; }
+    .provider-request-details { margin-top: 0.55rem; border-top: 1px solid #e3e6e8; }
+    .provider-request-details summary { padding: 0.5rem 0; color: #0065ab; cursor: pointer; font-weight: 600; }
+    .provider-request-details summary:focus-visible { outline: 2px solid #0f62fe; outline-offset: 2px; }
+    .provider-request dl { display: grid; grid-template-columns: minmax(9rem, 0.7fr) minmax(0, 1.3fr); gap: 0.35rem 0.65rem; margin: 0.2rem 0 0; padding-top: 0.55rem; border-top: 1px solid #e3e6e8; }
     .provider-request dd { color: #3a4d55; }
-    .sensitive { display: inline-block; margin-left: 0.2rem; padding: 0.04rem 0.28rem; border-radius: 0.5rem; background: #d0e2ff; color: #0043ce; font-size: 0.52rem; }
-    .provider-contract { display: grid; gap: 0.2rem; margin-top: 0.65rem; padding: 0.55rem; border-left: 3px solid #0f62fe; background: #fff; color: #3a4d55; }
+    .sensitive { display: inline-block; margin-left: 0.2rem; padding: 0.04rem 0.28rem; border-radius: 0.5rem; background: #e5e8ea; color: #3a4d55; font-size: 0.68rem; }
+    .provider-contract { display: grid; gap: 0.2rem; margin-top: 0.65rem; padding-top: 0.55rem; border-top: 1px solid #e3e6e8; background: transparent; color: #3a4d55; }
     .service-actions { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.65rem; }
     .service-actions .btn { margin: 0; }
     .service-next { margin: 0.7rem 0 0; color: #3a4d55; }
@@ -799,11 +802,14 @@ import { CephInsightsComponent } from './ceph-insights.component';
     @media (max-width: 62rem) {
       .cm-ceph-page-head, .card-head { flex-direction: column; }
       .readiness-grid, .preparation-grid, .connection-form, .service-grid { grid-template-columns: 1fr; }
+      .service-card + .service-card { border-top: 1px solid #c9d2d8; border-left: 0; }
       .dependency dl, .connection-meta { grid-template-columns: 1fr; }
       .resource-list > div { grid-template-columns: 1fr; }
       .status-checks li { grid-template-columns: 0.7rem minmax(0, 1fr); }
       .prereq-action { grid-column: 2; justify-self: start; }
       .service-checkpoints { grid-template-columns: 1fr; }
+      .service-checkpoints li + li { border-top: 1px solid #e3e6e8; border-left: 0; }
+      .provider-request-head { flex-direction: column; }
       .provider-request dl { grid-template-columns: 1fr; }
       .service-warning { grid-template-columns: 1fr; }
     }

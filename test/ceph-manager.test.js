@@ -257,9 +257,14 @@ test('Ceph UI reports every installed storage service and provides actionable pr
   assert.match(component, /Ceph 스토리지 서비스 준비도/);
   assert.match(component, /activeTab\(\) === 'services'/);
   assert.match(component, /스토리지 서비스/);
-  assert.match(component, /align-items: start/);
+  assert.match(component, /align-items: stretch/);
   assert.match(component, /storage-service-header/);
   assert.doesNotMatch(component, /class="service-card-head"/);
+  assert.doesNotMatch(component, /class="coverage-badge"/);
+  assert.match(component, /<details class="provider-request-details">/);
+  assert.match(component, /요청 정보와 권한 조건 보기/);
+  assert.match(component, /\.provider-request \{[^}]*background: transparent/);
+  assert.match(component, /\.service-blockers \{[^}]*#f1c21b/);
   assert.match(component, /드라이버만 설치된 상태는 사용 가능으로 계산하지 않습니다/);
   assert.match(component, /Ceph 관리자에게 요청할 정보/);
   assert.match(component, /요청 문구 복사/);

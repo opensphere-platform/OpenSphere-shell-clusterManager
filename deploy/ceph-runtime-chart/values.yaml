@@ -1,0 +1,4 @@
+nbdDevicePreparer:
+  # host /dev 쓰기와 SYS_MODULE/MKNOD capability가 필요한 예외 기능이다.
+  # 기본 설치에는 포함하지 않으며 승인된 변경에서만 명시적으로 활성화한다.
+  enabled: false

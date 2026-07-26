@@ -251,8 +251,8 @@ export class CephInsightsComponent {
   @Output() refresh = new EventEmitter<void>();
 
   readonly view = signal<InsightsView>('overview');
-  readonly cephLogo = 'https://cdn.statically.io/gh/openplatform-labs/images@main/logos/ceph.svg';
-  readonly kubernetesLogo = 'https://cdn.statically.io/gh/openplatform-labs/images@main/logos/kubernetes-2-icon.svg';
+  readonly cephLogo = 'https://cdn.statically.io/gh/openplatform-labs/images@b20a671aa820dace36907acb7cf95b540c0c4f81/logos/ceph.svg';
+  readonly kubernetesLogo = 'https://cdn.statically.io/gh/openplatform-labs/images@95aeaf7781b9a5753762811521131c06df328c87/logos/kubernetes-2-icon.svg';
 
   readonly capacityMeterOptions: any = {
     height: '150px',

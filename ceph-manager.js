@@ -2,6 +2,7 @@
 
 const crypto = require('crypto');
 const fs = require('fs');
+const net = require('net');
 const os = require('os');
 const path = require('path');
 const yaml = require('js-yaml');
@@ -23,6 +24,7 @@ const OPERATOR_RELEASE = 'rook-ceph';
 const CLUSTER_RELEASE = 'rook-ceph-external';
 const CONNECTION_CONFIGMAP = 'opensphere-ceph-connection';
 const OPERATION_CONFIGMAP = 'opensphere-ceph-operation';
+const OBSERVER_EGRESS_POLICY = 'opensphere-ceph-observer-egress';
 // runtime-owner.yaml의 이름 한정 ConfigMap 권한과 1:1로 대응한다. 두 목록은 함께 변경해야 한다.
 const MANAGED_CONFIGMAPS = Object.freeze([CONNECTION_CONFIGMAP, OPERATION_CONFIGMAP, 'rook-ceph-mon-endpoints']);
 // Consumer StorageClass 이름의 소유 규칙(감사 H-01).
@@ -62,6 +64,14 @@ const CEPH_OBSERVER_URL = String(
   process.env.CEPH_OBSERVER_URL || 'http://opensphere-ceph-observer.rook-ceph.svc.cluster.local:8080',
 ).replace(/\/+$/, '');
 const CEPH_OBSERVER_MAX_BYTES = 4 * 1024 * 1024;
+const OBSERVER_API_SECRET = 'opensphere-ceph-observer-api-auth';
+const importCleanupHealth = {
+  totalFailures: 0,
+  consecutiveFailures: 0,
+  lastFailureAt: null,
+  lastSuccessAt: null,
+  lastError: null,
+};
 
 const MANAGED_LABELS = Object.freeze({
   'app.kubernetes.io/managed-by': 'opensphere-cluster-manager',
@@ -139,9 +149,12 @@ function providerGuide() {
   return structuredClone(PROVIDER_GUIDE);
 }
 
-function cephStorageServiceDiagnostics(csiDrivers, storageClasses, secretNames) {
+function cephStorageServiceDiagnostics(csiDrivers, storageClasses, secretResources) {
   const driverNames = new Set((csiDrivers || []).map((item) => String(item?.metadata?.name || item || '')));
-  const secrets = new Set(secretNames || []);
+  const secrets = new Map((secretResources || []).map((item) => {
+    if (typeof item === 'string') return [item, null];
+    return [String(item?.metadata?.name || ''), new Set(Object.keys(item?.data || {}))];
+  }).filter(([name]) => name));
   const classes = Array.isArray(storageClasses) ? storageClasses : [];
   const services = CEPH_STORAGE_SERVICES.map((profile) => {
     const driver = [...driverNames].find((name) => name.endsWith(profile.driverSuffix)) || `${NAMESPACE}.${profile.driverSuffix}`;
@@ -156,6 +169,19 @@ function cephStorageServiceDiagnostics(csiDrivers, storageClasses, secretNames) 
         parameters['csi.storage.k8s.io/node-stage-secret-name'],
       ].map((value) => String(value || '').trim()).filter(Boolean);
       const missingSecrets = secretRefs.filter((name) => !secrets.has(name));
+      const missingSecretFields = secretRefs.flatMap((name) => {
+        const fields = secrets.get(name);
+        if (fields === null) return [];
+        return ['userID', 'userKey']
+          .filter((field) => !fields?.has(field))
+          .map((field) => `${name}.${field}`);
+      });
+      const configurationReady = (
+        missingParameters.length === 0
+        && secretRefs.length >= 2
+        && missingSecrets.length === 0
+        && missingSecretFields.length === 0
+      );
       return {
         name: String(item?.metadata?.name || ''),
         provisioner: String(item?.provisioner || ''),
@@ -165,47 +191,57 @@ function cephStorageServiceDiagnostics(csiDrivers, storageClasses, secretNames) 
         filesystem: String(parameters.fsName || ''),
         missingParameters,
         missingSecrets,
-        ready: missingParameters.length === 0 && secretRefs.length >= 2 && missingSecrets.length === 0,
+        missingSecretFields,
+        configurationReady,
+        verified: false,
+        verifiedAt: null,
+        ready: false,
       };
     });
-    const readyClasses = storageClassDetails.filter((item) => item.ready);
+    const configuredClasses = storageClassDetails.filter((item) => item.configurationReady);
     const blockers = [];
     if (!driverInstalled) blockers.push('CSI 드라이버가 설치되지 않았습니다.');
     if (driverInstalled && !matchedClasses.length) blockers.push('이 드라이버를 사용하는 StorageClass가 없습니다.');
     for (const item of storageClassDetails) {
       if (item.missingParameters.length) blockers.push(`StorageClass/${item.name}: ${item.missingParameters.join(', ')} 값이 없습니다.`);
       if (item.missingSecrets.length) blockers.push(`StorageClass/${item.name}: Secret ${item.missingSecrets.join(', ')}을 찾지 못했습니다.`);
+      if (item.missingSecretFields.length) blockers.push(`StorageClass/${item.name}: Secret 필드 ${item.missingSecretFields.join(', ')}을 찾지 못했습니다.`);
     }
-    const ready = driverInstalled && readyClasses.length > 0;
+    const configured = driverInstalled && configuredClasses.length > 0;
     return {
       id: profile.id,
       name: profile.name,
       description: profile.description,
       driver,
       driverInstalled,
-      configured: matchedClasses.length > 0,
-      ready,
-      state: !driverInstalled ? 'NotInstalled' : ready ? 'Ready' : 'NeedsConfiguration',
+      configured,
+      verified: false,
+      verifiedAt: null,
+      ready: false,
+      state: !driverInstalled ? 'NotInstalled' : configured ? 'ConfiguredUnverified' : 'NeedsConfiguration',
       storageClasses: storageClassDetails,
       blockers,
       providerRequirements: structuredClone(profile.providerRequirements),
       nextAction: !driverInstalled
         ? '서명된 플랫폼 변경으로 CSI 드라이버를 설치하십시오.'
-        : ready
-          ? '새 PVC에서 이 StorageClass를 선택해 사용할 수 있습니다.'
+        : configured
+          ? '구성 참조는 확인되었습니다. 승인된 테스트 PVC 또는 업무 PVC의 실제 생성·마운트 결과로 데이터 경로를 별도 검증하십시오.'
           : profile.id === 'cephfs'
             ? 'Ceph 관리자에게 아래 정보를 요청한 뒤 CephFS 구성을 추가하십시오.'
             : '누락된 pool·CephX 자격 증명과 StorageClass 구성을 보완하십시오.',
     };
   });
   const installed = services.filter((item) => item.driverInstalled);
-  const ready = installed.filter((item) => item.ready);
+  const configured = installed.filter((item) => item.configured);
+  const verified = installed.filter((item) => item.verified);
   return {
     scope: 'CSI persistent volume services',
     installed: installed.length,
-    ready: ready.length,
-    needsConfiguration: installed.length - ready.length,
-    state: installed.length > 0 && installed.length === ready.length ? 'Ready' : 'NeedsConfiguration',
+    configured: configured.length,
+    verified: verified.length,
+    ready: verified.length,
+    needsConfiguration: installed.length - configured.length,
+    state: installed.length > 0 && installed.length === configured.length ? 'ConfiguredUnverified' : 'NeedsConfiguration',
     services,
   };
 }
@@ -849,8 +885,20 @@ async function pruneExpiredImports(ctx) {
     const expiresAt = Date.parse(String(item.metadata?.annotations?.['opensphere.io/expires-at'] || ''));
     return !Number.isFinite(expiresAt) || expiresAt <= now;
   });
-  await Promise.all(expired.map((item) => deleteProviderImport(ctx, item.metadata?.name).catch(() => undefined)));
-  return expired.length;
+  const results = await Promise.allSettled(expired.map((item) => deleteProviderImport(ctx, item.metadata?.name)));
+  const failures = results.filter((item) => item.status === 'rejected');
+  if (failures.length) {
+    importCleanupHealth.totalFailures += failures.length;
+    importCleanupHealth.consecutiveFailures += 1;
+    importCleanupHealth.lastFailureAt = new Date().toISOString();
+    importCleanupHealth.lastError = `만료된 staged Secret ${failures.length}건 정리에 실패했습니다.`;
+    console.warn(`[ceph] ${importCleanupHealth.lastError}`);
+  } else {
+    importCleanupHealth.consecutiveFailures = 0;
+    importCleanupHealth.lastSuccessAt = new Date().toISOString();
+    importCleanupHealth.lastError = null;
+  }
+  return { expired: expired.length, deleted: expired.length - failures.length, failed: failures.length };
 }
 
 async function connectionFromImportRef(ctx, importRef) {
@@ -861,7 +909,15 @@ async function connectionFromImportRef(ctx, importRef) {
   }
   const expiresAt = Date.parse(String(secret.metadata?.annotations?.['opensphere.io/expires-at'] || ''));
   if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
-    await deleteProviderImport(ctx, name).catch(() => undefined);
+    try {
+      await deleteProviderImport(ctx, name);
+    } catch {
+      importCleanupHealth.totalFailures += 1;
+      importCleanupHealth.consecutiveFailures += 1;
+      importCleanupHealth.lastFailureAt = new Date().toISOString();
+      importCleanupHealth.lastError = '만료된 staged Secret 즉시 정리에 실패했습니다.';
+      console.warn(`[ceph] ${importCleanupHealth.lastError}`);
+    }
     throw error('staged Ceph 접속 정보가 만료되었습니다. 관리자 UI에서 다시 검증하십시오.', 410);
   }
   const encoded = String(secret.data?.connectionInput || '');
@@ -967,6 +1023,37 @@ function monitorEndpointsFromData(data) {
     .map((item) => item.trim())
     .filter(Boolean)
     .map((item) => item.replace(/^[^=]+=/, ''));
+}
+
+function observerEgressPolicy(connection) {
+  const endpoints = connection.monitorEndpoints || monitorEndpointsFromData(connection.monitorData);
+  const cidrs = [...new Set(endpoints.map((endpoint) => {
+    const withoutProtocol = String(endpoint).trim().replace(/^v[12]:/i, '').replace(/\/0$/, '');
+    const host = withoutProtocol.startsWith('[')
+      ? withoutProtocol.slice(1, withoutProtocol.indexOf(']'))
+      : withoutProtocol.slice(0, withoutProtocol.lastIndexOf(':'));
+    const version = net.isIP(host);
+    if (!version) {
+      throw error(`Monitor endpoint '${endpoint}'는 관측기 egress를 고정할 수 있도록 IP 주소를 사용해야 합니다.`, 409);
+    }
+    return `${host}/${version === 6 ? 128 : 32}`;
+  }))];
+  return {
+    apiVersion: 'networking.k8s.io/v1',
+    kind: 'NetworkPolicy',
+    metadata: { name: OBSERVER_EGRESS_POLICY, namespace: NAMESPACE, labels: MANAGED_LABELS },
+    spec: {
+      podSelector: { matchLabels: { 'app.kubernetes.io/name': 'opensphere-ceph-observer' } },
+      policyTypes: ['Egress'],
+      egress: cidrs.map((cidr) => ({
+        to: [{ ipBlock: { cidr } }],
+        ports: [
+          { protocol: 'TCP', port: 3300 },
+          { protocol: 'TCP', port: 6789 },
+        ],
+      })),
+    },
+  };
 }
 
 function decodedSecretField(secret, field) {
@@ -1075,7 +1162,7 @@ async function cephStatus(ctx) {
   const serviceCoverage = cephStorageServiceDiagnostics(
     driverItems,
     allClasses,
-    (cephSecrets.items || []).map((item) => item.metadata?.name).filter(Boolean),
+    cephSecrets.items || [],
   );
   const conditionReady = (cephCluster?.status?.conditions || []).some((condition) => condition.type === 'Ready' && condition.status === 'True');
   const connected = conditionReady || cephCluster?.status?.state === 'Connected' || cephCluster?.status?.phase === 'Connected';
@@ -1087,9 +1174,9 @@ async function cephStatus(ctx) {
   } else if (metadata) {
     if (connected && drivers.length && classes.length === wantedClasses.size) {
       state = 'Ready'; reason = 'ExternalCephConnected';
-      message = serviceCoverage.state === 'Ready'
-        ? `외부 Ceph과 설치된 CSI 스토리지 ${serviceCoverage.ready}/${serviceCoverage.installed}종이 사용 가능하도록 구성되었습니다.`
-        : `외부 Ceph 연결은 정상이며 CSI 스토리지 ${serviceCoverage.ready}/${serviceCoverage.installed}종이 구성되었습니다. 미구성 서비스를 확인하십시오.`;
+      message = serviceCoverage.needsConfiguration === 0
+        ? `외부 Ceph 연결은 정상이며 CSI 스토리지 ${serviceCoverage.configured}/${serviceCoverage.installed}종의 구성 참조가 확인되었습니다. 실제 PVC 데이터 경로 검증은 별도 기록이 필요합니다.`
+        : `외부 Ceph 연결은 정상이며 CSI 스토리지 ${serviceCoverage.configured}/${serviceCoverage.installed}종이 구성되었습니다. 미구성 서비스를 확인하십시오.`;
     } else {
       state = 'Degraded'; reason = 'ExternalCephNotReady'; message = '외부 Ceph 연결 리소스가 존재하지만 CephCluster/CSI가 아직 Ready가 아닙니다.';
     }
@@ -1099,6 +1186,7 @@ async function cephStatus(ctx) {
     connection: statusConnectionProjection(metadata, monitorConfig, allClasses, cephSecrets.items || []),
     rook: { operator, cluster, cephCluster: cephCluster ? { state: cephCluster.status?.state || cephCluster.status?.phase || 'Unknown', health: cephCluster.status?.ceph?.health || 'Unknown' } : null },
     csi: { drivers, storageClasses: classes, serviceCoverage },
+    importCleanup: { ...importCleanupHealth },
   };
 }
 
@@ -1312,6 +1400,12 @@ async function installConnection(ctx, connection, actor) {
 
   for (const item of connection.configMaps) await upsert(ctx, `/api/v1/namespaces/${NAMESPACE}/configmaps`, item.name, configMapManifest(item));
   for (const item of connection.secrets) await upsert(ctx, `/api/v1/namespaces/${NAMESPACE}/secrets`, item.name, secretManifest(item));
+  await upsert(
+    ctx,
+    `/apis/networking.k8s.io/v1/namespaces/${NAMESPACE}/networkpolicies`,
+    OBSERVER_EGRESS_POLICY,
+    observerEgressPolicy(connection),
+  );
 
   const valuesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opensphere-ceph-values-'));
   const valuesPath = path.join(valuesDir, 'values.yaml');
@@ -1410,7 +1504,10 @@ async function usageFor(ctx, storageClassNames) {
     kube(ctx, 'GET', '/api/v1/persistentvolumeclaims'),
   ]);
   return {
-    persistentVolumes: (pvs.items || []).filter((item) => wanted.has(item.spec?.storageClassName)).map((item) => item.metadata?.name),
+    persistentVolumes: (pvs.items || []).filter((item) => (
+      wanted.has(item.spec?.storageClassName)
+      || String(item.spec?.csi?.driver || '').startsWith(`${NAMESPACE}.`)
+    )).map((item) => item.metadata?.name),
     persistentVolumeClaims: (pvcs.items || []).filter((item) => wanted.has(item.spec?.storageClassName)).map((item) => `${item.metadata?.namespace}/${item.metadata?.name}`),
   };
 }
@@ -1431,6 +1528,7 @@ async function disconnect(ctx, metadata) {
     if (MANAGED_SECRETS.has(name)) await remove(ctx, `/api/v1/namespaces/${NAMESPACE}/secrets/${encodeURIComponent(name)}`);
   }
   await remove(ctx, `/api/v1/namespaces/${NAMESPACE}/configmaps/rook-ceph-mon-endpoints`);
+  await remove(ctx, `/apis/networking.k8s.io/v1/namespaces/${NAMESPACE}/networkpolicies/${OBSERVER_EGRESS_POLICY}`);
   await remove(ctx, `/api/v1/namespaces/${NAMESPACE}/configmaps/${CONNECTION_CONFIGMAP}`);
   return { ok: true, retained: ['remote Ceph pools', 'remote Ceph filesystems', 'remote Ceph data'], removed: ['consumer Rook external cluster', 'consumer CSI secrets', 'consumer StorageClasses', 'consumer VolumeSnapshotClasses'] };
 }
@@ -1660,11 +1758,19 @@ function normalizeCephInsights(snapshot) {
 }
 
 async function cephInsights(ctx, forceRefresh = false) {
+  const authSecret = await optionalKube(ctx, `/api/v1/namespaces/${NAMESPACE}/secrets/${OBSERVER_API_SECRET}`);
+  const observerToken = decodedSecretField(authSecret, 'token');
+  if (observerToken.length < 32) {
+    throw error('Ceph 관측 서비스 API 인증이 구성되지 않았습니다. 보안 업데이트된 runtime chart를 먼저 적용하십시오.', 503);
+  }
   let response;
   try {
     response = await (ctx.cephObserverFetch || fetch)(
       `${CEPH_OBSERVER_URL}/snapshot${forceRefresh ? '?refresh=1' : ''}`,
-      { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(25_000) },
+      {
+        headers: { accept: 'application/json', 'x-opensphere-observer-token': observerToken },
+        signal: AbortSignal.timeout(25_000),
+      },
     );
   } catch {
     throw error('Ceph 관측 서비스에 연결할 수 없습니다.', 503);
@@ -1679,7 +1785,13 @@ async function cephInsights(ctx, forceRefresh = false) {
 
 function createCephManager(ctx) {
   const importCleanupTimer = setInterval(() => {
-    void pruneExpiredImports(ctx).catch(() => undefined);
+    void pruneExpiredImports(ctx).catch((failure) => {
+      importCleanupHealth.totalFailures += 1;
+      importCleanupHealth.consecutiveFailures += 1;
+      importCleanupHealth.lastFailureAt = new Date().toISOString();
+      importCleanupHealth.lastError = `staged Secret 정리 작업을 실행하지 못했습니다: ${safeError(failure)}`;
+      console.warn(`[ceph] ${importCleanupHealth.lastError}`);
+    });
   }, 15 * 60 * 1000);
   importCleanupTimer.unref?.();
   return async function handle(req, res, pathname) {

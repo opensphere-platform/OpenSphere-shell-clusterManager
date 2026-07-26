@@ -59,6 +59,13 @@ export interface CephStatus {
     storageClasses: Array<{ name: string; provisioner: string; reclaimPolicy: string }>;
     serviceCoverage?: CephServiceCoverage;
   };
+  importCleanup?: {
+    totalFailures: number;
+    consecutiveFailures: number;
+    lastFailureAt: string | null;
+    lastSuccessAt: string | null;
+    lastError: string | null;
+  };
   ownerPrerequisites?: {
     ready: boolean;
     blockers: string[];
@@ -79,8 +86,10 @@ export interface CephStorageService {
   driver: string;
   driverInstalled: boolean;
   configured: boolean;
+  verified: boolean;
+  verifiedAt: string | null;
   ready: boolean;
-  state: 'Ready' | 'NeedsConfiguration' | 'NotInstalled';
+  state: 'ConfiguredUnverified' | 'NeedsConfiguration' | 'NotInstalled';
   storageClasses: Array<{
     name: string;
     provisioner: string;
@@ -90,6 +99,10 @@ export interface CephStorageService {
     filesystem: string;
     missingParameters: string[];
     missingSecrets: string[];
+    missingSecretFields: string[];
+    configurationReady: boolean;
+    verified: boolean;
+    verifiedAt: string | null;
     ready: boolean;
   }>;
   blockers: string[];
@@ -100,9 +113,11 @@ export interface CephStorageService {
 export interface CephServiceCoverage {
   scope: string;
   installed: number;
+  configured: number;
+  verified: number;
   ready: number;
   needsConfiguration: number;
-  state: 'Ready' | 'NeedsConfiguration';
+  state: 'ConfiguredUnverified' | 'NeedsConfiguration';
   services: CephStorageService[];
 }
 

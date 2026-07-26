@@ -10,6 +10,23 @@ data:
   ceph-observer.py: |-
 {{ .Files.Get "files/ceph-observer.py" | indent 4 }}
 ---
+{{- $authSecret := lookup "v1" "Secret" .Release.Namespace "opensphere-ceph-observer-api-auth" }}
+{{- $authToken := randAlphaNum 64 }}
+{{- if and $authSecret (hasKey $authSecret.data "token") }}
+{{- $authToken = (index $authSecret.data "token" | b64dec) }}
+{{- end }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: opensphere-ceph-observer-api-auth
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: opensphere-ceph-observer
+    app.kubernetes.io/component: api-auth
+type: Opaque
+stringData:
+  token: {{ $authToken | quote }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -33,6 +50,11 @@ spec:
     spec:
       automountServiceAccountToken: false
       securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -44,6 +66,7 @@ spec:
             - { name: HOME, value: /tmp }
             - { name: CACHE_SECONDS, value: "30" }
             - { name: COMMAND_TIMEOUT_SECONDS, value: "8" }
+            - { name: API_TOKEN_FILE, value: /var/run/opensphere-ceph/api-auth/token }
           ports:
             - { name: http, containerPort: 8080, protocol: TCP }
           securityContext:
@@ -66,6 +89,7 @@ spec:
             - { name: script, mountPath: /opt/opensphere, readOnly: true }
             - { name: credentials, mountPath: /var/run/opensphere-ceph/credentials, readOnly: true }
             - { name: monitors, mountPath: /var/run/opensphere-ceph/monitors, readOnly: true }
+            - { name: api-auth, mountPath: /var/run/opensphere-ceph/api-auth, readOnly: true }
             - { name: tmp, mountPath: /tmp }
       volumes:
         - name: script
@@ -74,7 +98,8 @@ spec:
             defaultMode: 0555
         # 감사 H-02 / SEC-CEPH-005: 관측기는 Rook operator 자격 증명을 마운트하지 않는다.
         # operator key는 RBD provisioner 권한과 동등해질 수 있어 read-only 관측에 과대하다.
-        # 전용 read-only 신원(client.<id>, caps: mon 'allow r', mgr 'allow r', osd 'allow r')을
+        # 전용 read-only 신원을 사용한다. CephX caps는 관측 명령의 command 단위 allowlist로
+        # 발급하며 osd 'allow r' 같은 데이터-plane 포괄 권한은 부여하지 않는다.
         # rook-ceph/opensphere-ceph-observer-creds에 보관하고 그것만 사용한다.
         # 이 Secret이 없으면 관측 섹션은 NotConfigured로 응답하며(fail-safe) 연결 자체는 영향받지 않는다.
         - name: credentials
@@ -86,6 +111,10 @@ spec:
           configMap:
             name: rook-ceph-mon-endpoints
             optional: true
+        - name: api-auth
+          secret:
+            secretName: opensphere-ceph-observer-api-auth
+            defaultMode: 0440
         - name: tmp
           emptyDir:
             sizeLimit: 32Mi

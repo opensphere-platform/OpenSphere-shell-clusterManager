@@ -24,6 +24,11 @@ rules:
   - apiGroups: [rbac.authorization.k8s.io]
     resources: [roles, rolebindings, clusterroles, clusterrolebindings]
     verbs: [get, list, watch, create, update, patch, delete]
+  # Consumer StorageClass 소유 경계를 강제하는 admission policy는 runtime Helm
+  # release와 같은 트랜잭션에서 적용한다. 정책 없는 RBAC만 설치되는 상태를 허용하지 않는다.
+  - apiGroups: [admissionregistration.k8s.io]
+    resources: [validatingadmissionpolicies, validatingadmissionpolicybindings]
+    verbs: [get, list, watch, create, update, patch, delete]
   # The signed, digest-pinned Rook chart owns RBAC objects. Kubernetes requires
   # these explicit verbs when the chart grants permissions beyond this
   # reconciler's own rule set or binds those roles to chart service accounts.

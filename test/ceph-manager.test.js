@@ -272,13 +272,18 @@ test('installed Ceph CSI services distinguish driver registration from usable St
   const coverage = cephStorageServiceDiagnostics(
     drivers,
     storageClasses,
-    ['rook-csi-rbd-provisioner', 'rook-csi-rbd-node'],
+    [
+      { metadata: { name: 'rook-csi-rbd-provisioner' }, data: { userID: 'b3BlbnNwaGVyZQ==', userKey: 'a2V5' } },
+      { metadata: { name: 'rook-csi-rbd-node' }, data: { userID: 'b3BlbnNwaGVyZQ==', userKey: 'a2V5' } },
+    ],
   );
   assert.equal(coverage.installed, 2);
-  assert.equal(coverage.ready, 1);
+  assert.equal(coverage.configured, 1);
+  assert.equal(coverage.verified, 0);
+  assert.equal(coverage.ready, 0);
   assert.equal(coverage.needsConfiguration, 1);
   assert.equal(coverage.state, 'NeedsConfiguration');
-  assert.equal(coverage.services.find((item) => item.id === 'rbd').state, 'Ready');
+  assert.equal(coverage.services.find((item) => item.id === 'rbd').state, 'ConfiguredUnverified');
   const cephfs = coverage.services.find((item) => item.id === 'cephfs');
   assert.equal(cephfs.state, 'NeedsConfiguration');
   assert.match(cephfs.blockers.join(' '), /StorageClass/);
@@ -327,7 +332,8 @@ test('Ceph UI reports every installed storage service and provides actionable pr
   assert.match(component, /요청 정보와 권한 조건 보기/);
   assert.match(component, /\.provider-request \{[^}]*background: transparent/);
   assert.match(component, /\.service-blockers \{[^}]*#f1c21b/);
-  assert.match(component, /드라이버만 설치된 상태는 사용 가능으로 계산하지 않습니다/);
+  assert.match(component, /구성 완료만으로 실사용 검증 완료로 계산하지 않습니다/);
+  assert.match(component, /구성 완료 · 미검증/);
   assert.match(component, /Ceph 관리자에게 요청할 정보/);
   assert.match(component, /요청 문구 복사/);
   assert.match(component, /CephFS 구성 추가/);
@@ -363,7 +369,8 @@ test('Ceph consumer prerequisite gaps create a governed installation request in 
   assert.match(component, /installationRequest/);
   assert.match(component, /승인 대기/);
   assert.match(component, /설치·검증 중/);
-  assert.match(component, /setInterval[\s\S]*10_000/);
+  assert.match(component, /scheduleStatusPoll\(10_000\)/);
+  assert.match(component, /statusPollWarning/);
   assert.match(component, /변경 요청 열기/);
 });
 
@@ -786,7 +793,7 @@ test('C-01: node prerequisite DaemonSet drops privileged and is disclosed before
 });
 
 test('H-01: StorageClass admission policy uses API-server-valid DELETE object selection', () => {
-  const admission = fs.readFileSync(path.resolve(__dirname, '../deploy/ceph-consumer-storage-admission.yaml'), 'utf8');
+  const admission = fs.readFileSync(path.resolve(__dirname, '../deploy/ceph-runtime-chart/templates/consumer-storage-admission.yaml'), 'utf8');
   assert.match(admission, /expression: "object != null \? object : oldObject"/);
   assert.doesNotMatch(admission, /has\(object\)/);
 });

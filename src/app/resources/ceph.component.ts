@@ -35,9 +35,12 @@ import { CephInsightsComponent } from './ceph-insights.component';
       </button>
       <button type="button" [class.active]="activeTab() === 'services'" [attr.aria-current]="activeTab() === 'services' ? 'page' : null" (click)="selectTab('services')">
         스토리지 서비스
-        <span *ngIf="status()?.csi?.serviceCoverage as coverage" class="tab-status" [class.warn]="coverage.state !== 'Ready'">{{ coverage.ready }}/{{ coverage.installed }} 사용 가능</span>
+        <span *ngIf="status()?.csi?.serviceCoverage as coverage" class="tab-status" [class.warn]="coverage.needsConfiguration > 0">{{ coverage.configured }}/{{ coverage.installed }} 구성 · {{ coverage.verified }} 검증</span>
       </button>
     </nav>
+    <div *ngIf="statusPollWarning()" class="alert alert-warning" role="status">
+      <div class="alert-items"><div class="alert-item static"><span class="alert-text">{{ statusPollWarning() }}</span></div></div>
+    </div>
 
     <ng-container *ngIf="activeTab() === 'connection' || activeTab() === 'services'">
     <ng-container *ngIf="activeTab() === 'connection'">
@@ -206,7 +209,7 @@ import { CephInsightsComponent } from './ceph-insights.component';
         <div>
           <p class="section-kicker">CSI SERVICE READINESS</p>
           <h2>Ceph 스토리지 서비스 준비도</h2>
-          <p>설치된 드라이버와 실제 PVC에서 선택 가능한 구성을 별도로 검사합니다. 드라이버만 설치된 상태는 사용 가능으로 계산하지 않습니다.</p>
+          <p>드라이버·StorageClass 참조 구성과 실제 PVC 데이터 경로 검증을 분리해 표시합니다. 구성 완료만으로 실사용 검증 완료로 계산하지 않습니다.</p>
         </div>
       </div>
 
@@ -216,13 +219,13 @@ import { CephInsightsComponent } from './ceph-insights.component';
       </div>
 
       <div class="service-grid">
-        <article *ngFor="let service of coverage.services" class="service-card" [class.service-ready]="service.ready" [class.service-gap]="service.driverInstalled && !service.ready">
+        <article *ngFor="let service of coverage.services" class="service-card" [class.service-ready]="service.verified" [class.service-gap]="service.driverInstalled && !service.configured">
           <header class="storage-service-header">
             <div class="service-identity">
               <img [src]="cephLogo" alt="" width="30" height="30" />
               <div><h3>{{ service.name }}</h3><p>{{ service.description }}</p></div>
             </div>
-            <span class="service-state" [class.ready]="service.ready" [class.gap]="service.driverInstalled && !service.ready">
+            <span class="service-state" [class.ready]="service.verified" [class.gap]="service.driverInstalled && !service.configured">
               {{ serviceStateLabel(service) }}
             </span>
           </header>
@@ -230,7 +233,7 @@ import { CephInsightsComponent } from './ceph-insights.component';
           <ol class="service-checkpoints" aria-label="서비스 준비 단계">
             <li [class.complete]="service.driverInstalled"><span>1</span><strong>CSI 드라이버</strong><small>{{ service.driverInstalled ? '설치됨' : '미설치' }}</small></li>
             <li [class.complete]="service.configured"><span>2</span><strong>StorageClass</strong><small>{{ service.configured ? '구성됨' : '미구성' }}</small></li>
-            <li [class.complete]="service.ready"><span>3</span><strong>PVC 사용 준비</strong><small>{{ service.ready ? '사용 가능' : '대기' }}</small></li>
+            <li [class.complete]="service.verified"><span>3</span><strong>데이터 경로 검증</strong><small>{{ service.verified ? '검증 기록 있음' : '미검증' }}</small></li>
           </ol>
 
           <div *ngIf="service.storageClasses.length" class="service-class-list">
@@ -245,7 +248,7 @@ import { CephInsightsComponent } from './ceph-insights.component';
             <ul><li *ngFor="let blocker of service.blockers">{{ blocker }}</li></ul>
           </div>
 
-          <section *ngIf="service.driverInstalled && !service.ready" class="provider-request">
+          <section *ngIf="service.driverInstalled && !service.configured" class="provider-request">
             <div class="provider-request-head">
               <div>
                 <strong>Ceph 관리자에게 요청할 정보 <span class="requirement-count">{{ service.providerRequirements.length }}개</span></strong>
@@ -867,10 +870,21 @@ import { CephInsightsComponent } from './ceph-insights.component';
 })
 export class CephClustersComponent implements OnInit, OnDestroy {
   private ceph = inject(CephService);
-  private refreshTimer: ReturnType<typeof setInterval> | null = null;
-  private insightsRefreshTimer: ReturnType<typeof setInterval> | null = null;
-  readonly cephLogo = 'https://cdn.statically.io/gh/openplatform-labs/images@main/logos/ceph.svg';
-  readonly kubernetesLogo = 'https://cdn.statically.io/gh/openplatform-labs/images@main/logos/kubernetes-2-icon.svg';
+  private refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private insightsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private statusInFlight = false;
+  private pollFailures = 0;
+  private readonly visibilityHandler = (): void => {
+    if (document.hidden) {
+      if (this.refreshTimer) clearTimeout(this.refreshTimer);
+      if (this.insightsRefreshTimer) clearTimeout(this.insightsRefreshTimer);
+      return;
+    }
+    this.load(true);
+    this.scheduleInsightsPoll(2_000);
+  };
+  readonly cephLogo = 'https://cdn.statically.io/gh/openplatform-labs/images@b20a671aa820dace36907acb7cf95b540c0c4f81/logos/ceph.svg';
+  readonly kubernetesLogo = 'https://cdn.statically.io/gh/openplatform-labs/images@95aeaf7781b9a5753762811521131c06df328c87/logos/kubernetes-2-icon.svg';
   readonly activeTab = signal<'connection' | 'insights' | 'services'>('connection');
   readonly status = signal<CephStatus | null>(null);
   readonly insights = signal<CephInsights | null>(null);
@@ -882,6 +896,7 @@ export class CephClustersComponent implements OnInit, OnDestroy {
   readonly busy = signal(false);
   readonly error = signal('');
   readonly notice = signal('');
+  readonly statusPollWarning = signal('');
   readonly connectError = signal('');
   readonly connectErrorTitle = signal('입력 값 확인 실패');
   readonly connectNotice = signal('');
@@ -927,26 +942,30 @@ export class CephClustersComponent implements OnInit, OnDestroy {
   disconnectConfirm = '';
 
   ngOnInit(): void {
+    document.addEventListener('visibilitychange', this.visibilityHandler);
     this.load();
-    this.refreshTimer = setInterval(() => {
-      if (!this.loading() && !this.busy()) this.load(true);
-    }, 10_000);
-    this.insightsRefreshTimer = setInterval(() => {
-      if (this.activeTab() === 'insights' && this.status()?.connection && !this.insightsLoading()) this.loadInsights();
-    }, 30_000);
+    this.scheduleInsightsPoll(30_000);
   }
 
   ngOnDestroy(): void {
-    if (this.refreshTimer) clearInterval(this.refreshTimer);
-    if (this.insightsRefreshTimer) clearInterval(this.insightsRefreshTimer);
+    document.removeEventListener('visibilitychange', this.visibilityHandler);
+    if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    if (this.insightsRefreshTimer) clearTimeout(this.insightsRefreshTimer);
   }
 
   load(silent = false): void {
+    if (this.statusInFlight) return;
+    this.statusInFlight = true;
     if (!silent) this.loading.set(true);
     this.error.set('');
     this.ceph.status().subscribe({
       next: (status) => {
         this.status.set(status);
+        this.statusInFlight = false;
+        this.pollFailures = 0;
+        this.statusPollWarning.set(status.importCleanup?.consecutiveFailures
+          ? status.importCleanup.lastError || '만료된 접속 정보 정리 상태를 확인해야 합니다.'
+          : '');
         if (!status.connection) {
           this.insights.set(null);
           this.insightsError.set('');
@@ -955,12 +974,38 @@ export class CephClustersComponent implements OnInit, OnDestroy {
           this.prerequisiteRequest.set(status.ownerPrerequisites.installationRequest || null);
         }
         this.loading.set(false);
+        this.scheduleStatusPoll(10_000);
       },
       error: (failure) => {
+        this.statusInFlight = false;
+        this.pollFailures += 1;
         if (!silent) this.error.set(this.message(failure));
+        if (silent && this.pollFailures >= 2) {
+          this.statusPollWarning.set(`상태 갱신이 ${this.pollFailures}회 연속 실패했습니다. 마지막 표시 값은 최신 상태가 아닐 수 있습니다.`);
+        }
         this.loading.set(false);
+        this.scheduleStatusPoll(Math.min(300_000, 10_000 * (2 ** Math.min(this.pollFailures, 5))));
       },
     });
+  }
+
+  private scheduleStatusPoll(delay: number): void {
+    if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    if (document.hidden) return;
+    const jitter = Math.round(delay * (0.9 + Math.random() * 0.2));
+    this.refreshTimer = setTimeout(() => {
+      if (!this.busy()) this.load(true);
+      else this.scheduleStatusPoll(5_000);
+    }, jitter);
+  }
+
+  private scheduleInsightsPoll(delay: number): void {
+    if (this.insightsRefreshTimer) clearTimeout(this.insightsRefreshTimer);
+    if (document.hidden) return;
+    this.insightsRefreshTimer = setTimeout(() => {
+      if (this.activeTab() === 'insights' && this.status()?.connection && !this.insightsLoading()) this.loadInsights();
+      this.scheduleInsightsPoll(30_000);
+    }, delay);
   }
 
   selectTab(tab: 'connection' | 'insights' | 'services'): void {
@@ -1124,7 +1169,8 @@ export class CephClustersComponent implements OnInit, OnDestroy {
   }
 
   serviceStateLabel(service: CephStorageService): string {
-    if (service.ready) return '사용 가능';
+    if (service.verified) return '데이터 경로 검증됨';
+    if (service.configured) return '구성 완료 · 미검증';
     if (service.driverInstalled) return '정보·구성 필요';
     return '미설치';
   }

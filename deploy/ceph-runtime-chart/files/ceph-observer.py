@@ -9,9 +9,11 @@ Credential values are never copied into responses or logs.
 from __future__ import annotations
 
 import json
+import hmac
 import os
 import re
 import subprocess
+import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -28,6 +30,7 @@ CREDENTIAL_DIR = os.environ.get("CREDENTIAL_DIR", "/var/run/opensphere-ceph/cred
 MONITOR_FILE = os.environ.get("MONITOR_FILE", "/var/run/opensphere-ceph/monitors/data")
 USER_ID_FILE = os.path.join(CREDENTIAL_DIR, "userID")
 USER_KEY_FILE = os.path.join(CREDENTIAL_DIR, "userKey")
+API_TOKEN_FILE = os.environ.get("API_TOKEN_FILE", "/var/run/opensphere-ceph/api-auth/token")
 
 COMMANDS = {
     "status": ["status"],
@@ -45,8 +48,10 @@ MONITOR_PATTERN = re.compile(
 )
 
 _cache_lock = threading.Lock()
+_collection_lock = threading.Lock()
 _cache_value: dict | None = None
 _cache_monotonic = 0.0
+_request_slots = threading.BoundedSemaphore(16)
 
 
 def utc_now() -> str:
@@ -117,15 +122,36 @@ def execute(command_id: str, base_arguments: list[str]) -> dict:
     started = time.monotonic()
     args = [*base_arguments, *COMMANDS[command_id], "--format", "json"]
     try:
-        completed = subprocess.run(
-            args,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=COMMAND_TIMEOUT_SECONDS,
-            check=False,
-            env={**os.environ, "HOME": "/tmp"},
-        )
+        # File-backed output prevents a large Ceph response from being buffered
+        # into the observer process before the size limit can be enforced.
+        with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
+            process = subprocess.Popen(
+                args,
+                stdin=subprocess.DEVNULL,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                env={**os.environ, "HOME": "/tmp"},
+            )
+            try:
+                process.wait(timeout=COMMAND_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+                raise
+            stdout_size = stdout_file.tell()
+            stderr_size = stderr_file.tell()
+            if stdout_size > MAX_COMMAND_OUTPUT_BYTES or stderr_size > MAX_COMMAND_OUTPUT_BYTES:
+                return {
+                    "available": False,
+                    "reason": "ResponseTooLarge",
+                    "message": "Ceph returned more data than the observer allows.",
+                    "durationMs": int((time.monotonic() - started) * 1000),
+                }
+            stdout_file.seek(0)
+            stderr_file.seek(0)
+            stdout = stdout_file.read(MAX_COMMAND_OUTPUT_BYTES + 1)
+            stderr_bytes = stderr_file.read(min(MAX_COMMAND_OUTPUT_BYTES, 8192))
+            return_code = process.returncode
     except subprocess.TimeoutExpired:
         return {
             "available": False,
@@ -142,16 +168,9 @@ def execute(command_id: str, base_arguments: list[str]) -> dict:
         }
 
     duration_ms = int((time.monotonic() - started) * 1000)
-    if len(completed.stdout) > MAX_COMMAND_OUTPUT_BYTES:
-        return {
-            "available": False,
-            "reason": "ResponseTooLarge",
-            "message": "Ceph returned more data than the observer allows.",
-            "durationMs": duration_ms,
-        }
-    stderr = completed.stderr.decode("utf-8", errors="replace")[:8192]
-    if completed.returncode != 0:
-        reason, message = classify_failure(stderr, completed.returncode)
+    stderr = stderr_bytes.decode("utf-8", errors="replace")[:8192]
+    if return_code != 0:
+        reason, message = classify_failure(stderr, return_code)
         return {
             "available": False,
             "reason": reason,
@@ -159,7 +178,7 @@ def execute(command_id: str, base_arguments: list[str]) -> dict:
             "durationMs": duration_ms,
         }
     try:
-        data = json.loads(completed.stdout.decode("utf-8"))
+        data = json.loads(stdout.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
         return {
             "available": False,
@@ -213,10 +232,27 @@ def snapshot(force: bool) -> dict:
         age = time.monotonic() - _cache_monotonic
         if not force and _cache_value is not None and age < CACHE_SECONDS:
             return {**_cache_value, "cached": True, "cacheAgeSeconds": round(age, 3)}
+    # Only one collection may execute, but cached readers are not blocked for
+    # the full duration of eight Ceph CLI commands.
+    with _collection_lock:
+        with _cache_lock:
+            age = time.monotonic() - _cache_monotonic
+            if _cache_value is not None and (not force or age < 5):
+                if age < CACHE_SECONDS or force:
+                    return {**_cache_value, "cached": True, "cacheAgeSeconds": round(age, 3)}
         value = collect_snapshot()
-        _cache_value = value
-        _cache_monotonic = time.monotonic()
+        with _cache_lock:
+            _cache_value = value
+            _cache_monotonic = time.monotonic()
         return {**value, "cached": False, "cacheAgeSeconds": 0}
+
+
+def configured_api_token() -> str | None:
+    try:
+        token = read_text(API_TOKEN_FILE, 256)
+    except (FileNotFoundError, OSError, ValueError):
+        return None
+    return token if len(token) >= 32 else None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -236,12 +272,31 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler contract
+        if not _request_slots.acquire(blocking=False):
+            self.write_json(503, {"error": "observer request capacity exhausted"})
+            return
+        try:
+            self._do_get()
+        finally:
+            _request_slots.release()
+
+    def _do_get(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path in ("/healthz", "/readyz"):
+        if parsed.path == "/healthz":
             self.write_json(200, {"ok": True})
+            return
+        if parsed.path == "/readyz":
+            _, configuration_error = connection_arguments()
+            ready = configuration_error is None and configured_api_token() is not None
+            self.write_json(200 if ready else 503, {"ok": ready})
             return
         if parsed.path != "/snapshot":
             self.write_json(404, {"error": "not found"})
+            return
+        expected = configured_api_token()
+        supplied = self.headers.get("x-opensphere-observer-token", "")
+        if expected is None or not hmac.compare_digest(supplied, expected):
+            self.write_json(401, {"error": "observer authentication required"})
             return
         force = parse_qs(parsed.query).get("refresh", ["0"])[0] == "1"
         self.write_json(200, snapshot(force))

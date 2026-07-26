@@ -210,6 +210,7 @@ async function installPrerequisites() {
   await runHelm([
     'upgrade', '--install', 'opensphere-ceph-runtime', RUNTIME_CHART,
     '--namespace', 'rook-ceph',
+    '--set', 'nbdDevicePreparer.enabled=true',
     '--atomic', '--wait', '--timeout', '5m', '--history-max', '3',
   ]);
   const observed = await waitForRookReady();

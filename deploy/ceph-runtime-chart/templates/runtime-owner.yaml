@@ -35,6 +35,13 @@ rules:
   - apiGroups: [ceph.rook.io]
     resources: [cephclusters]
     verbs: [get, list, create, update, patch, delete]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [get, update, patch, delete]
+    resourceNames: [opensphere-ceph-observer-egress]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [create]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

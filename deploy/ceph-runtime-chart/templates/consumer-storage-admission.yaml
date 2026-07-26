@@ -16,7 +16,7 @@
 #      → 타 namespace Secret을 external-provisioner가 읽게 만드는 교차 유출 차단
 #   4) 기본 StorageClass 지정(is-default-class) 차단 — 클러스터 기본값 탈취 방지
 #
-# 적용: kubectl apply -f deploy/ceph-consumer-storage-admission.yaml
+# 적용: opensphere-ceph-runtime Helm release에 포함되며 별도 수동 적용 경로는 없다.
 # 요구 버전: Kubernetes 1.30+ (ValidatingAdmissionPolicy GA)
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy

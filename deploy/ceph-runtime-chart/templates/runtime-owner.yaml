@@ -12,8 +12,25 @@ metadata:
   name: opensphere-ceph-runtime-owner
   namespace: {{ .Release.Namespace }}
 rules:
+  # ConfigMap은 Cluster Manager가 실제로 소유하는 이름으로만 변경할 수 있다.
+  # 이름 제한이 없으면 rook-csi-operator-image-set-configmap을 patch해
+  # 전 노드 privileged CSI nodeplugin의 이미지를 교체할 수 있다(권한 승격 경로).
+  # create는 RBAC에서 resourceNames로 제한할 수 없으므로 별도 규칙으로 분리한다.
   - apiGroups: [""]
-    resources: [secrets, configmaps]
+    resources: [configmaps]
+    verbs: [get, update, patch, delete]
+    resourceNames:
+      - opensphere-ceph-connection
+      - opensphere-ceph-operation
+      - rook-ceph-mon-endpoints
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [create]
+  # Secret은 Helm이 릴리스 상태를 sh.helm.release.v1.<release>.v<N> 이름으로 저장하므로
+  # resourceNames로 제한할 수 없다(버전 접미사가 무한). list는 cephStatus의 서비스 커버리지
+  # 집계에 필요하다. 잔여 위험은 별도 admission 정책으로 통제한다.
+  - apiGroups: [""]
+    resources: [secrets]
     verbs: [get, list, create, update, patch, delete]
   - apiGroups: [ceph.rook.io]
     resources: [cephclusters]
@@ -62,6 +79,13 @@ kind: ClusterRole
 metadata:
   name: opensphere-ceph-consumer-storage-owner
 rules:
+  # ⚠ cluster-scope 자원이다. Cluster Manager가 소유하는 이름은 `ceph-rbd`·`cephfs`
+  # 접두사 규칙(ceph-manager.js의 MANAGED_STORAGE_CLASS_BASES)이며, RBAC의 resourceNames는
+  # 접두사를 표현할 수 없고 create/list에는 적용조차 되지 않는다.
+  # 따라서 이름·라벨·Secret namespace·기본 StorageClass 경계는
+  # deploy/ceph-consumer-storage-admission.yaml의 ValidatingAdmissionPolicy가
+  # CREATE/UPDATE/DELETE에서 강제한다(감사 H-01). 이 정책 없이 배포하면
+  # 이 Role은 클러스터의 모든 StorageClass를 변조·삭제할 수 있다.
   - apiGroups: [storage.k8s.io]
     resources: [storageclasses]
     verbs: [get, list, create, update, patch, delete]

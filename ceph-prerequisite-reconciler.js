@@ -39,13 +39,21 @@ const EXPECTED_DESIRED_STATE = Object.freeze({
     name: 'rook-ceph', namespace: 'rook-ceph', chart: 'rook-ceph',
     version: 'v1.20.2', sha256: ROOK_CHART_SHA256,
   }),
-  components: Object.freeze(['crds', 'operator', 'csi', 'runtime-rbac']),
+  // 실제 설치물을 빠짐없이 기술해야 승인자가 위험을 평가할 수 있다.
+  // nbd-preparer는 워커 노드에 SYS_MODULE/MKNOD capability를 요구하는 DaemonSet이므로
+  // 계약에서 생략하면 AAL2 승인이 실제 권한 범위를 반영하지 못한다.
+  components: Object.freeze(['crds', 'operator', 'csi', 'runtime-rbac', 'nbd-preparer']),
   verification: Object.freeze([
     'cephclusters.ceph.rook.io Established',
     'all ceph-csi-operator CRDs Established',
     'deployment/rook-ceph-operator Ready',
     'deployment/ceph-csi-controller-manager Ready',
     'drivers.csi.ceph.io/rook-ceph.rbd.csi.ceph.com configured',
+    'daemonset/opensphere-ceph-nbd-preparer Ready on worker nodes',
+  ]),
+  // 승인 화면과 동일한 문구로 상승 권한을 명시한다.
+  elevatedPrivileges: Object.freeze([
+    'daemonset/opensphere-ceph-nbd-preparer: capabilities SYS_MODULE,MKNOD; hostPath /dev (rw), /sys (ro), /lib/modules (ro); worker nodes only',
   ]),
 });
 

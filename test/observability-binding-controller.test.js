@@ -87,10 +87,14 @@ test('ObservabilityBinding controller RBAC cannot read Secrets or mutate monitor
   assert.match(manifest, /scope: Cluster/);
 });
 
-test('Cluster Manager and HIS Binding Controller share the signed release channel', () => {
+test('Cluster Manager and HIS Binding Controller share the GA rebuild release', () => {
   const publish = fs.readFileSync(path.resolve(__dirname, '../.github/workflows/publish-image.yml'), 'utf8');
-  const promote = fs.readFileSync(path.resolve(__dirname, '../.github/workflows/promote-image-channel.yml'), 'utf8');
-  assert.match(publish, /his-telemetry-manifests\.js/);
+  assert.equal(fs.existsSync(path.resolve(__dirname, '../.github/workflows/promote-image-channel.yml')), false);
+  assert.match(publish, /workflow_dispatch:/);
+  assert.doesNotMatch(publish, /^  push:/m);
+  assert.match(publish, /io\.opensphere\.channel=ga/);
+  const managerDockerfile = fs.readFileSync(path.resolve(__dirname, '../Dockerfile'), 'utf8');
+  assert.match(managerDockerfile, /his-telemetry-manifests\.js/);
   assert.match(publish, /Dockerfile\.observability-binding-controller/);
   assert.match(publish, /ghcr\.io\/opensphere-platform\/opensphere-his-binding-controller/);
   assert.match(publish, /platforms: linux\/amd64,linux\/arm64/);
@@ -102,9 +106,6 @@ test('Cluster Manager and HIS Binding Controller share the signed release channe
   assert.match(publish, /signed platform-owned Rook operator and Ceph CRDs/);
   assert.ok(publish.includes("! grep -E 'resources: \\[\\*\\]|verbs: \\[\\*\\]'"));
   assert.match(publish, /opensphere-his-binding-controller@\$BINDING_DIGEST/);
-  assert.match(promote, /verify_binding/);
-  assert.match(promote, /binding-promotion\.json/);
-  assert.match(promote, /opensphere-his-binding-controller@\$BINDING_DIGEST/);
   const deployment = fs.readFileSync(path.resolve(__dirname, '../deploy/observability-binding-controller.yaml'), 'utf8');
   assert.match(deployment, /Local developer profile/);
   assert.match(deployment, /production[\s\S]*rendered manifest/);

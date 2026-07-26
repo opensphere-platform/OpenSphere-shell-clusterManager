@@ -1,0 +1,85 @@
+# 감사 H-01 보완 — cluster-scope consumer storage 경계 강제
+#
+# 왜 admission이 필요한가
+#   Cluster Manager ServiceAccount는 StorageClass/VolumeSnapshotClass에 cluster-scope
+#   권한을 가진다. RBAC의 resourceNames는 (a) 접두사를 표현할 수 없고
+#   (b) create/list 동사에는 적용되지 않는다. Cluster Manager가 소유하는 이름은
+#   `ceph-rbd`·`cephfs` 및 그 하위(`cephfs-shared` 등) 접두사 규칙이므로 RBAC만으로는
+#   경계를 표현할 수 없다. 따라서 이름·라벨·Secret namespace·기본 StorageClass 경계를
+#   여기서 CREATE/UPDATE/DELETE 전체에 대해 강제한다.
+#
+# 통제 목표
+#   1) 소유 접두사(ceph-rbd*, cephfs*) 밖의 이름 생성·수정·삭제 차단
+#      → 타 벤더 StorageClass 변조·삭제 차단(DELETE 포함)
+#   2) 관리 라벨 없는 객체 생성 차단 — 애플리케이션 관례를 admission이 강제
+#   3) csi.storage.k8s.io/*-secret-namespace를 rook-ceph로 고정
+#      → 타 namespace Secret을 external-provisioner가 읽게 만드는 교차 유출 차단
+#   4) 기본 StorageClass 지정(is-default-class) 차단 — 클러스터 기본값 탈취 방지
+#
+# 적용: kubectl apply -f deploy/ceph-consumer-storage-admission.yaml
+# 요구 버전: Kubernetes 1.30+ (ValidatingAdmissionPolicy GA)
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: opensphere-ceph-consumer-storage
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [storage.k8s.io]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE, DELETE]
+        resources: [storageclasses]
+      - apiGroups: [snapshot.storage.k8s.io]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE, DELETE]
+        resources: [volumesnapshotclasses]
+  # Cluster Manager ServiceAccount의 요청에만 적용한다. 플랫폼 관리자와 다른
+  # 스토리지 제품의 StorageClass 운영에는 영향을 주지 않는다.
+  matchConditions:
+    - name: only-cluster-manager-service-account
+      expression: "request.userInfo.username == 'system:serviceaccount:opensphere-console:opensphere-cluster-manager'"
+  variables:
+    # DELETE 요청에는 object가 없고 oldObject만 존재한다.
+    - name: target
+      expression: "object != null ? object : oldObject"
+  validations:
+    # 1) 소유 접두사 규칙 — CREATE/UPDATE/DELETE 모두에 적용된다.
+    - expression: >-
+        variables.target.metadata.name == 'ceph-rbd' ||
+        variables.target.metadata.name.startsWith('ceph-rbd-') ||
+        variables.target.metadata.name == 'cephfs' ||
+        variables.target.metadata.name.startsWith('cephfs-')
+      message: "Cluster Manager는 ceph-rbd·cephfs 접두사의 consumer storage만 소유할 수 있습니다."
+      reason: Forbidden
+    # 2) 관리 라벨 — 삭제 대상 역시 OpenSphere가 만든 객체여야 한다.
+    - expression: >-
+        has(variables.target.metadata.labels) &&
+        variables.target.metadata.labels['app.kubernetes.io/managed-by'] == 'opensphere-cluster-manager' &&
+        variables.target.metadata.labels['opensphere.io/ceph-connection'] == 'external'
+      message: "consumer storage 객체에는 OpenSphere 관리 라벨이 있어야 합니다."
+      reason: Forbidden
+    # 3) CSI Secret namespace 고정 (생성·수정 시에만 의미가 있다)
+    - expression: >-
+        request.operation == 'DELETE' ||
+        !has(object.parameters) ||
+        object.parameters.all(key,
+          !key.endsWith('-secret-namespace') || object.parameters[key] == 'rook-ceph')
+      message: "CSI Secret namespace는 rook-ceph로 고정해야 합니다."
+      reason: Forbidden
+    # 4) 클러스터 기본 StorageClass 지정 차단
+    - expression: >-
+        request.operation == 'DELETE' ||
+        !has(object.metadata.annotations) ||
+        !('storageclass.kubernetes.io/is-default-class' in object.metadata.annotations) ||
+        object.metadata.annotations['storageclass.kubernetes.io/is-default-class'] != 'true'
+      message: "Cluster Manager는 클러스터 기본 StorageClass를 지정할 수 없습니다."
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: opensphere-ceph-consumer-storage
+spec:
+  policyName: opensphere-ceph-consumer-storage
+  validationActions: [Deny]

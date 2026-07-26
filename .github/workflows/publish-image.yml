@@ -1,30 +1,7 @@
-name: Publish Cluster Manager edge image
+name: Publish Cluster Manager GA image
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - Dockerfile
-      - server.js
-      - his-catalog.js
-      - his-manager.js
-      - his-telemetry-manifests.js
-      - his-observability-binding-controller.js
-      - ceph-manager.js
-      - Dockerfile.observability-binding-controller
-      - deploy/observability-binding-controller.yaml
-      - deploy/ceph-runtime-owner.yaml
-      - his-values/**
-      - package.json
-      - package-lock.json
-      - angular.json
-      - src/**
-      - test/**
-      - ui-shell/**
-      - module-package.json
-      - module-package.json.sig
-      - .github/workflows/publish-image.yml
 
 permissions:
   contents: read
@@ -34,7 +11,7 @@ permissions:
   artifact-metadata: write
 
 concurrency:
-  group: cluster-manager-edge-image
+  group: cluster-manager-ga-image
   cancel-in-progress: false
 
 jobs:
@@ -87,10 +64,20 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - id: release
+        name: Calculate official KST version
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_epoch="$(git show -s --format=%ct "$GITHUB_SHA")"
+          release_tag="$(TZ=Asia/Seoul date -d "@$release_epoch" +%Y%m%d%H%M)"
+          [[ "$release_tag" =~ ^[0-9]{12}$ ]]
+          echo "version=$release_tag" >> "$GITHUB_OUTPUT"
       - id: package
         shell: bash
         run: |
           echo "descriptor=$(jq -c . module-package.json)" >> "$GITHUB_OUTPUT"
+          echo "version=$(jq -r .version module-package.json)" >> "$GITHUB_OUTPUT"
           echo "signature=$(tr -d '\r\n' < module-package.json.sig)" >> "$GITHUB_OUTPUT"
       - id: meta
         uses: docker/metadata-action@v5
@@ -98,10 +85,16 @@ jobs:
           images: ghcr.io/opensphere-platform/opensphere-shell-cluster-manager
           tags: type=sha,prefix=sha-
           labels: |
-            io.opensphere.channel=edge
+            io.opensphere.channel=ga
             io.opensphere.source-revision=${{ github.sha }}
+            io.opensphere.release-tag=${{ steps.release.outputs.version }}
+            opensphere.io/build-authority=github-actions
+            opensphere.io/release-class=ga
+            opensphere.io/ga-eligible=true
+            io.opensphere.compatibility-version=${{ steps.package.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
       - id: build
         uses: docker/build-push-action@v6
         with:
@@ -114,9 +107,14 @@ jobs:
           build-args: |
             OS_MODULE_DESCRIPTOR=${{ steps.package.outputs.descriptor }}
             OS_MODULE_SIGNATURE=${{ steps.package.outputs.signature }}
+            OS_MODULE_KEY_ID=opensphere-plugins-v4
+            OS_RELEASE_TAG=${{ steps.release.outputs.version }}
           provenance: mode=max
           cache-from: type=gha,scope=opensphere-shell-cluster-manager
           cache-to: type=gha,mode=max,scope=opensphere-shell-cluster-manager
+      - uses: imjasonh/setup-crane@v0.4
+      - name: Verify signed module and official version labels
+        run: bash .github/scripts/verify-module-label.sh "ghcr.io/opensphere-platform/opensphere-shell-cluster-manager@${{ steps.build.outputs.digest }}" "${{ steps.package.outputs.version }}" "${{ steps.release.outputs.version }}"
       - uses: actions/attest@v4
         with:
           subject-name: ghcr.io/opensphere-platform/opensphere-shell-cluster-manager
@@ -141,11 +139,16 @@ jobs:
           images: ghcr.io/opensphere-platform/opensphere-his-binding-controller
           tags: type=sha,prefix=sha-
           labels: |
-            io.opensphere.channel=edge
+            io.opensphere.channel=ga
             io.opensphere.source-revision=${{ github.sha }}
+            io.opensphere.release-tag=${{ steps.release.outputs.version }}
+            opensphere.io/build-authority=github-actions
+            opensphere.io/release-class=ga
+            opensphere.io/ga-eligible=true
             io.opensphere.owner=his
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
       - id: binding_build
         uses: docker/build-push-action@v6
         with:
@@ -205,8 +208,7 @@ jobs:
           name: his-owner-release-${{ github.sha }}
           path: ${{ runner.temp }}/his-owner-release
           retention-days: 365
-      - uses: imjasonh/setup-crane@v0.4
-      - name: Publish immutable release tag, advance edge, and verify
+      - name: Publish immutable release tag, advance GA, and verify
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DIGEST: ${{ steps.build.outputs.digest }}
@@ -214,8 +216,7 @@ jobs:
         run: |
           set -euo pipefail
           crane auth login ghcr.io -u "${{ github.actor }}" -p "$GH_TOKEN"
-          release_epoch="$(git show -s --format=%ct "$GITHUB_SHA")"
-          release_tag="$(TZ=Asia/Seoul date -d "@$release_epoch" +%Y%m%d%H%M)"
+          release_tag="${{ steps.release.outputs.version }}"
           [[ "$release_tag" =~ ^[0-9]{12}$ ]]
           for release in \
             "ghcr.io/opensphere-platform/opensphere-shell-cluster-manager|$DIGEST" \
@@ -227,8 +228,8 @@ jobs:
               crane tag "$repository@$digest" "$release_tag"
             fi
             test "$(crane digest "$repository:$release_tag")" = "$digest"
-            crane tag "$repository@$digest" edge
-            test "$(crane digest "$repository:edge")" = "$digest"
+            crane tag "$repository@$digest" ga
+            test "$(crane digest "$repository:ga")" = "$digest"
             echo "- \`$repository:$release_tag\` → \`$digest\`" >> "$GITHUB_STEP_SUMMARY"
-            echo "- \`$repository:edge\` → \`$digest\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "- \`$repository:ga\` → \`$digest\`" >> "$GITHUB_STEP_SUMMARY"
           done

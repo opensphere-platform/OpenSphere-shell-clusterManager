@@ -1,3 +1,15 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: opensphere-ceph-nbd-preparer
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: opensphere-ceph-nbd-preparer
+    app.kubernetes.io/component: node-storage-prerequisite
+    app.kubernetes.io/managed-by: Helm
+# 이 Pod는 Kubernetes API를 호출하지 않는다. RoleBinding을 부여하지 않으며 토큰도 마운트하지 않는다.
+automountServiceAccountToken: false
+---
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -17,16 +29,39 @@ spec:
         app.kubernetes.io/name: opensphere-ceph-nbd-preparer
         app.kubernetes.io/component: node-storage-prerequisite
     spec:
-      priorityClassName: system-node-critical
-      tolerations:
-        - operator: Exists
+      # control-plane/etcd 노드에는 배치하지 않는다. RBD 볼륨을 mount하는 것은 워커 노드이며,
+      # control-plane에 host /dev 쓰기 권한 워크로드를 두면 클러스터 장악 경로가 된다.
+      nodeSelector:
+        kubernetes.io/os: linux
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: DoesNotExist
+                  - key: node-role.kubernetes.io/master
+                    operator: DoesNotExist
+      # 시스템 상태 taint와 모든 taint를 우회하지 않는다. 전용 스토리지 노드가 필요하면
+      # 해당 taint/key를 별도 변경 요청으로 검토한 뒤 이 닫힌 목록에 추가해야 한다.
+      # 전용 ServiceAccount + 토큰 미마운트. 이 Pod는 Kubernetes API를 호출하지 않는다.
+      serviceAccountName: opensphere-ceph-nbd-preparer
+      automountServiceAccountToken: false
       containers:
         - name: nbd-device-preparer
           image: quay.io/cephcsi/cephcsi@sha256:886e6d2416d62dd7c8fbe659b6306b6c9451d6918e35ad5d1ac774520e11ef87
           imagePullPolicy: IfNotPresent
+          # 전체 특권 모드 대신 실제로 필요한 두 capability만 부여한다.
+          # SYS_MODULE = modprobe nbd, MKNOD = /dev/nbdN 디바이스 노드 생성.
           securityContext:
-            privileged: true
-            allowPrivilegeEscalation: true
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+              add: [SYS_MODULE, MKNOD]
+            seccompProfile:
+              type: RuntimeDefault
           command:
             - /bin/sh
             - -ceu
@@ -43,10 +78,14 @@ spec:
                   major="${device_number%%:*}"
                   minor="${device_number##*:}"
                   if [ ! -b "/host-dev/${device_name}" ]; then
-                    rm -f "/host-dev/${device_name}"
+                    # 블록 디바이스가 아닌 잔여 항목만 제거한다. 디렉터리에 대한 rm 실패로
+                    # errexit(-e)가 컨테이너를 종료시키던 문제를 방지한다.
+                    if [ -e "/host-dev/${device_name}" ]; then rm -f "/host-dev/${device_name}" || true; fi
                     mknod "/host-dev/${device_name}" b "${major}" "${minor}"
+                    # 신규 생성한 디바이스에만 권한을 설정한다. 매 60초마다 무조건 chmod하면
+                    # 노드의 udev/하드닝 정책이 설정한 권한을 조용히 되돌린다.
+                    chmod 0660 "/host-dev/${device_name}"
                   fi
-                  chmod 0660 "/host-dev/${device_name}"
                 done
                 [ "${found}" -eq 1 ] || echo "NBD kernel devices are not available on this node." >&2
                 sleep 60

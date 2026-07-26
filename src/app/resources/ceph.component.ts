@@ -166,8 +166,11 @@ import { CephInsightsComponent } from './ceph-insights.component';
           <h3>Ceph 접속 정보</h3>
           <ng-container *ngIf="s.connection as connection; else requiredConnectionInformation">
             <dl class="provider-info connection-values">
-              <dt>Cluster ID (FSID)</dt>
-              <dd><code>{{ connection.clusterID || '확인되지 않음' }}</code></dd>
+              <dt>Cluster ID (FSID) fingerprint</dt>
+              <dd>
+                <code>{{ connection.fsidFingerprint || '확인되지 않음' }}</code>
+                <small class="value-note">Ceph 관리자가 제공한 FSID의 SHA-256 앞 16자리와 대조하십시오. 원문 FSID는 Console에 보관하지 않습니다.</small>
+              </dd>
               <dt>MON endpoints</dt>
               <dd>
                 <ul class="monitor-values" *ngIf="connection.monitors.length; else monitorsUnavailable">
@@ -358,8 +361,18 @@ import { CephInsightsComponent } from './ceph-insights.component';
           <li>CephCluster CRD와 Rook operator/CSI</li>
           <li>Cluster Manager 전용 최소 권한 RBAC</li>
           <li>CRD Established·operator Ready 검증 및 변경 영수증</li>
+          <li class="scope-elevated">
+            <strong>모든 워커 노드</strong>에 호스트 권한 DaemonSet(<code>opensphere-ceph-nbd-preparer</code>) 배치 —
+            <code>nbd</code> 커널 모듈 적재(<code>SYS_MODULE</code>)와 호스트 <code>/dev</code>에
+            <code>/dev/nbdN</code> 디바이스 노드 생성(<code>MKNOD</code>) 권한이 필요합니다.
+            RBD 볼륨을 <code>rbd-nbd</code>로 mount하기 위한 노드 선행요소이며 control-plane 노드에는 배치하지 않습니다.
+          </li>
         </ul>
         <p class="scope-note"><strong>설치하지 않는 것:</strong> 외부 Ceph cluster, pool, CephFS, MDS, CephX 사용자는 변경하지 않습니다.</p>
+        <label class="scope-consent">
+          <input type="checkbox" [(ngModel)]="elevatedScopeAcknowledged" name="elevatedScopeAcknowledged" />
+          <span>위 <strong>호스트 권한 DaemonSet</strong>이 모든 워커 노드에 배치된다는 점을 확인했습니다.</span>
+        </label>
         <div *ngIf="prerequisiteError()" class="alert alert-danger" role="alert">
           <div class="alert-items"><div class="alert-item static"><span class="alert-text">
             <strong>설치 요청 실패:</strong> {{ prerequisiteError() }}
@@ -405,7 +418,7 @@ import { CephInsightsComponent } from './ceph-insights.component';
         <button *ngIf="canRetryPrerequisiteRequest(prerequisiteRequest())" class="btn btn-outline" type="button"
           [disabled]="busy()" (click)="startNewPrerequisiteRequest()">새 설치 요청 작성</button>
         <button *ngIf="!prerequisiteRequest()" class="btn btn-primary" type="button"
-          [disabled]="busy() || prerequisiteReason.trim().length < 8" (click)="requestPrerequisiteInstall()">설치 요청 생성</button>
+          [disabled]="busy() || prerequisiteReason.trim().length < 8 || !elevatedScopeAcknowledged" (click)="requestPrerequisiteInstall()">설치 요청 생성</button>
       </div>
     </clr-modal>
 
@@ -462,16 +475,31 @@ import { CephInsightsComponent } from './ceph-insights.component';
               <textarea clrTextarea name="monitors" [(ngModel)]="monitors" required autocomplete="off" spellcheck="false" placeholder="10.10.0.11:3300&#10;10.10.0.12:3300&#10;10.10.0.13:3300"></textarea>
               <clr-control-helper>MON public 주소를 줄바꿈 또는 쉼표로 구분합니다. 3300(msgr2) 또는 6789(msgr1)를 사용하십시오.</clr-control-helper>
             </clr-textarea-container>
-            <clr-input-container>
-              <label>CephX 사용자</label>
-              <input clrInput name="userID" [(ngModel)]="userID" required autocomplete="off" spellcheck="false" placeholder="opensphere-dev">
-              <clr-control-helper><code>opensphere-dev</code>와 <code>client.opensphere-dev</code>를 모두 허용합니다. Rook에는 정식 엔티티, ceph-csi에는 접두어 없는 userID로 저장합니다.</clr-control-helper>
-            </clr-input-container>
-            <clr-password-container>
-              <label>User key</label>
-              <input clrPassword name="userKey" [(ngModel)]="userKey" required autocomplete="new-password">
-              <clr-control-helper>계획 화면이나 API 응답에 표시하지 않으며, 연결용 Kubernetes Secret에만 저장합니다.</clr-control-helper>
-            </clr-password-container>
+            <div class="role-credentials wide-field">
+              <h5>역할별 CephX 자격 증명</h5>
+              <p class="role-note">
+                최소권한을 위해 역할마다 <strong>분리된 CephX 계정</strong>이 필요합니다. 같은 계정이나 같은 key를 두 역할에 쓰면 거부됩니다.
+                <code>opensphere-dev</code>와 <code>client.opensphere-dev</code> 표기를 모두 허용하며, Rook에는 정식 엔티티·ceph-csi에는 접두어 없는 userID로 저장합니다.
+                key는 계획 화면이나 API 응답에 표시하지 않고 Kubernetes Secret에만 저장합니다.
+              </p>
+              <ng-container *ngFor="let role of connectionRoles">
+                <div class="role-row">
+                  <clr-input-container>
+                    <label>{{ role.label }} 사용자</label>
+                    <input clrInput [name]="role.id + 'UserID'" [(ngModel)]="roleUserID[role.id]" required
+                      autocomplete="off" spellcheck="false" [placeholder]="role.placeholder">
+                    <clr-control-helper>{{ role.caps }}</clr-control-helper>
+                  </clr-input-container>
+                  <clr-password-container>
+                    <label>{{ role.label }} key</label>
+                    <input clrPassword [name]="role.id + 'UserKey'" [(ngModel)]="roleUserKey[role.id]" required autocomplete="new-password">
+                  </clr-password-container>
+                </div>
+              </ng-container>
+              <div *ngIf="duplicateRoleCredential() as duplicate" class="alert alert-warning" role="alert">
+                <div class="alert-items"><div class="alert-item static"><span class="alert-text">{{ duplicate }}</span></div></div>
+              </div>
+            </div>
             <clr-input-container>
               <label>RBD pool</label>
               <input clrInput name="pool" [(ngModel)]="pool" required autocomplete="off" spellcheck="false" placeholder="kubernetes-rbd">
@@ -479,7 +507,7 @@ import { CephInsightsComponent } from './ceph-insights.component';
             <clr-input-container>
               <label>StorageClass 이름</label>
               <input clrInput name="storageClassName" [(ngModel)]="storageClassName" required autocomplete="off" spellcheck="false" placeholder="ceph-rbd">
-              <clr-control-helper>Kubernetes에서 PVC가 사용할 이름입니다.</clr-control-helper>
+              <clr-control-helper>Kubernetes에서 PVC가 사용할 이름입니다. <code>ceph-rbd</code> 또는 <code>ceph-rbd-</code>로 시작해야 합니다.</clr-control-helper>
             </clr-input-container>
           </form>
           <div *ngIf="planLoading()" class="progress loop"><progress></progress></div>
@@ -530,7 +558,7 @@ import { CephInsightsComponent } from './ceph-insights.component';
         <button class="btn btn-outline" type="button" [disabled]="busy()" (click)="setConnectOpen(false)">{{ connectCompleted() ? '닫기' : '취소' }}</button>
         <button *ngIf="!connectCompleted() && step() > 1" class="btn btn-outline" type="button" [disabled]="busy() || planLoading()" (click)="back()">이전</button>
         <button *ngIf="!connectCompleted() && step() === 1" class="btn btn-primary" type="button" [disabled]="status()?.kubernetes?.ready !== true || status()?.ownerPrerequisites?.ready !== true" (click)="goToConnectionInput()">다음</button>
-        <button *ngIf="!connectCompleted() && step() === 2" class="btn btn-primary" type="button" [disabled]="!connectionInputComplete() || planLoading()" (click)="validatePlan()">입력 확인 및 계획 생성</button>
+        <button *ngIf="!connectCompleted() && step() === 2" class="btn btn-primary" type="button" [disabled]="!connectionInputComplete() || !!duplicateRoleCredential() || planLoading()" (click)="validatePlan()">입력 확인 및 계획 생성</button>
         <button *ngIf="!connectCompleted() && step() === 3" class="btn btn-primary" type="button" [disabled]="busy() || connectReason.trim().length < 8" (click)="connect()">Kubernetes에 연결</button>
       </div>
     </clr-modal>
@@ -582,8 +610,8 @@ import { CephInsightsComponent } from './ceph-insights.component';
           </clr-password-container>
           <clr-input-container>
             <label>StorageClass 이름</label>
-            <input clrInput name="cephFsStorageClassName" [(ngModel)]="cephFsStorageClassName" required autocomplete="off" spellcheck="false">
-            <clr-control-helper>PVC에서 선택할 이름</clr-control-helper>
+            <input clrInput name="cephFsStorageClassName" [(ngModel)]="cephFsStorageClassName" required autocomplete="off" spellcheck="false" placeholder="cephfs">
+            <clr-control-helper>PVC에서 선택할 이름. <code>cephfs</code> 또는 <code>cephfs-</code>로 시작해야 합니다(예: <code>cephfs-shared</code>).</clr-control-helper>
           </clr-input-container>
           <clr-textarea-container>
             <label>변경 사유</label>
@@ -785,6 +813,18 @@ import { CephInsightsComponent } from './ceph-insights.component';
     .command-block span { color: #565656; }
     .command-block code { display: block; padding: 0.65rem; overflow-x: auto; background: #1b2a32; color: #eef5f7; white-space: nowrap; }
     .install-scope { display: grid; gap: 0.35rem; margin: 0.55rem 0 0.75rem; padding-left: 1.1rem; }
+    .install-scope .scope-elevated {
+      margin: 0.35rem 0 0.15rem; padding: 0.5rem 0.65rem; list-style-position: outside;
+      background: #fdf3e6; border: 1px solid #e8bd7a; border-left: 3px solid #c47500; border-radius: 3px; color: #52401f;
+    }
+    .scope-consent { display: flex; align-items: flex-start; gap: 0.45rem; margin: 0.6rem 0 0; color: #313131; }
+    .scope-consent input { margin-top: 0.2rem; }
+    .value-note { display: block; margin-top: 0.15rem; color: #6b6b6b; font-size: 0.6875rem; line-height: 1rem; }
+    .role-credentials { margin: 0.35rem 0 0; padding: 0.7rem 0.85rem; background: #fafafa; border: 1px solid #e3e6e8; border-radius: 3px; }
+    .role-credentials h5 { margin: 0 0 0.25rem; font-size: 0.8125rem; font-weight: 600; color: #21313c; }
+    .role-note { margin: 0 0 0.5rem; color: #565656; font-size: 0.6875rem; line-height: 1.05rem; }
+    .role-row { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 0 0.9rem; align-items: start; }
+    @media (max-width: 900px) { .role-row { grid-template-columns: minmax(0, 1fr); } }
     .prerequisite-form, .prerequisite-form clr-textarea-container, textarea[name='prerequisiteReason'] { display: block; width: 100%; }
     textarea[name='prerequisiteReason'] { min-height: 6rem; resize: vertical; }
     .automatic-check { display: grid; gap: 0.25rem; margin-top: 0.8rem; padding: 0.7rem 0.8rem; border-left: 4px solid #318700; background: #f1f8e9; color: #25421c; }
@@ -859,10 +899,19 @@ export class CephClustersComponent implements OnInit, OnDestroy {
   disconnectOpen = false;
   prerequisiteReason = '';
   prerequisiteSource = '';
+  /** 호스트 권한 DaemonSet 배치에 대한 명시적 동의. 설치 요청 생성의 선행 조건이다. */
+  elevatedScopeAcknowledged = false;
   clusterID = '';
   monitors = '';
-  userID = '';
-  userKey = '';
+  /** 감사 H-02: RBD 경로도 CephFS처럼 역할별 CephX 계정을 분리해 받는다. */
+  readonly connectionRoles: { id: 'operator' | 'provisioner' | 'node' | 'observer'; label: string; placeholder: string; caps: string }[] = [
+    { id: 'operator', label: 'Rook health checker', placeholder: 'opensphere-healthchecker', caps: 'Rook v1.20 공식 external export로 생성합니다. MON quorum/version 및 MGR config 조회에 필요한 최소 command 권한만 사용합니다.' },
+    { id: 'provisioner', label: 'RBD provisioner', placeholder: 'opensphere-rbd-provisioner', caps: 'Rook v1.20 restricted export로 생성합니다. MON profile rbd·osd blocklist, MGR allow rw와 대상 pool로 제한한 OSD profile rbd가 필요합니다.' },
+    { id: 'node', label: 'RBD node', placeholder: 'opensphere-rbd-node', caps: 'Rook v1.20 restricted export로 생성합니다. MON profile rbd·osd blocklist와 대상 pool로 제한한 OSD profile rbd가 필요합니다.' },
+    { id: 'observer', label: '읽기 전용 관측기', placeholder: 'opensphere-observer', caps: '화면에서 사용하는 고정 MON·MGR 조회 명령만 허용합니다. pool 제한 없는 osd allow r 권한은 발급하지 않습니다.' },
+  ];
+  roleUserID: Record<'operator' | 'provisioner' | 'node' | 'observer', string> = { operator: '', provisioner: '', node: '', observer: '' };
+  roleUserKey: Record<'operator' | 'provisioner' | 'node' | 'observer', string> = { operator: '', provisioner: '', node: '', observer: '' };
   pool = '';
   storageClassName = 'ceph-rbd';
   cephFsFilesystem = '';
@@ -968,6 +1017,7 @@ export class CephClustersComponent implements OnInit, OnDestroy {
     const tracked = this.status()?.ownerPrerequisites?.installationRequest;
     if (tracked) this.prerequisiteRequest.set(tracked);
     if (!this.prerequisiteRequest()) this.prerequisiteReason = '';
+    this.elevatedScopeAcknowledged = false;
     this.prerequisiteError.set('');
     this.error.set('');
     this.prerequisiteOpen = true;
@@ -1171,8 +1221,14 @@ export class CephClustersComponent implements OnInit, OnDestroy {
     return {
       clusterID: this.clusterID.trim(),
       monitors: this.monitors.trim(),
-      userID: this.userID.trim(),
-      userKey: this.userKey.trim(),
+      operatorUserID: this.roleUserID.operator.trim(),
+      operatorUserKey: this.roleUserKey.operator.trim(),
+      provisionerUserID: this.roleUserID.provisioner.trim(),
+      provisionerUserKey: this.roleUserKey.provisioner.trim(),
+      nodeUserID: this.roleUserID.node.trim(),
+      nodeUserKey: this.roleUserKey.node.trim(),
+      observerUserID: this.roleUserID.observer.trim(),
+      observerUserKey: this.roleUserKey.observer.trim(),
       pool: this.pool.trim(),
       storageClassName: this.storageClassName.trim(),
     };
@@ -1182,11 +1238,22 @@ export class CephClustersComponent implements OnInit, OnDestroy {
     return Object.values(this.connectionInput()).every((value) => value.length > 0);
   }
 
+  /** 역할 간 계정·key 재사용은 서버가 거부하므로 입력 단계에서 미리 알린다. */
+  duplicateRoleCredential(): string {
+    const ids = this.connectionRoles.map((role) => this.roleUserID[role.id].trim().replace(/^client\./, '')).filter(Boolean);
+    const keys = this.connectionRoles.map((role) => this.roleUserKey[role.id].trim()).filter(Boolean);
+    if (new Set(ids).size !== ids.length) return '두 역할이 동일한 CephX 사용자를 사용합니다. 역할별로 분리된 계정을 입력하십시오.';
+    if (new Set(keys).size !== keys.length) return '두 역할이 동일한 CephX key를 사용합니다. 역할별로 분리된 계정을 입력하십시오.';
+    return '';
+  }
+
   private clearConnectionInput(): void {
     this.clusterID = '';
     this.monitors = '';
-    this.userID = '';
-    this.userKey = '';
+    for (const role of this.connectionRoles) {
+      this.roleUserID[role.id] = '';
+      this.roleUserKey[role.id] = '';
+    }
     this.pool = '';
     this.storageClassName = 'ceph-rbd';
   }
@@ -1242,10 +1309,11 @@ export class CephClustersComponent implements OnInit, OnDestroy {
         this.loadInsights(true);
       },
       error: (failure) => {
-        this.userKey = '';
+        // 비밀 값만 선별 제거한다. 비밀이 아닌 FSID·MON·pool은 재입력 편의를 위해 보존한다.
+        for (const role of this.connectionRoles) this.roleUserKey[role.id] = '';
         this.busy.set(false);
         this.connectErrorTitle.set('Kubernetes 연결 실패');
-        this.connectError.set(`${this.message(failure)} 보안을 위해 User key 입력값을 지웠습니다.`);
+        this.connectError.set(`${this.message(failure)} 보안을 위해 역할별 key 입력값을 지웠습니다.`);
         this.load(true);
       },
     });

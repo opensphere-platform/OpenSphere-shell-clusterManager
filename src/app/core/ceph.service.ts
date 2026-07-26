@@ -39,7 +39,7 @@ export interface CephStatus {
   kubernetes: { ready: boolean; id?: string; version?: string; nodes?: number; readyNodes?: number };
   connection: null | {
     mode: 'RookExternal';
-    clusterID: string;
+    /** 원문 FSID는 제공되지 않는다(CONSTITUTION-0004 규정 6.5). fingerprint로만 대조한다. */
     fsidFingerprint: string;
     monitors: string[];
     userID: string;
@@ -156,8 +156,19 @@ export interface CephImport {
 export interface CephConnectionInput {
   clusterID: string;
   monitors: string;
-  userID: string;
-  userKey: string;
+  /**
+   * 역할별로 분리된 CephX 자격 증명(감사 H-02).
+   * 단일 key를 operator·provisioner·node·observer가 공유하면 key 1건 유출로
+   * control-plane 관측과 data-plane 권한이 동시에 노출되므로 서버가 재사용을 거부한다.
+   */
+  operatorUserID: string;
+  operatorUserKey: string;
+  provisionerUserID: string;
+  provisionerUserKey: string;
+  nodeUserID: string;
+  nodeUserKey: string;
+  observerUserID: string;
+  observerUserKey: string;
   pool: string;
   storageClassName: string;
 }

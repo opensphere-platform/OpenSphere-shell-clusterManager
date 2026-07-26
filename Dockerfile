@@ -36,12 +36,15 @@ RUN mkdir -p /his-charts /ceph-charts \
 FROM docker.io/library/node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2
 ARG OS_MODULE_DESCRIPTOR
 ARG OS_MODULE_SIGNATURE
+ARG OS_RELEASE_TAG
+ARG OS_MODULE_KEY_ID=opensphere-plugins-v4
 LABEL org.opencontainers.image.title="OpenSphere Cluster Manager" \
-      org.opencontainers.image.version="1.3.11" \
+      org.opencontainers.image.version=$OS_RELEASE_TAG \
       org.opencontainers.image.source="https://github.com/opensphere-platform/OpenSphere-shell-clusterManager" \
+      io.opensphere.compatibility-version="1.3.11" \
       io.opensphere.module.descriptor=$OS_MODULE_DESCRIPTOR \
       io.opensphere.module.descriptor.signature=$OS_MODULE_SIGNATURE \
-      io.opensphere.module.descriptor.key-id="opensphere-plugins-v1"
+      io.opensphere.module.descriptor.key-id=$OS_MODULE_KEY_ID
 RUN apk upgrade --no-cache
 WORKDIR /app
 RUN npm install --omit=dev --no-audit --no-fund --no-save ws@8.21.0 js-yaml@4.3.0 \

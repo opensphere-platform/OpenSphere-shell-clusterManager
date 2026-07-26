@@ -23,6 +23,26 @@ const OPERATOR_RELEASE = 'rook-ceph';
 const CLUSTER_RELEASE = 'rook-ceph-external';
 const CONNECTION_CONFIGMAP = 'opensphere-ceph-connection';
 const OPERATION_CONFIGMAP = 'opensphere-ceph-operation';
+// runtime-owner.yaml의 이름 한정 ConfigMap 권한과 1:1로 대응한다. 두 목록은 함께 변경해야 한다.
+const MANAGED_CONFIGMAPS = Object.freeze([CONNECTION_CONFIGMAP, OPERATION_CONFIGMAP, 'rook-ceph-mon-endpoints']);
+// Consumer StorageClass 이름의 소유 규칙(감사 H-01).
+// cluster-scope 자원이라 이름을 통제하지 않으면 임의 StorageClass를 변조·삭제하거나
+// 클러스터 기본 StorageClass를 탈취할 수 있다. 다중 filesystem/pool 운용을 유지하기 위해
+// 닫힌 집합이 아니라 접두사 규칙을 쓴다: `ceph-rbd`, `cephfs` 또는 그 하위 `<base>-<suffix>`.
+// RBAC의 resourceNames는 접두사를 표현할 수 없으므로 실제 경계는
+// deploy/ceph-consumer-storage-admission.yaml의 ValidatingAdmissionPolicy가 강제한다.
+// 두 곳의 규칙은 반드시 함께 변경해야 한다.
+const MANAGED_STORAGE_CLASS_BASES = Object.freeze(['ceph-rbd', 'cephfs']);
+
+function managedStorageClassName(value, fallback, label) {
+  const name = safeName(value || fallback, label);
+  if (name.length > 240) throw error(`${label}은 240자 이하여야 합니다.`);
+  const owned = MANAGED_STORAGE_CLASS_BASES.some((base) => name === base || name.startsWith(`${base}-`));
+  if (!owned) {
+    throw error(`${label}은 ${MANAGED_STORAGE_CLASS_BASES.map((base) => `'${base}'`).join(' 또는 ')}로 시작해야 합니다(예: cephfs-shared). Cluster Manager는 이 접두사의 StorageClass만 소유합니다.`);
+  }
+  return name;
+}
 const CHART_VERSION = 'v1.20.2';
 const CLUSTER_CHART = process.env.ROOK_CLUSTER_CHART || `/app/ceph-charts/rook-ceph-cluster-${CHART_VERSION}.tgz`;
 const activeOperations = new Set();
@@ -48,6 +68,7 @@ const MANAGED_LABELS = Object.freeze({
   'opensphere.io/ceph-connection': 'external',
 });
 
+// Rook provider export에서 수용하는 Secret 이름(외부에서 들어오는 값의 allowlist).
 const SECRET_NAMES = new Set([
   'rook-ceph-mon',
   'rook-ceph-operator-creds',
@@ -56,6 +77,10 @@ const SECRET_NAMES = new Set([
   'rook-csi-cephfs-node',
   'rook-csi-cephfs-provisioner',
 ]);
+const OBSERVER_SECRET = 'opensphere-ceph-observer-creds';
+// 연결 해제 시 Cluster Manager가 정리하는 Secret 집합. observer 전용 자격 증명은
+// provider export로 들어오지 않고 Cluster Manager가 생성하므로 export allowlist와 분리한다.
+const MANAGED_SECRETS = new Set([...SECRET_NAMES, OBSERVER_SECRET]);
 const IGNORED_EXPORTS = new Set([
   'ConfigMap/external-cluster-user-command',
   'Secret/rook-ceph-dashboard-link',
@@ -363,8 +388,53 @@ function validateProviderExport(input) {
   };
 }
 
+/**
+ * 역할별 CephX 자격 증명을 읽고 검증한다(감사 H-02).
+ * 서로 다른 역할이 같은 key를 재사용하면 최소권한이 성립하지 않으므로 거부한다.
+ * key 값 자체는 비교에만 사용하고 오류 메시지·로그에 남기지 않는다.
+ */
+function roleCredentials(value, specs) {
+  const out = {};
+  const seenKeys = new Map();
+  const seenIdentities = new Map();
+  for (const spec of specs) {
+    const identity = normalizeCephClientIdentity(value[`${spec.id}UserID`], `${spec.label} CephX 사용자`);
+    const userKey = String(value[`${spec.id}UserKey`] || '').trim();
+    if (!/^[A-Za-z0-9+/_=-]{16,1024}$/.test(userKey)) throw error(`${spec.label} user key 형식이 올바르지 않습니다.`);
+    const previousKey = seenKeys.get(userKey);
+    if (previousKey) {
+      throw error(`${spec.label}와 ${previousKey}가 동일한 CephX key를 사용합니다. 역할별로 분리된 계정을 입력하십시오(최소권한).`);
+    }
+    const previousIdentity = seenIdentities.get(identity.csiUserID);
+    if (previousIdentity) {
+      throw error(`${spec.label}와 ${previousIdentity}가 동일한 CephX 사용자(${identity.csiUserID})입니다. 역할별로 분리된 계정을 입력하십시오(최소권한).`);
+    }
+    seenKeys.set(userKey, spec.label);
+    seenIdentities.set(identity.csiUserID, spec.label);
+    out[spec.id] = { identity, userKey };
+  }
+  return out;
+}
+
 function validateConnectionInput(input) {
-  const value = requireClosedObject(input, ['clusterID', 'monitors', 'userID', 'userKey', 'pool', 'storageClassName'], 'Ceph 접속 정보');
+  const value = requireClosedObject(input, [
+    'clusterID',
+    'monitors',
+    // 감사 H-02: 역할별 CephX 자격 증명. 하나의 key를 operator·provisioner·node가
+    // 공유하면 key 1건 유출로 control-plane 관측 권한과 data-plane 권한이 동시에 노출된다.
+    // CephFS 구성(validateCephFsInput)이 이미 사용하는 분리 패턴과 동일하게 맞춘다.
+    'operatorUserID',
+    'operatorUserKey',
+    'provisionerUserID',
+    'provisionerUserKey',
+    'nodeUserID',
+    'nodeUserKey',
+    // 읽기 전용 관측 전용 신원. 관측기가 operator 자격 증명을 재사용하지 않게 한다.
+    'observerUserID',
+    'observerUserKey',
+    'pool',
+    'storageClassName',
+  ], 'Ceph 접속 정보');
   const fsid = String(value.clusterID || '').trim().toLowerCase();
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(fsid)) {
     throw error('Cluster ID(FSID)가 UUID 형식이 아닙니다.');
@@ -388,15 +458,20 @@ function validateConnectionInput(input) {
   });
   if (new Set(normalized).size !== normalized.length) throw error('중복된 Monitor endpoint가 있습니다.');
 
-  const identity = normalizeCephClientIdentity(value.userID);
-  const userKey = String(value.userKey || '').trim();
-  if (!/^[A-Za-z0-9+/_=-]{16,1024}$/.test(userKey)) throw error('User key 형식이 올바르지 않습니다.');
+  const roles = roleCredentials(value, [
+    { id: 'operator', label: 'Rook operator/healthchecker' },
+    { id: 'provisioner', label: 'RBD provisioner' },
+    { id: 'node', label: 'RBD node' },
+    { id: 'observer', label: '읽기 전용 관측기' },
+  ]);
+  const identity = roles.operator.identity;
   const pool = String(value.pool || '').trim();
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(pool)) throw error('RBD pool 이름 형식이 올바르지 않습니다.');
-  const storageClassName = safeName(value.storageClassName || 'ceph-rbd', 'StorageClass 이름');
-  if (storageClassName.length > 240) throw error('StorageClass 이름은 240자 이하여야 합니다.');
-  const operatorCredentialData = { userID: identity.cephEntity, userKey };
-  const csiCredentialData = { userID: identity.csiUserID, userKey };
+  const storageClassName = managedStorageClassName(value.storageClassName, 'ceph-rbd', 'StorageClass 이름');
+  // Rook operator는 정식 엔티티(client.<id>), ceph-csi는 접두어 없는 userID를 요구한다.
+  const operatorCredentialData = { userID: roles.operator.identity.cephEntity, userKey: roles.operator.userKey };
+  const provisionerCredentialData = { userID: roles.provisioner.identity.csiUserID, userKey: roles.provisioner.userKey };
+  const nodeCredentialData = { userID: roles.node.identity.csiUserID, userKey: roles.node.userKey };
   const storageClass = {
     name: storageClassName,
     kind: 'StorageClass',
@@ -418,8 +493,15 @@ function validateConnectionInput(input) {
     monitorProtocols: monitorProtocols(monitorData),
     operatorUser: identity.cephEntity,
     cephEntity: identity.cephEntity,
-    csiUserID: identity.csiUserID,
-    userID: identity.csiUserID,
+    // CSI userID projection은 provisioner 신원을 대표값으로 사용한다(node와 분리됨).
+    csiUserID: roles.provisioner.identity.csiUserID,
+    userID: roles.provisioner.identity.csiUserID,
+    roleIdentities: {
+      operator: roles.operator.identity.cephEntity,
+      provisioner: roles.provisioner.identity.cephEntity,
+      node: roles.node.identity.cephEntity,
+      observer: roles.observer.identity.cephEntity,
+    },
     configMaps: [{
       name: 'rook-ceph-mon-endpoints',
       kind: 'ConfigMap',
@@ -428,8 +510,10 @@ function validateConnectionInput(input) {
     secrets: [
       { name: 'rook-ceph-mon', kind: 'Secret', data: { 'admin-secret': 'admin-secret', fsid, 'mon-secret': 'mon-secret' } },
       { name: 'rook-ceph-operator-creds', kind: 'Secret', data: { ...operatorCredentialData } },
-      { name: 'rook-csi-rbd-node', kind: 'Secret', data: { ...csiCredentialData } },
-      { name: 'rook-csi-rbd-provisioner', kind: 'Secret', data: { ...csiCredentialData } },
+      { name: 'rook-csi-rbd-node', kind: 'Secret', data: { ...nodeCredentialData } },
+      { name: 'rook-csi-rbd-provisioner', kind: 'Secret', data: { ...provisionerCredentialData } },
+      // 관측기 전용 read-only 자격 증명. Rook/CSI가 아니라 opensphere-ceph-observer만 mount한다.
+      { name: OBSERVER_SECRET, kind: 'Secret', data: { userID: roles.observer.identity.cephEntity, userKey: roles.observer.userKey } },
     ],
     storageClasses: [storageClass],
     ignored: [],
@@ -456,8 +540,7 @@ function validateCephFsInput(input) {
   const nodeUserKey = String(value.nodeUserKey || '').trim();
   if (!/^[A-Za-z0-9+/_=-]{16,1024}$/.test(provisionerUserKey)) throw error('Provisioner user key 형식이 올바르지 않습니다.');
   if (!/^[A-Za-z0-9+/_=-]{16,1024}$/.test(nodeUserKey)) throw error('Node user key 형식이 올바르지 않습니다.');
-  const storageClassName = safeName(value.storageClassName || 'cephfs', 'CephFS StorageClass 이름');
-  if (storageClassName.length > 240) throw error('CephFS StorageClass 이름은 240자 이하여야 합니다.');
+  const storageClassName = managedStorageClassName(value.storageClassName, 'cephfs', 'CephFS StorageClass 이름');
   return {
     storageClass: {
       name: storageClassName,
@@ -634,11 +717,17 @@ async function optionalKube(ctx, apiPath) {
   try { return await kube(ctx, 'GET', apiPath); } catch (e) { if (e.apiStatus === 404) return null; throw e; }
 }
 
-async function selfCanI(ctx, verb, group, resource, namespace = '') {
+async function selfCanI(ctx, verb, group, resource, namespace = '', name = '') {
   try {
     const review = await kube(ctx, 'POST', '/apis/authorization.k8s.io/v1/selfsubjectaccessreviews', {
       apiVersion: 'authorization.k8s.io/v1', kind: 'SelfSubjectAccessReview',
-      spec: { resourceAttributes: { verb, group, resource, ...(namespace ? { namespace } : {}) } },
+      spec: {
+        resourceAttributes: {
+          verb, group, resource,
+          ...(namespace ? { namespace } : {}),
+          ...(name ? { name } : {}),
+        },
+      },
     });
     return Boolean(review.status?.allowed);
   } catch { return false; }
@@ -655,16 +744,22 @@ async function cephOwnerPrerequisites(ctx) {
   const permissionSpecs = [
     ['get', '', 'secrets', IMPORT_NAMESPACE], ['list', '', 'secrets', IMPORT_NAMESPACE], ['create', '', 'secrets', IMPORT_NAMESPACE], ['delete', '', 'secrets', IMPORT_NAMESPACE],
     ...['get', 'list', 'create', 'update', 'patch', 'delete'].flatMap((verb) => [
-      [verb, '', 'secrets', NAMESPACE], [verb, '', 'configmaps', NAMESPACE],
+      [verb, '', 'secrets', NAMESPACE],
       [verb, 'ceph.rook.io', 'cephclusters', NAMESPACE],
     ]),
+    // ConfigMap 권한은 관리 대상 이름으로만 부여되므로 이름을 지정해 검사한다.
+    // create는 RBAC에서 이름 제한이 불가능하므로 이름 없이 검사한다.
+    ['create', '', 'configmaps', NAMESPACE],
+    ...['get', 'update', 'patch', 'delete'].flatMap((verb) => MANAGED_CONFIGMAPS.map((name) => [verb, '', 'configmaps', NAMESPACE, name])),
+    // StorageClass/VolumeSnapshotClass는 접두사 규칙이라 RBAC resourceNames로 좁힐 수 없다.
+    // 이름 경계는 ValidatingAdmissionPolicy가 CREATE/UPDATE/DELETE에서 강제한다.
     ...['get', 'list', 'create', 'update', 'patch', 'delete'].map((verb) => [verb, 'storage.k8s.io', 'storageclasses', '']),
     ...(snapshotCrd ? ['get', 'list', 'create', 'update', 'patch', 'delete'].map((verb) => [verb, 'snapshot.storage.k8s.io', 'volumesnapshotclasses', '']) : []),
   ];
-  const permissions = await Promise.all(permissionSpecs.map(async ([verb, group, resource, namespace]) => ({
-    verb, group, resource, namespace, allowed: await selfCanI(ctx, verb, group, resource, namespace),
+  const permissions = await Promise.all(permissionSpecs.map(async ([verb, group, resource, namespace, name = '']) => ({
+    verb, group, resource, namespace, name, allowed: await selfCanI(ctx, verb, group, resource, namespace, name),
   })));
-  const missingPermissions = permissions.filter((item) => !item.allowed).map((item) => `${item.verb} ${item.group || 'core'}/${item.resource}${item.namespace ? ` namespace=${item.namespace}` : ''}`);
+  const missingPermissions = permissions.filter((item) => !item.allowed).map((item) => `${item.verb} ${item.group || 'core'}/${item.resource}${item.name ? `/${item.name}` : ''}${item.namespace ? ` namespace=${item.namespace}` : ''}`);
   const operatorReady = Boolean(operator && Number(operator.status?.readyReplicas || 0) >= 1 && Number(operator.status?.readyReplicas || 0) === Number(operator.status?.replicas || 0));
   const blockers = [];
   if (!rookNamespace) blockers.push(`Namespace/${NAMESPACE} is not preprovisioned`);
@@ -895,7 +990,9 @@ function statusConnectionProjection(metadata, monitorConfigMap, storageClasses, 
     : monitorEndpointsFromData(monitorConfigMap?.data?.data);
   return {
     mode: metadata.mode,
-    clusterID: String(metadata.fsid || ''),
+    // CONSTITUTION-0004 규정 6.5: Console에는 원문 FSID가 아니라 fingerprint만 남긴다.
+    // 원문 FSID는 외부 Ceph 클러스터 식별 정보이므로 status 응답으로 반환하지 않는다.
+    // fingerprint는 provider가 제공한 값과 대조해 대상 클러스터를 확인하는 데 충분하다.
     fsidFingerprint: metadata.fsidFingerprint,
     monitors,
     userID: String(metadata.csiUserID || decodedSecretField(csiSecret, 'userID')).replace(/^client\./, ''),
@@ -1045,13 +1142,165 @@ function planFor(connection, snapshotSupported) {
   };
 }
 
-async function auditRequired(ctx, actor, action, reason, metadata = {}) {
-  const response = await fetch(`${ctx.controller}/api/admin/events`, {
+/**
+ * 요청 헤더의 correlation ID를 채택하거나 새로 생성한다.
+ * 하나의 변경은 requested → succeeded|failed 감사 이벤트를 동일 ID로 묶어야 추적이 가능하다.
+ */
+function correlationFrom(req) {
+  const value = String(req?.headers?.['x-os-correlation-id'] || '');
+  return /^[A-Za-z0-9._:-]{1,128}$/.test(value) ? value : crypto.randomUUID();
+}
+
+async function auditEvent(ctx, actor, action, result, reason, metadata, correlationId) {
+  return fetch(`${ctx.controller}/api/admin/events`, {
     method: 'POST',
-    headers: { authorization: `Bearer ${ctx.token()}`, 'content-type': 'application/json', 'x-opensphere-source': 'cluster-manager' },
-    body: JSON.stringify({ source: 'cluster-manager', userActor: actor.username, action, target: 'CephExternal/rook-ceph', result: 'requested', reason, metadata }),
+    headers: {
+      authorization: `Bearer ${ctx.token()}`,
+      'content-type': 'application/json',
+      'x-opensphere-source': 'cluster-manager',
+      'x-os-correlation-id': correlationId,
+    },
+    body: JSON.stringify({
+      source: 'cluster-manager',
+      userActor: actor.username,
+      action,
+      target: 'CephExternal/rook-ceph',
+      result,
+      reason,
+      correlationId,
+      metadata: { ...metadata, correlationId },
+    }),
   });
+}
+
+/** 변경 전 fail-closed 감사. 저장 실패 시 변경을 차단한다. */
+async function auditRequired(ctx, actor, action, reason, metadata = {}, correlationId = '') {
+  const response = await auditEvent(ctx, actor, action, 'requested', reason, metadata, correlationId);
   if (!response.ok) throw error(`내구 감사 저장소를 사용할 수 없습니다(HTTP ${response.status}). Ceph 변경을 차단했습니다.`, 503);
+}
+
+function auditRecordKey(correlationId) {
+  return `event-${crypto.createHash('sha256').update(String(correlationId)).digest('hex').slice(0, 32)}`;
+}
+
+function redactedAuditMetadata(metadata) {
+  return JSON.parse(JSON.stringify(metadata || {}, (key, value) => (
+    /(?:key|secret|token|password|credential)/i.test(key) ? '[REDACTED]' : value
+  )));
+}
+
+/**
+ * 중앙 감사 저장소와 별도로 Kubernetes에 작업의 최신 상태를 남긴다.
+ * requested 기록이 없으면 변경을 시작하지 않으며, terminal 기록은 API 응답보다 먼저 저장한다.
+ * 같은 correlation ID는 한 항목을 갱신하므로 중간 상태가 무한히 증가하지 않는다.
+ */
+async function recordDurableOperation(ctx, actor, action, result, reason, metadata, correlationId) {
+  const collection = `/api/v1/namespaces/${NAMESPACE}/configmaps`;
+  const key = auditRecordKey(correlationId);
+  const record = JSON.stringify({
+    schemaVersion: 1,
+    correlationId,
+    actor: actor.username,
+    action,
+    result,
+    reason: String(reason || '').slice(0, 2048),
+    metadata: redactedAuditMetadata(metadata),
+    recordedAt: new Date().toISOString(),
+  });
+
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const current = await optionalKube(ctx, `${collection}/${OPERATION_CONFIGMAP}`);
+      const data = { ...(current?.data || {}), [key]: record };
+      // ConfigMap 크기와 장기 노출을 제한한다. 최신 50건만 보존하고 중앙 감사가 장기 보존을 담당한다.
+      const retained = Object.entries(data)
+        .sort(([, left], [, right]) => {
+          const leftAt = (() => { try { return JSON.parse(left).recordedAt || ''; } catch { return ''; } })();
+          const rightAt = (() => { try { return JSON.parse(right).recordedAt || ''; } catch { return ''; } })();
+          return rightAt.localeCompare(leftAt);
+        })
+        .slice(0, 50);
+      const manifest = {
+        apiVersion: 'v1',
+        kind: 'ConfigMap',
+        metadata: { name: OPERATION_CONFIGMAP, namespace: NAMESPACE, labels: MANAGED_LABELS },
+        data: Object.fromEntries(retained),
+      };
+      if (current) {
+        manifest.metadata.resourceVersion = current.metadata.resourceVersion;
+        await kube(ctx, 'PUT', `${collection}/${OPERATION_CONFIGMAP}`, manifest);
+      } else {
+        await kube(ctx, 'POST', collection, manifest);
+      }
+      return;
+    } catch (failure) {
+      if (failure.apiStatus !== 409 || attempt === 3) throw failure;
+    }
+  }
+}
+
+/**
+ * 종결 감사(succeeded|failed). 변경은 이미 수행되었으므로 여기서 예외를 던져
+ * 응답을 뒤집지 않는다. 대신 저장 실패를 경고로 남겨 누락을 관측할 수 있게 한다.
+ */
+async function auditTerminal(ctx, actor, action, result, reason, metadata, correlationId) {
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const response = await auditEvent(ctx, actor, action, result, reason, metadata, correlationId);
+      if (response.ok) return true;
+      if (attempt === 3) {
+        console.warn(`[ceph] terminal audit not stored action=${action} result=${result} correlationId=${correlationId} http=${response.status}`);
+        return false;
+      }
+    } catch (failure) {
+      if (attempt === 3) {
+        console.warn(`[ceph] terminal audit failed action=${action} result=${result} correlationId=${correlationId}: ${safeError(failure)}`);
+        return false;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * 변경 작업을 requested → succeeded|failed 감사로 감싼다.
+ * resultOf는 반환값에서 최종 결과 문자열을 도출한다(예: Ready 여부).
+ */
+async function auditedChange(ctx, actor, action, reason, metadata, correlationId, run, resultOf = () => 'succeeded') {
+  await auditRequired(ctx, actor, action, reason, metadata, correlationId);
+  try {
+    await recordDurableOperation(ctx, actor, action, 'requested', reason, metadata, correlationId);
+  } catch (failure) {
+    await auditTerminal(ctx, actor, action, 'failed', reason, {
+      ...metadata,
+      error: `Kubernetes durable audit mirror unavailable: ${safeError(failure)}`,
+    }, correlationId);
+    throw error(`작업 상태 기록을 저장할 수 없어 Ceph 변경을 차단했습니다: ${safeError(failure)}`, 503);
+  }
+  let value;
+  try {
+    value = await run();
+  } catch (failure) {
+    try {
+      await recordDurableOperation(ctx, actor, action, 'failed', reason, { ...metadata, error: safeError(failure) }, correlationId);
+    } catch (auditFailure) {
+      console.warn(`[ceph] durable failed-operation audit unavailable action=${action} correlationId=${correlationId}: ${safeError(auditFailure)}`);
+    }
+    await auditTerminal(ctx, actor, action, 'failed', reason, { ...metadata, error: safeError(failure) }, correlationId);
+    throw failure;
+  }
+  const terminalResult = resultOf(value);
+  try {
+    await recordDurableOperation(ctx, actor, action, terminalResult, reason, metadata, correlationId);
+  } catch (failure) {
+    await auditTerminal(ctx, actor, action, terminalResult, reason, {
+      ...metadata,
+      durableMirrorError: safeError(failure),
+    }, correlationId);
+    throw error(`Ceph 변경은 수행되었으나 최종 작업 상태 기록에 실패했습니다. correlationId=${correlationId}; 상태를 새로고침해 확인하십시오.`, 503);
+  }
+  await auditTerminal(ctx, actor, action, terminalResult, reason, metadata, correlationId);
+  return value;
 }
 
 async function installConnection(ctx, connection, actor) {
@@ -1179,7 +1428,7 @@ async function disconnect(ctx, metadata) {
   for (const name of metadata.storageClasses || []) await remove(ctx, `/apis/storage.k8s.io/v1/storageclasses/${encodeURIComponent(name)}`);
   for (const ref of metadata.secretRefs || []) {
     const name = String(ref).split('/').pop();
-    if (SECRET_NAMES.has(name)) await remove(ctx, `/api/v1/namespaces/${NAMESPACE}/secrets/${encodeURIComponent(name)}`);
+    if (MANAGED_SECRETS.has(name)) await remove(ctx, `/api/v1/namespaces/${NAMESPACE}/secrets/${encodeURIComponent(name)}`);
   }
   await remove(ctx, `/api/v1/namespaces/${NAMESPACE}/configmaps/rook-ceph-mon-endpoints`);
   await remove(ctx, `/api/v1/namespaces/${NAMESPACE}/configmaps/${CONNECTION_CONFIGMAP}`);
@@ -1477,15 +1726,16 @@ function createCephManager(ctx) {
         const prerequisites = await cephOwnerPrerequisites(ctx);
         if (!prerequisites.ready) throw error(`Ceph runtime prerequisites are not ready: ${prerequisites.blockers.join(' ')}`, 409);
         const connection = validateConnectionInput(body.connection);
-        await auditRequired(ctx, actor, 'CephConnectionStaged', reason, {
+        const correlationId = correlationFrom(req);
+        const staged = await auditedChange(ctx, actor, 'CephConnectionStaged', reason, {
           fsidFingerprint: connection.fsidFingerprint,
           monitorCount: connection.monitorCount,
           userID: connection.userID,
           cephEntity: connection.cephEntity,
           csiUserID: connection.csiUserID,
           storageClasses: connection.storageClasses.map((item) => item.name),
-        });
-        ctx.jsonRes(res, 201, await stageConnectionImport(ctx, body.connection, actor));
+        }, correlationId, () => stageConnectionImport(ctx, body.connection, actor));
+        ctx.jsonRes(res, 201, { ...staged, correlationId });
         return true;
       }
       if (req.method === 'POST' && pathname === '/api/ceph/oaa/plan') {
@@ -1507,11 +1757,21 @@ function createCephManager(ctx) {
         activeOperations.add('external');
         try {
           const staged = await connectionFromImportRef(ctx, importRef);
-          await auditRequired(ctx, actor, 'OAACephExternalConnectRequested', reason, { importRef, fsidFingerprint: staged.connection.fsidFingerprint, chartVersion: CHART_VERSION, storageClasses: staged.connection.storageClasses.map((item) => item.name) });
-          const status = await installConnection(ctx, staged.connection, actor);
-          if (status.state === 'Ready') await deleteProviderImport(ctx, staged.name);
+          const correlationId = correlationFrom(req);
+          const status = await auditedChange(
+            ctx, actor, 'OAACephExternalConnectRequested', reason,
+            { importRef, fsidFingerprint: staged.connection.fsidFingerprint, chartVersion: CHART_VERSION, storageClasses: staged.connection.storageClasses.map((item) => item.name) },
+            correlationId,
+            async () => {
+              const result = await installConnection(ctx, staged.connection, actor);
+              if (result.state === 'Ready') await deleteProviderImport(ctx, staged.name);
+              return result;
+            },
+            // Ready에 도달하지 못한 설치는 성공으로 기록하지 않는다.
+            (result) => (result.state === 'Ready' ? 'succeeded' : 'failed'),
+          );
           await ctx.publishNotify({ userActor: actor.username, action: 'CephExternalConnected', target: 'CephExternal/rook-ceph', result: status.state, reason: `${reason} · ${status.message}` });
-          ctx.jsonRes(res, status.state === 'Ready' ? 200 : 502, { ok: status.state === 'Ready', status, importConsumed: status.state === 'Ready' });
+          ctx.jsonRes(res, status.state === 'Ready' ? 200 : 502, { ok: status.state === 'Ready', status, importConsumed: status.state === 'Ready', correlationId });
           return true;
         } finally { activeOperations.delete('external'); }
       }
@@ -1526,8 +1786,12 @@ function createCephManager(ctx) {
         if (activeOperations.has('cephfs')) throw error('CephFS 구성 작업이 이미 진행 중입니다.', 409);
         activeOperations.add('cephfs');
         try {
-          await auditRequired(ctx, actor, 'CephFsServiceConfigurationRequested', reason, validated.audit);
-          const result = await configureCephFsService(ctx, body.configuration, actor);
+          const correlationId = correlationFrom(req);
+          const result = await auditedChange(
+            ctx, actor, 'CephFsServiceConfigurationRequested', reason, validated.audit, correlationId,
+            () => configureCephFsService(ctx, body.configuration, actor),
+            (value) => (value.status.csi?.serviceCoverage?.services?.find((item) => item.id === 'cephfs')?.ready === true ? 'succeeded' : 'failed'),
+          );
           const service = result.status.csi?.serviceCoverage?.services?.find((item) => item.id === 'cephfs');
           const ready = service?.ready === true;
           await ctx.publishNotify({
@@ -1537,7 +1801,7 @@ function createCephManager(ctx) {
             result: ready ? 'Ready' : 'NeedsConfiguration',
             reason: `${reason} · filesystem=${validated.audit.filesystem} pool=${validated.audit.pool}`,
           });
-          ctx.jsonRes(res, ready ? 200 : 502, { ok: ready, ...result });
+          ctx.jsonRes(res, ready ? 200 : 502, { ok: ready, ...result, correlationId });
           return true;
         } finally { activeOperations.delete('cephfs'); }
       }
@@ -1552,61 +1816,41 @@ function createCephManager(ctx) {
           const configMap = await optionalKube(ctx, `/api/v1/namespaces/${NAMESPACE}/configmaps/${CONNECTION_CONFIGMAP}`);
           const metadata = parseMetadata(configMap);
           if (!metadata) throw error('Cluster Manager가 관리하는 Ceph 연결이 없습니다.', 409);
-          await auditRequired(ctx, actor, 'OAACephExternalDisconnectRequested', reason, { fsidFingerprint: metadata.fsidFingerprint, storageClasses: metadata.storageClasses });
-          const result = await disconnect(ctx, metadata);
+          const correlationId = correlationFrom(req);
+          const result = await auditedChange(
+            ctx, actor, 'OAACephExternalDisconnectRequested', reason,
+            { fsidFingerprint: metadata.fsidFingerprint, storageClasses: metadata.storageClasses },
+            correlationId,
+            () => disconnect(ctx, metadata),
+          );
           await ctx.publishNotify({ userActor: actor.username, action: 'CephExternalDisconnected', target: 'CephExternal/rook-ceph', result: 'success', reason: `${reason} · remote data retained` });
-          ctx.jsonRes(res, 200, result);
+          ctx.jsonRes(res, 200, { ...result, correlationId });
           return true;
         } finally { activeOperations.delete('external'); }
       }
+      // 읽기 전용 상태 조회도 OAA 읽기 권한(console.ceph.read)을 요구한다.
+      // 이전에는 임의 인증 사용자에게 제공되어 /api/ceph/oaa/status와 인가 기준이 어긋났다.
       if (req.method === 'GET' && pathname === '/api/ceph/status') {
-        await actorFor(ctx, req, false);
+        await actorForOaaOwner(ctx, req, false);
         ctx.jsonRes(res, 200, await cephStatus(ctx));
         return true;
       }
       if (req.method !== 'POST') throw error('method not allowed', 405);
       const body = await readJson(req);
-      const actor = await actorFor(ctx, req, true);
+      // 변경 계획 수립은 비변경 작업이므로 /api/ceph/oaa/plan과 동일하게 읽기 권한을 요구한다.
+      // 변경을 수행하는 legacy 경로(/api/ceph/connect·/api/ceph/disconnect)는 staged Secret과
+      // AAL2 게이트를 우회할 수 있어 제거했다. 연결·해제는 /api/ceph/oaa/* 만 사용한다.
       if (pathname === '/api/ceph/plan') {
+        await actorForOaaOwner(ctx, req, false);
         const request = requireClosedObject(body, ['connection'], 'request');
         const connection = validateConnectionInput(request.connection);
         const snapshotSupported = await snapshotApiAvailable(ctx);
         ctx.jsonRes(res, 200, planFor(connection, snapshotSupported));
         return true;
       }
-      const reason = reasonFrom(body);
-      if (activeOperations.has('external')) throw error('Ceph 연결 작업이 이미 진행 중입니다.', 409);
-      activeOperations.add('external');
-      try {
-        if (pathname === '/api/ceph/connect') {
-          const request = requireClosedObject(body, ['connection', 'reason'], 'request');
-          const connection = validateConnectionInput(request.connection);
-          await auditRequired(ctx, actor, 'CephExternalConnectRequested', reason, {
-            fsidFingerprint: connection.fsidFingerprint,
-            monitorCount: connection.monitorCount,
-            userID: connection.userID,
-            cephEntity: connection.cephEntity,
-            csiUserID: connection.csiUserID,
-            chartVersion: CHART_VERSION,
-            storageClasses: connection.storageClasses.map((item) => item.name),
-          });
-          const status = await installConnection(ctx, connection, actor);
-          await ctx.publishNotify({ userActor: actor.username, action: 'CephExternalConnected', target: 'CephExternal/rook-ceph', result: status.state, reason: `${reason} · ${status.message}` });
-          ctx.jsonRes(res, status.state === 'Ready' ? 200 : 502, { ok: status.state === 'Ready', status });
-          return true;
-        }
-        if (pathname === '/api/ceph/disconnect') {
-          if (String(body.confirm || '') !== 'DISCONNECT') throw error("연결 해제 확인 값으로 'DISCONNECT'를 입력해야 합니다.");
-          const configMap = await optionalKube(ctx, `/api/v1/namespaces/${NAMESPACE}/configmaps/${CONNECTION_CONFIGMAP}`);
-          const metadata = parseMetadata(configMap);
-          if (!metadata) throw error('Cluster Manager가 관리하는 Ceph 연결이 없습니다.', 409);
-          await auditRequired(ctx, actor, 'CephExternalDisconnectRequested', reason, { fsidFingerprint: metadata.fsidFingerprint, storageClasses: metadata.storageClasses });
-          const result = await disconnect(ctx, metadata);
-          await ctx.publishNotify({ userActor: actor.username, action: 'CephExternalDisconnected', target: 'CephExternal/rook-ceph', result: 'success', reason: `${reason} · remote data retained` });
-          ctx.jsonRes(res, 200, result);
-          return true;
-        }
-      } finally { activeOperations.delete('external'); }
+      if (pathname === '/api/ceph/connect' || pathname === '/api/ceph/disconnect') {
+        throw error('이 경로는 제거되었습니다. AAL2와 console.ceph.manage를 강제하는 /api/ceph/oaa/connect 또는 /api/ceph/oaa/disconnect를 사용하십시오.', 410);
+      }
       throw error('not found', 404);
     } catch (e) {
       ctx.jsonRes(res, Number(e.code) >= 400 ? Number(e.code) : 500, { error: safeError(e) });

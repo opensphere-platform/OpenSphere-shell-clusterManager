@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const {
+  createCephManager,
   validateProviderExport,
   validateConnectionInput,
   validateCephFsInput,
@@ -49,8 +50,15 @@ function connectionInput() {
   return {
     clusterID: '12345678-1234-4234-9234-123456789abc',
     monitors: '10.0.0.11:3300\n10.0.0.12:3300\n10.0.0.13:3300',
-    userID: 'opensphere',
-    userKey: 'AQD0123456789abcdefghijklmnop==',
+    // 감사 H-02: 역할별로 분리된 CephX 계정·key. 재사용은 서버가 거부한다.
+    operatorUserID: 'opensphere-healthchecker',
+    operatorUserKey: 'AQDoperator0123456789abcdefgh==',
+    provisionerUserID: 'opensphere-rbd-provisioner',
+    provisionerUserKey: 'AQDprovisioner0123456789abcd==',
+    nodeUserID: 'opensphere-rbd-node',
+    nodeUserKey: 'AQDnode0123456789abcdefghijk==',
+    observerUserID: 'opensphere-observer',
+    observerUserKey: 'AQDobserver0123456789abcdefg==',
     pool: 'kubernetes-rbd',
     storageClassName: 'ceph-rbd',
   };
@@ -113,8 +121,15 @@ test('Ceph UI automatically reports Kubernetes readiness and collects only conne
   assert.match(component, /시스템이 자동으로 점검했습니다/);
   assert.match(component, /name="clusterID"/);
   assert.match(component, /name="monitors"/);
-  assert.match(component, /name="userID"/);
-  assert.match(component, /name="userKey"/);
+  // 감사 H-02: 단일 userID/userKey 대신 역할별 자격 증명을 수집한다.
+  assert.match(component, /role\.id \+ 'UserID'/);
+  assert.match(component, /role\.id \+ 'UserKey'/);
+  assert.doesNotMatch(component, /name="userID"/);
+  assert.doesNotMatch(component, /name="userKey"/);
+  for (const role of ['operator', 'provisioner', 'node', 'observer']) {
+    assert.match(component, new RegExp(`id: '${role}'`), `${role} 역할 입력이 있어야 한다`);
+  }
+  assert.match(component, /duplicateRoleCredential/);
   assert.match(component, /name="pool"/);
   assert.match(component, /clr-input-container class="wide-field"[^]*name="clusterID"/);
   assert.match(component, /monitor-input wide-field/);
@@ -161,23 +176,64 @@ test('direct Ceph user identity accepts both notations and targets Rook and ceph
   assert.equal(connection.fsid, connectionInput().clusterID);
   assert.deepEqual(connection.monitorEndpoints, ['10.0.0.11:3300', '10.0.0.12:3300', '10.0.0.13:3300']);
   assert.deepEqual(connection.monitorProtocols, ['msgr2']);
-  assert.equal(connection.cephEntity, 'client.opensphere');
-  assert.equal(connection.csiUserID, 'opensphere');
-  assert.equal(connection.userID, 'opensphere');
-  assert.equal(connection.secrets.find((item) => item.name === 'rook-ceph-operator-creds').data.userID, 'client.opensphere');
-  assert.equal(connection.secrets.find((item) => item.name === 'rook-csi-rbd-node').data.userID, 'opensphere');
-  assert.equal(connection.secrets.find((item) => item.name === 'rook-csi-rbd-provisioner').data.userID, 'opensphere');
-  const qualified = validateConnectionInput({ ...connectionInput(), userID: 'client.opensphere' });
+  // 역할별 신원이 각자의 Secret에 들어가고 서로 섞이지 않는다(감사 H-02).
+  assert.equal(connection.cephEntity, 'client.opensphere-healthchecker');
+  assert.equal(connection.csiUserID, 'opensphere-rbd-provisioner');
+  assert.equal(connection.secrets.find((item) => item.name === 'rook-ceph-operator-creds').data.userID, 'client.opensphere-healthchecker');
+  assert.equal(connection.secrets.find((item) => item.name === 'rook-csi-rbd-provisioner').data.userID, 'opensphere-rbd-provisioner');
+  assert.equal(connection.secrets.find((item) => item.name === 'rook-csi-rbd-node').data.userID, 'opensphere-rbd-node');
+  assert.equal(connection.secrets.find((item) => item.name === 'opensphere-ceph-observer-creds').data.userID, 'client.opensphere-observer');
+  // 역할별 key가 서로 달라야 한다 — 이것이 H-02의 핵심 불변식이다.
+  const roleKeys = ['rook-ceph-operator-creds', 'rook-csi-rbd-provisioner', 'rook-csi-rbd-node', 'opensphere-ceph-observer-creds']
+    .map((name) => connection.secrets.find((item) => item.name === name).data.userKey);
+  assert.equal(new Set(roleKeys).size, roleKeys.length, '역할별 CephX key는 서로 달라야 한다');
+  const qualified = validateConnectionInput({ ...connectionInput(), operatorUserID: 'client.opensphere-healthchecker' });
   assert.equal(qualified.cephEntity, connection.cephEntity);
-  assert.equal(qualified.csiUserID, connection.csiUserID);
   assert.equal(connection.storageClasses[0].data.pool, 'kubernetes-rbd');
-  assert.equal(connection.secrets.length, 4);
+  assert.equal(connection.secrets.length, 5);
   assert.throws(() => validateConnectionInput({ ...connectionInput(), clusterID: 'not-a-uuid' }), /UUID 형식/);
   assert.throws(() => validateConnectionInput({ ...connectionInput(), monitors: '10.0.0.11:443' }), /형식이 올바르지 않습니다/);
-  assert.throws(() => validateConnectionInput({ ...connectionInput(), userID: 'admin' }), /client\.admin은 사용할 수 없습니다/);
-  assert.throws(() => validateConnectionInput({ ...connectionInput(), userID: 'client.admin' }), /client\.admin은 사용할 수 없습니다/);
-  assert.throws(() => validateConnectionInput({ ...connectionInput(), userID: 'mon.opensphere' }), /Ceph client 엔티티/);
+  assert.throws(() => validateConnectionInput({ ...connectionInput(), nodeUserID: 'admin' }), /client\.admin은 사용할 수 없습니다/);
+  assert.throws(() => validateConnectionInput({ ...connectionInput(), provisionerUserID: 'client.admin' }), /client\.admin은 사용할 수 없습니다/);
+  assert.throws(() => validateConnectionInput({ ...connectionInput(), operatorUserID: 'mon.opensphere' }), /Ceph client 엔티티/);
   assert.throws(() => validateConnectionInput({ ...connectionInput(), extra: 'rejected' }), /허용되지 않은 필드/);
+});
+
+test('H-02: reusing one CephX account or key across roles is rejected', () => {
+  const base = connectionInput();
+  // 같은 key를 두 역할이 공유하면 거부한다(감사 시점의 실제 구성이 이 형태였다).
+  assert.throws(
+    () => validateConnectionInput({ ...base, nodeUserKey: base.provisionerUserKey }),
+    /동일한 CephX key/,
+  );
+  assert.throws(
+    () => validateConnectionInput({ ...base, observerUserKey: base.operatorUserKey }),
+    /동일한 CephX key/,
+  );
+  // 같은 사용자 신원을 두 역할이 공유해도 거부한다(client. 접두어 유무와 무관).
+  assert.throws(
+    () => validateConnectionInput({ ...base, nodeUserID: base.provisionerUserID }),
+    /동일한 CephX 사용자/,
+  );
+  assert.throws(
+    () => validateConnectionInput({ ...base, observerUserID: `client.${base.operatorUserID}` }),
+    /동일한 CephX 사용자/,
+  );
+  // 오류 메시지에 key 값이 새지 않는다.
+  try {
+    validateConnectionInput({ ...base, nodeUserKey: base.provisionerUserKey });
+  } catch (failure) {
+    assert.ok(!String(failure.message).includes(base.provisionerUserKey));
+  }
+});
+
+test('H-02: the read-only observer no longer mounts the Rook operator credential', () => {
+  const manifest = fs.readFileSync(path.resolve(__dirname, '../deploy/ceph-runtime-chart/templates/observer.yaml'), 'utf8');
+  assert.match(manifest, /secretName: opensphere-ceph-observer-creds/);
+  assert.doesNotMatch(manifest, /secretName: rook-ceph-operator-creds/);
+  // 연결 해제 시 관측기 자격 증명도 정리 대상이어야 한다.
+  assert.match(source, /MANAGED_SECRETS = new Set\(\[\.\.\.SECRET_NAMES, OBSERVER_SECRET\]\)/);
+  assert.match(source, /if \(MANAGED_SECRETS\.has\(name\)\)/);
 });
 
 test('direct connection plan never exposes the CephX key', () => {
@@ -186,10 +242,13 @@ test('direct connection plan never exposes the CephX key', () => {
   const text = JSON.stringify(plan);
   assert.equal(plan.clusterID, input.clusterID);
   assert.deepEqual(plan.monitors, ['10.0.0.11:3300', '10.0.0.12:3300', '10.0.0.13:3300']);
-  assert.equal(plan.cephEntity, 'client.opensphere');
-  assert.equal(plan.csiUserID, input.userID);
-  assert.equal(plan.userID, input.userID);
-  assert.ok(!text.includes(input.userKey));
+  assert.equal(plan.cephEntity, 'client.opensphere-healthchecker');
+  assert.equal(plan.csiUserID, input.provisionerUserID);
+  assert.equal(plan.userID, input.provisionerUserID);
+  // 어떤 역할의 key도 계획에 노출되지 않아야 한다.
+  for (const key of [input.operatorUserKey, input.provisionerUserKey, input.nodeUserKey, input.observerUserKey]) {
+    assert.ok(!text.includes(key), '계획에 CephX key가 포함되면 안 된다');
+  }
   assert.match(source, /\['connection', 'confirm', 'reason'\]/);
   assert.match(source, /validateConnectionInput\(body\.connection\)/);
 });
@@ -455,7 +514,10 @@ test('status exposes current non-secret Ceph connection values and never the use
     },
   }];
   const projection = statusConnectionProjection(metadata, monitorConfig, classes, secrets);
-  assert.equal(projection.clusterID, metadata.fsid);
+  // 감사 H-03 / CONSTITUTION-0004 규정 6.5: 원문 FSID는 Console에 남기지 않고 fingerprint만 노출한다.
+  assert.ok(!Object.hasOwn(projection, 'clusterID'), 'status 응답에 원문 FSID 필드가 없어야 한다');
+  assert.ok(!JSON.stringify(projection).includes(metadata.fsid), '원문 FSID 값이 응답에 포함되면 안 된다');
+  assert.equal(projection.fsidFingerprint, 'fingerprint');
   assert.deepEqual(projection.monitors, ['10.0.0.11:3300', '10.0.0.12:3300', '10.0.0.13:3300']);
   assert.equal(projection.userID, 'opensphere');
   assert.equal(projection.pool, 'kubernetes-rbd');
@@ -493,7 +555,10 @@ test('Ceph connection runtime cannot install or uninstall the platform-owned Roo
 
 test('Ceph runtime RBAC is namespace-bounded and excludes Kubernetes RBAC mutation', () => {
   assert.match(runtimeOwnerManifest, /namespace: opensphere-ceph-imports/);
-  assert.match(runtimeOwnerManifest, /resources: \[secrets, configmaps\]/);
+  // secrets와 configmaps는 더 이상 하나의 무제한 규칙을 공유하지 않는다(감사 C-02).
+  // configmaps는 이름 한정, secrets는 Helm 릴리스 저장 때문에 이름 한정이 불가하다.
+  assert.match(runtimeOwnerManifest, /resources: \[configmaps\]/);
+  assert.match(runtimeOwnerManifest, /resources: \[secrets\]/);
   assert.match(runtimeOwnerManifest, /resources: \[cephclusters\]/);
   assert.match(runtimeOwnerManifest, /resources: \[storageclasses\]/);
   assert.doesNotMatch(runtimeOwnerManifest, /resources: \[.*clusterroles/i);
@@ -626,4 +691,118 @@ test('Ceph observer is digest-pinned, fixed-command, keyfile-only, and network b
   assert.match(manifest, /kind: NetworkPolicy[^]*kubernetes\.io\/metadata\.name: opensphere-console[^]*app: cluster-manager/);
   assert.match(prerequisite, /resources: \[serviceaccounts, services, configmaps, secrets, pods\]/);
   assert.match(prerequisite, /resources: \[networkpolicies\]/);
+});
+
+/* ── 감사 시정 회귀 테스트 (2026-07-26 외부 기술감사 C-01·C-02·C-03) ───────────── */
+
+test('C-03: legacy direct API cannot bypass the AAL2 + console.ceph.manage gate', async () => {
+  // 저권한 actor: 관리자 group 소속이지만 console.ceph.manage 없음, AAL2 미인증.
+  const actor = { username: 'probe', groups: ['console-admins'], permissions: [], assurance: 'aal1' };
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({ ok: false, status: 503, statusText: 'stub', text: async () => '{}' });
+  const handle = createCephManager({
+    verifyToken: async () => actor,
+    requestToken: () => 'stub',
+    token: () => 'stub',
+    apiServer: 'https://kubernetes.invalid',
+    controller: 'https://controller.invalid',
+    consoleBackend: 'https://console.invalid',
+    publishNotify: async () => {},
+    jsonRes: (res, code, body) => { res.code = code; res.body = body; },
+  });
+  const request = (method, body) => {
+    const payload = Buffer.from(JSON.stringify(body || {}), 'utf8');
+    const req = { method, url: '/', headers: {}, destroy() {}, on(event, cb) { if (event === 'data') cb(payload); if (event === 'end') cb(); return req; } };
+    return req;
+  };
+  try {
+    // 변경을 수행하던 legacy 경로는 제거되어 410을 반환해야 한다.
+    for (const pathname of ['/api/ceph/connect', '/api/ceph/disconnect']) {
+      const res = {};
+      await handle(request('POST', { connection: {}, reason: 'audit regression probe' }), res, pathname);
+      assert.equal(res.code, 410, `${pathname}는 제거되어야 한다`);
+    }
+    // 남은 legacy 경로는 OAA 읽기 권한을 강제해야 한다(403).
+    for (const [method, pathname] of [['POST', '/api/ceph/plan'], ['GET', '/api/ceph/status']]) {
+      const res = {};
+      await handle(request(method, { connection: {} }), res, pathname);
+      assert.equal(res.code, 403, `${pathname}는 console.ceph.read를 요구해야 한다`);
+    }
+  } finally { global.fetch = originalFetch; }
+});
+
+test('C-03: mutating legacy connect/disconnect handlers are removed from the source', () => {
+  // legacy 경로는 410을 반환하는 단일 분기로만 남아야 한다.
+  assert.match(source, /pathname === '\/api\/ceph\/connect' \|\| pathname === '\/api\/ceph\/disconnect'\)[^]*?410/);
+  // legacy 변경 핸들러가 사용하던 audit action이 남아 있으면 핸들러도 남아 있는 것이다.
+  // (OAA 경로는 OAACephExternal* 접두사를 사용하므로 이 검사와 충돌하지 않는다.)
+  assert.doesNotMatch(source, /auditRequired\([^)]*'CephExternalConnectRequested'/);
+  assert.doesNotMatch(source, /auditRequired\([^)]*'CephExternalDisconnectRequested'/);
+  // legacy 경로에서 installConnection/disconnect를 직접 호출하지 않는다.
+  assert.doesNotMatch(source, /String\(body\.confirm \|\| ''\) !== 'DISCONNECT'/);
+  // 남은 legacy 경로는 group 검사(actorFor)가 아니라 OAA 인가를 사용해야 한다.
+  assert.match(source, /pathname === '\/api\/ceph\/status'\) \{\s*await actorForOaaOwner\(ctx, req, false\)/);
+  assert.match(source, /pathname === '\/api\/ceph\/plan'\) \{\s*await actorForOaaOwner\(ctx, req, false\)/);
+});
+
+test('C-02: runtime RBAC limits ConfigMap mutation to the managed names', () => {
+  // 이름 제한이 없으면 rook-csi-operator-image-set-configmap patch로 전 노드 privileged 실행이 가능하다.
+  assert.match(runtimeOwnerManifest, /resources: \[configmaps\][^]*resourceNames:/);
+  for (const name of ['opensphere-ceph-connection', 'opensphere-ceph-operation', 'rook-ceph-mon-endpoints']) {
+    assert.match(runtimeOwnerManifest, new RegExp(`resourceNames:[^]*- ${name}`));
+  }
+  // secrets와 configmaps를 하나의 무제한 규칙으로 합치면 안 된다.
+  assert.doesNotMatch(runtimeOwnerManifest, /resources: \[secrets, configmaps\]/);
+  // 이름 한정 권한과 selfCanI 검사 대상이 어긋나면 선행요소 점검이 오탐한다.
+  assert.match(source, /MANAGED_CONFIGMAPS = Object\.freeze\(\[CONNECTION_CONFIGMAP, OPERATION_CONFIGMAP, 'rook-ceph-mon-endpoints'\]\)/);
+  assert.match(source, /MANAGED_CONFIGMAPS\.map\(\(name\) => \[verb, '', 'configmaps', NAMESPACE, name\]\)/);
+});
+
+test('C-01: node prerequisite DaemonSet drops privileged and is disclosed before approval', () => {
+  const daemonSet = fs.readFileSync(path.resolve(__dirname, '../deploy/ceph-runtime-chart/templates/nbd-device-preparer.yaml'), 'utf8');
+  const ui = fs.readFileSync(path.resolve(__dirname, '../src/app/resources/ceph.component.ts'), 'utf8');
+  const reconciler = fs.readFileSync(path.resolve(__dirname, '../ceph-prerequisite-reconciler.js'), 'utf8');
+  // privileged 대신 필요한 capability만 부여한다.
+  assert.match(daemonSet, /privileged: false/);
+  assert.doesNotMatch(daemonSet, /privileged: true/);
+  assert.match(daemonSet, /allowPrivilegeEscalation: false/);
+  assert.match(daemonSet, /add: \[SYS_MODULE, MKNOD\]/);
+  assert.match(daemonSet, /drop: \[ALL\]/);
+  // 모든 taint를 무시하지 않으며 control-plane에는 배치하지 않는다.
+  assert.doesNotMatch(daemonSet, /tolerations:/);
+  assert.doesNotMatch(daemonSet, /priorityClassName: system-node-critical/);
+  assert.match(daemonSet, /kubernetes\.io\/os: linux/);
+  assert.match(daemonSet, /key: node-role\.kubernetes\.io\/control-plane\s*\n\s*operator: DoesNotExist/);
+  // 전용 SA + 토큰 미마운트.
+  assert.match(daemonSet, /serviceAccountName: opensphere-ceph-nbd-preparer/);
+  assert.match(daemonSet, /automountServiceAccountToken: false/);
+  // 승인 화면이 상승 권한을 고지하고 명시적 동의를 요구한다.
+  assert.match(ui, /opensphere-ceph-nbd-preparer/);
+  assert.match(ui, /elevatedScopeAcknowledged/);
+  assert.match(ui, /!elevatedScopeAcknowledged" \(click\)="requestPrerequisiteInstall\(\)"/);
+  // 거버넌스 계약이 실제 설치물을 기술한다.
+  assert.match(reconciler, /'runtime-rbac', 'nbd-preparer'/);
+  assert.match(reconciler, /elevatedPrivileges/);
+});
+
+test('H-01: StorageClass admission policy uses API-server-valid DELETE object selection', () => {
+  const admission = fs.readFileSync(path.resolve(__dirname, '../deploy/ceph-consumer-storage-admission.yaml'), 'utf8');
+  assert.match(admission, /expression: "object != null \? object : oldObject"/);
+  assert.doesNotMatch(admission, /has\(object\)/);
+});
+
+test('H-02: role guidance requires official restricted export and forbids unscoped OSD read', () => {
+  const ui = fs.readFileSync(path.resolve(__dirname, '../src/app/resources/ceph.component.ts'), 'utf8');
+  assert.match(ui, /Rook v1\.20 restricted export/);
+  assert.match(ui, /pool 제한 없는 osd allow r 권한은 발급하지 않습니다/);
+  assert.doesNotMatch(ui, /osd 'allow r'/);
+});
+
+test('H-04: each mutation has a bounded durable Kubernetes terminal audit mirror', () => {
+  assert.match(source, /async function recordDurableOperation/);
+  assert.match(source, /slice\(0, 50\)/);
+  assert.match(source, /await recordDurableOperation\(ctx, actor, action, 'requested'/);
+  assert.match(source, /await recordDurableOperation\(ctx, actor, action, terminalResult/);
+  assert.match(source, /Ceph 변경은 수행되었으나 최종 작업 상태 기록에 실패했습니다/);
+  assert.match(source, /redactedAuditMetadata/);
 });

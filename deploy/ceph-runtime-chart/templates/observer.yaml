@@ -72,11 +72,16 @@ spec:
           configMap:
             name: opensphere-ceph-observer
             defaultMode: 0555
+        # 감사 H-02 / SEC-CEPH-005: 관측기는 Rook operator 자격 증명을 마운트하지 않는다.
+        # operator key는 RBD provisioner 권한과 동등해질 수 있어 read-only 관측에 과대하다.
+        # 전용 read-only 신원(client.<id>, caps: mon 'allow r', mgr 'allow r', osd 'allow r')을
+        # rook-ceph/opensphere-ceph-observer-creds에 보관하고 그것만 사용한다.
+        # 이 Secret이 없으면 관측 섹션은 NotConfigured로 응답하며(fail-safe) 연결 자체는 영향받지 않는다.
         - name: credentials
           secret:
-            secretName: rook-ceph-operator-creds
+            secretName: opensphere-ceph-observer-creds
             optional: true
-            defaultMode: 0400
+            defaultMode: 0440
         - name: monitors
           configMap:
             name: rook-ceph-mon-endpoints

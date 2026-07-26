@@ -39,7 +39,11 @@ export interface CephStatus {
   kubernetes: { ready: boolean; id?: string; version?: string; nodes?: number; readyNodes?: number };
   connection: null | {
     mode: 'RookExternal';
+    clusterID: string;
     fsidFingerprint: string;
+    monitors: string[];
+    userID: string;
+    pool: string;
     secretRefs: string[];
     connectedBy: string;
     connectedAt: string;

@@ -13,6 +13,7 @@ const {
   storageClassManifest,
   snapshotClassManifest,
   parseMetadata,
+  statusConnectionProjection,
   importNameFromRef,
   providerGuide,
   helmMetadataAccessDenied,
@@ -418,6 +419,40 @@ test('connection metadata parser never requires Secret contents', () => {
   assert.equal(metadata.schemaVersion, 1);
   assert.deepEqual(metadata.secretRefs, ['rook-ceph/rook-csi-rbd-node']);
   assert.equal(parseMetadata({ data: { connection: '{bad' } }), null);
+});
+
+test('status exposes current non-secret Ceph connection values and never the user key', () => {
+  const metadata = {
+    schemaVersion: 1,
+    mode: 'RookExternal',
+    fsid: '12345678-1234-4234-9234-123456789abc',
+    fsidFingerprint: 'fingerprint',
+    storageClasses: ['ceph-rbd'],
+    secretRefs: ['rook-ceph/rook-csi-rbd-provisioner'],
+  };
+  const monitorConfig = { data: { data: 'a=10.0.0.11:3300,b=10.0.0.12:3300,c=10.0.0.13:3300' } };
+  const classes = [{
+    metadata: { name: 'ceph-rbd' },
+    provisioner: 'rook-ceph.rbd.csi.ceph.com',
+    parameters: {
+      pool: 'kubernetes-rbd',
+      'csi.storage.k8s.io/provisioner-secret-name': 'rook-csi-rbd-provisioner',
+    },
+  }];
+  const secrets = [{
+    metadata: { name: 'rook-csi-rbd-provisioner' },
+    data: {
+      userID: Buffer.from('opensphere').toString('base64'),
+      userKey: Buffer.from('AQD-secret-value').toString('base64'),
+    },
+  }];
+  const projection = statusConnectionProjection(metadata, monitorConfig, classes, secrets);
+  assert.equal(projection.clusterID, metadata.fsid);
+  assert.deepEqual(projection.monitors, ['10.0.0.11:3300', '10.0.0.12:3300', '10.0.0.13:3300']);
+  assert.equal(projection.userID, 'opensphere');
+  assert.equal(projection.pool, 'kubernetes-rbd');
+  assert.ok(!JSON.stringify(projection).includes('AQD-secret-value'));
+  assert.ok(!Object.hasOwn(projection, 'userKey'));
 });
 
 test('OAA Ceph accepts only an owner-staged SecretRef and never raw connection credentials', () => {

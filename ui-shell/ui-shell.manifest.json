@@ -5,7 +5,7 @@
   "hostRef": "main",
   "hostApiVersion": "1.0.0",
   "hostCompat": ">=1.0.0 <2.0.0",
-  "version": "1.3.8",
+  "version": "1.3.9",
   "title": "Cluster Manager",
   "description": "OpenSphere Kubernetes, external Ceph Storage, and HIS management views.",
   "entry": "ui-shell.plugin.js",
@@ -69,7 +69,7 @@
       "id": "app",
       "path": "../app/main.js",
       "type": "module",
-      "sha256": "b6d36b50d69280461202086cfafb19ed6284874cae1ebefb62d8be8d194ccea3"
+      "sha256": "3785242864a63035f39700913eb87892571527e8260fa16420c591d5efe5aca2"
     },
     {
       "id": "styles",

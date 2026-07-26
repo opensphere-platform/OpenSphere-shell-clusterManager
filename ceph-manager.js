@@ -837,11 +837,15 @@ async function snapshotApiAvailable(ctx) {
 }
 
 function metadataManifest(connection, snapshotClasses, actor) {
+  const rbdStorageClass = connection.storageClasses.find((item) => !item.data.fsName);
   const payload = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     mode: 'RookExternal',
     fsid: connection.fsid,
     fsidFingerprint: connection.fsidFingerprint,
+    monitors: connection.monitorEndpoints || monitorEndpointsFromData(connection.monitorData),
+    csiUserID: connection.csiUserID || connection.userID || '',
+    rbdPool: rbdStorageClass?.data?.pool || '',
     storageClasses: connection.storageClasses.map((item) => item.name),
     snapshotClasses,
     secretRefs: connection.secrets.map((item) => `${NAMESPACE}/${item.name}`),
@@ -861,6 +865,46 @@ function metadataManifest(connection, snapshotClasses, actor) {
 
 function parseMetadata(configMap) {
   try { return JSON.parse(configMap?.data?.connection || ''); } catch { return null; }
+}
+
+function monitorEndpointsFromData(data) {
+  return String(data || '').split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => item.replace(/^[^=]+=/, ''));
+}
+
+function decodedSecretField(secret, field) {
+  const encoded = String(secret?.data?.[field] || '');
+  if (!encoded) return '';
+  try { return Buffer.from(encoded, 'base64').toString('utf8').trim(); }
+  catch { return ''; }
+}
+
+function statusConnectionProjection(metadata, monitorConfigMap, storageClasses, secrets) {
+  if (!metadata) return null;
+  const wantedClasses = new Set(metadata.storageClasses || []);
+  const rbdClass = (storageClasses || []).find((item) => (
+    wantedClasses.has(item.metadata?.name)
+    && String(item.provisioner || '').endsWith('.rbd.csi.ceph.com')
+  ));
+  const csiSecretName = rbdClass?.parameters?.['csi.storage.k8s.io/provisioner-secret-name'];
+  const csiSecret = (secrets || []).find((item) => item.metadata?.name === csiSecretName);
+  const monitors = Array.isArray(metadata.monitors) && metadata.monitors.length
+    ? metadata.monitors.map((item) => String(item))
+    : monitorEndpointsFromData(monitorConfigMap?.data?.data);
+  return {
+    mode: metadata.mode,
+    clusterID: String(metadata.fsid || ''),
+    fsidFingerprint: metadata.fsidFingerprint,
+    monitors,
+    userID: String(metadata.csiUserID || decodedSecretField(csiSecret, 'userID')).replace(/^client\./, ''),
+    pool: String(metadata.rbdPool || rbdClass?.parameters?.pool || ''),
+    secretRefs: metadata.secretRefs || [],
+    connectedBy: metadata.connectedBy,
+    connectedAt: metadata.connectedAt,
+    chartVersion: metadata.chartVersion,
+  };
 }
 
 function helmMetadataAccessDenied(failure) {
@@ -915,8 +959,9 @@ async function cephStatus(ctx) {
     return { state: 'Blocked', reason: 'KubernetesUnavailable', checkedAt: new Date().toISOString(), kubernetes: { ready: false }, connection: null, providerGuide: providerGuide(), message: safeError(e) };
   }
 
-  const [metadataConfig, cephCluster, storageClasses, csiDrivers, cephSecrets, operator, cluster] = await Promise.all([
+  const [metadataConfig, monitorConfig, cephCluster, storageClasses, csiDrivers, cephSecrets, operator, cluster] = await Promise.all([
     optionalKube(ctx, `/api/v1/namespaces/${NAMESPACE}/configmaps/${CONNECTION_CONFIGMAP}`),
+    optionalKube(ctx, `/api/v1/namespaces/${NAMESPACE}/configmaps/rook-ceph-mon-endpoints`),
     optionalKube(ctx, `/apis/ceph.rook.io/v1/namespaces/${NAMESPACE}/cephclusters/${NAMESPACE}`),
     kube(ctx, 'GET', '/apis/storage.k8s.io/v1/storageclasses'),
     kube(ctx, 'GET', '/apis/storage.k8s.io/v1/csidrivers'),
@@ -954,14 +999,7 @@ async function cephStatus(ctx) {
   }
   return {
     state, reason, message, checkedAt: new Date().toISOString(), kubernetes, providerGuide: providerGuide(),
-    connection: metadata ? {
-      mode: metadata.mode,
-      fsidFingerprint: metadata.fsidFingerprint,
-      secretRefs: metadata.secretRefs || [],
-      connectedBy: metadata.connectedBy,
-      connectedAt: metadata.connectedAt,
-      chartVersion: metadata.chartVersion,
-    } : null,
+    connection: statusConnectionProjection(metadata, monitorConfig, allClasses, cephSecrets.items || []),
     rook: { operator, cluster, cephCluster: cephCluster ? { state: cephCluster.status?.state || cephCluster.status?.phase || 'Unknown', health: cephCluster.status?.ceph?.health || 'Unknown' } : null },
     csi: { drivers, storageClasses: classes, serviceCoverage },
   };
@@ -1587,6 +1625,7 @@ module.exports = {
   storageClassManifest,
   snapshotClassManifest,
   parseMetadata,
+  statusConnectionProjection,
   usageFor,
   importNameFromRef,
   cephOwnerPrerequisites,

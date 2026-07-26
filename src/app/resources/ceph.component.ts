@@ -164,13 +164,33 @@ import { CephInsightsComponent } from './ceph-insights.component';
 
         <article class="readiness-panel">
           <h3>Ceph 접속 정보</h3>
-          <dl class="provider-info">
-            <ng-container *ngFor="let item of providerGuide(s).requiredInformation">
-              <dt>{{ item.label }} <span *ngIf="item.secret" class="label label-info">민감</span></dt>
-              <dd>{{ item.description }}</dd>
-            </ng-container>
-          </dl>
-          <p class="scope-note"><strong>입력하지 않는 정보:</strong> {{ providerGuide(s).unsupportedInputs.join(' · ') }}</p>
+          <ng-container *ngIf="s.connection as connection; else requiredConnectionInformation">
+            <dl class="provider-info connection-values">
+              <dt>Cluster ID (FSID)</dt>
+              <dd><code>{{ connection.clusterID || '확인되지 않음' }}</code></dd>
+              <dt>MON endpoints</dt>
+              <dd>
+                <ul class="monitor-values" *ngIf="connection.monitors.length; else monitorsUnavailable">
+                  <li *ngFor="let monitor of connection.monitors"><code>{{ monitor }}</code></li>
+                </ul>
+                <ng-template #monitorsUnavailable>확인되지 않음</ng-template>
+              </dd>
+              <dt>CephX userID</dt>
+              <dd><code>{{ connection.userID || '확인되지 않음' }}</code></dd>
+              <dt>RBD pool</dt>
+              <dd><code>{{ connection.pool || '확인되지 않음' }}</code></dd>
+            </dl>
+            <p class="secret-boundary-note">User key는 Kubernetes Secret에만 저장되며 이 화면과 API 응답에는 표시하지 않습니다.</p>
+          </ng-container>
+          <ng-template #requiredConnectionInformation>
+            <dl class="provider-info">
+              <ng-container *ngFor="let item of providerGuide(s).requiredInformation">
+                <dt>{{ item.label }} <span *ngIf="item.secret" class="label label-info">민감</span></dt>
+                <dd>{{ item.description }}</dd>
+              </ng-container>
+            </dl>
+            <p class="scope-note"><strong>입력하지 않는 정보:</strong> {{ providerGuide(s).unsupportedInputs.join(' · ') }}</p>
+          </ng-template>
         </article>
       </div>
 
@@ -692,6 +712,9 @@ import { CephInsightsComponent } from './ceph-insights.component';
     .provider-info dt { font-size: 0.68rem; }
     .provider-info dd { color: #565656; }
     .provider-info .label { margin-left: 0.25rem; vertical-align: middle; }
+    .connection-values code { color: #1b2a32; font-family: Consolas, "SFMono-Regular", monospace; font-size: 0.68rem; }
+    .monitor-values { display: grid; gap: 0.22rem; margin: 0; padding: 0; list-style: none; }
+    .secret-boundary-note { margin: 0.75rem 0 0; padding: 0.55rem 0.65rem; border-left: 3px solid #0f62fe; background: #edf5ff; color: #37474f; line-height: 1.45; }
     .scope-note { margin: 0.75rem 0 0; padding-top: 0.6rem; border-top: 1px solid #e3e6e8; color: #565656; }
     .blocker-list { margin-top: 0.75rem; padding: 0.55rem; background: #fff3f0; color: #8a1f11; }
     .blocker-list ul { margin: 0.3rem 0 0 1rem; padding: 0; }

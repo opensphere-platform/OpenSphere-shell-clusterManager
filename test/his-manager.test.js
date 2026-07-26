@@ -40,6 +40,7 @@ const {
   normalizeOaaObservabilityConfig,
   oaaObservabilityConfirmation,
   observabilityValues,
+  observabilityRead,
   observabilityPvcComponent,
   buildObservabilityLogQuery,
   projectLokiResponse,
@@ -351,6 +352,20 @@ test('Observability configuration is allowlisted and secure by default', () => {
   assert.deepEqual(values.prometheus.prometheusSpec.remoteWrite, []);
   assert.equal(config.telemetry.enabled, true);
   assert.equal(config.telemetry.retention, '168h');
+});
+
+test('Shared Observability preserves readable install options when one live resource is forbidden', async () => {
+  const accessIssues = [];
+  const available = await observabilityRead('StorageClass', async () => ({ items: [{ metadata: { name: 'ceph-rbd' } }] }), accessIssues);
+  const forbidden = await observabilityRead('Prometheus CR', async () => {
+    throw Object.assign(new Error('prometheuses is forbidden'), { code: 403 });
+  }, accessIssues);
+  assert.equal(available.items[0].metadata.name, 'ceph-rbd');
+  assert.deepEqual(forbidden, { items: [] });
+  assert.deepEqual(accessIssues, [{ label: 'Prometheus CR', message: 'prometheuses is forbidden' }]);
+  await assert.rejects(() => observabilityRead('StorageClass', async () => {
+    throw Object.assign(new Error('API unavailable'), { code: 500 });
+  }, accessIssues), /API unavailable/);
 });
 
 test('Observability installation rejects non-CSI storage and allows explicit CSI selection', () => {

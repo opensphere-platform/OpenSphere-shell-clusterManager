@@ -210,7 +210,7 @@ type ObservabilityLifecycleStage = 'plan' | 'install' | 'operate' | 'configure' 
     <clr-modal [(clrModalOpen)]="observabilityLifecycleModalOpen" [clrModalClosable]="!busy() && !configurationBusy()" [clrModalSize]="'xl'">
       <h3 class="modal-title">Shared Observability 관리</h3>
       <div class="modal-body lifecycle-workspace" *ngIf="observabilityTarget() as item">
-        <header class="lifecycle-overview">
+        <section class="lifecycle-overview" aria-label="Shared Observability 대상과 현재 상태">
           <div>
             <p class="eyebrow">HISS · OBSERVABILITY</p>
             <h4>{{ item.chartName }}</h4>
@@ -238,7 +238,7 @@ type ObservabilityLifecycleStage = 'plan' | 'install' | 'operate' | 'configure' 
             <strong>{{ releaseStateLabel(item) }}</strong>
             <span *ngIf="item.release?.managed">revision {{ item.release.revision }}</span>
           </div>
-        </header>
+        </section>
 
         <ol class="lifecycle-rail" aria-label="Shared Observability 수명주기">
           <li *ngFor="let stage of observabilityStages" [class.stage-current]="observabilityStageState(stage.id, item) === '현재'" [class.stage-ready]="observabilityStageState(stage.id, item) === '준비'" [class.stage-blocked]="observabilityStageState(stage.id, item) === '차단'">
@@ -287,6 +287,12 @@ type ObservabilityLifecycleStage = 'plan' | 'install' | 'operate' | 'configure' 
             <button class="btn btn-sm btn-outline" type="button" [disabled]="configurationLoading() || operationActive(item.operation)" (click)="openObservabilityConfiguration(item.release?.managed ? 'operate' : 'install')">
               {{ item.release?.managed ? '구성 변경 계획' : '설치 옵션 편집' }}
             </button>
+          </div>
+          <div class="alert alert-warning compact-alert partial-access-alert" *ngIf="observabilityState()?.live?.accessIssues?.length">
+            <div class="alert-items"><div class="alert-item static"><span class="alert-text">
+              <strong>일부 운영 상태는 권한 승인 후 확인됩니다.</strong>
+              StorageClass 선택과 설치 옵션은 지금 구성할 수 있습니다.
+            </span></div></div>
           </div>
           <div class="configuration-summary">
             <article>
@@ -746,10 +752,10 @@ type ObservabilityLifecycleStage = 'plan' | 'install' | 'operate' | 'configure' 
     .profile-card { display: grid; grid-template-columns: 8rem 1fr; gap: 0.3rem 0.75rem; padding: 0.65rem; margin-bottom: 0.7rem; border: 1px solid #d8d8d8; background: #fafafa; }
     .history-card { margin: 0.75rem 0; padding: 0.65rem; border: 1px solid #d8d8d8; background: #fafafa; }
     .history-card label { display: grid; grid-template-columns: 10rem minmax(14rem, 1fr); gap: 0.5rem; align-items: center; font-weight: 600; }
-    .lifecycle-workspace { display: grid; gap: 0.9rem; }
-    .lifecycle-overview { display: grid; grid-template-columns: minmax(16rem, 1fr) minmax(13rem, 0.55fr) auto; align-items: start; gap: 1.5rem; padding-bottom: 0.7rem; border-bottom: 1px solid #d8d8d8; }
+    .lifecycle-workspace { display: grid; min-width: 0; gap: 0.8rem; }
+    .lifecycle-overview { display: grid; grid-template-columns: minmax(18rem, 1.35fr) minmax(16rem, 0.8fr) minmax(8rem, auto); align-items: center; gap: 1.25rem; padding: 0.8rem; border: 1px solid #d8d8d8; border-left: 0.2rem solid #0072a3; background: #f4f8fb; color: #21333b; }
     .lifecycle-overview h4 { margin: 0.1rem 0 0.25rem; font-size: 1.05rem; }
-    .lifecycle-overview p { margin: 0; }
+    .lifecycle-overview p { margin: 0; color: #465a63; line-height: 1.45; }
     .chart-version-field { display: grid; gap: 0.2rem; font-size: 0.65rem; font-weight: 600; }
     .chart-version-field input { width: 100%; }
     .chart-version-field small { color: #565656; font-weight: 400; }
@@ -767,16 +773,17 @@ type ObservabilityLifecycleStage = 'plan' | 'install' | 'operate' | 'configure' 
     .lifecycle-rail .stage-current > span { background: #0072a3; color: #fff; }
     .lifecycle-rail .stage-blocked { background: #fff5f2; border-color: #f4b6a9; }
     .lifecycle-rail .stage-blocked > span { background: #e12200; color: #fff; }
-    .lifecycle-section { padding: 0.75rem; border: 1px solid #d8d8d8; background: #fff; }
-    .readiness-grid, .configuration-summary { display: grid; grid-template-columns: repeat(4, minmax(11rem, 1fr)); gap: 0.55rem; }
-    .readiness-grid article, .configuration-summary article { display: grid; gap: 0.25rem; min-height: 5.5rem; padding: 0.6rem; border: 1px solid #d8d8d8; background: #fafafa; }
+    .lifecycle-section { min-width: 0; padding: 0.8rem; border: 1px solid #d8d8d8; background: #fff; }
+    .readiness-grid, .configuration-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.65rem; }
+    .readiness-grid article, .configuration-summary article { display: grid; align-content: start; gap: 0.3rem; min-width: 0; min-height: 6.5rem; padding: 0.7rem; border: 1px solid #d8d8d8; background: #fafafa; }
     .readiness-grid article.readiness-failed { border-left: 0.2rem solid #e12200; background: #fff5f2; }
     .readiness-grid article .label { width: fit-content; }
     .readiness-grid p { margin: 0; color: #565656; font-size: 0.65rem; line-height: 1.45; }
     .readiness-grid small { color: #565656; line-height: 1.4; }
     .configuration-summary article span { color: #565656; font-size: 0.6rem; }
     .configuration-summary article small { color: #6f6f6f; }
-    .configuration-summary select { width: 100%; margin-top: auto; }
+    .configuration-summary select { width: 100%; min-height: 1.8rem; margin-top: auto; }
+    .partial-access-alert { margin: 0 0 0.65rem; }
     .storage-plan { margin-top: 0.65rem; }
     .operation-facts { display: grid; grid-template-columns: repeat(4, minmax(9rem, 1fr)); gap: 0.55rem; margin-bottom: 0.65rem; }
     .operation-facts article { display: grid; gap: 0.2rem; padding: 0.55rem; border-left: 0.15rem solid #0072a3; background: #f4f8fb; }
@@ -790,7 +797,7 @@ type ObservabilityLifecycleStage = 'plan' | 'install' | 'operate' | 'configure' 
     .policy-banner > div { display: grid; gap: 0.15rem; }
     .policy-banner span:not(.label) { color: #565656; font-size: 0.65rem; }
     .config-section { border: 1px solid #d8d8d8; background: #fff; padding: 0.75rem; }
-    .section-heading { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; margin-bottom: 0.55rem; }
+    .section-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; margin-bottom: 0.65rem; }
     .section-heading h4 { margin: 0.05rem 0 0; font-size: 0.9rem; }
     .section-heading > span { color: #6f6f6f; font-size: 0.65rem; }
     .config-table { table-layout: fixed; margin: 0; }

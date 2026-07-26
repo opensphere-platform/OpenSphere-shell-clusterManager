@@ -446,6 +446,15 @@ async function k8sListOrEmpty(ctx, apiPath) {
   catch (error) { if (error.code === 404) return { items: [] }; throw error; }
 }
 
+async function observabilityRead(label, read, accessIssues) {
+  try { return await read(); }
+  catch (error) {
+    if (error.code !== 403) throw error;
+    accessIssues.push({ label, message: error.message });
+    return { items: [] };
+  }
+}
+
 function availableDeployment(deployment) {
   const desired = Number(deployment && deployment.spec && deployment.spec.replicas || 1);
   return Number(deployment && deployment.status && deployment.status.availableReplicas || 0) >= desired;
@@ -1311,17 +1320,19 @@ function observabilityPvcComponent(name) {
 }
 
 async function observabilityLiveState(ctx) {
+  const accessIssues = [];
+  const read = (label, apiPath) => observabilityRead(label, () => k8sListOrEmpty(ctx, apiPath), accessIssues);
   const [storageClassList, csiDriverList, ingressClassList, pvcList, serviceList, ingressList, policyList, prometheusList, alertmanagerList, deploymentList] = await Promise.all([
-    k8sListOrEmpty(ctx, '/apis/storage.k8s.io/v1/storageclasses'),
-    k8sListOrEmpty(ctx, '/apis/storage.k8s.io/v1/csidrivers'),
-    k8sListOrEmpty(ctx, '/apis/networking.k8s.io/v1/ingressclasses'),
-    k8sListOrEmpty(ctx, '/api/v1/namespaces/monitoring/persistentvolumeclaims'),
-    k8sListOrEmpty(ctx, '/api/v1/namespaces/monitoring/services'),
-    k8sListOrEmpty(ctx, '/apis/networking.k8s.io/v1/namespaces/monitoring/ingresses'),
-    k8sListOrEmpty(ctx, '/apis/networking.k8s.io/v1/namespaces/monitoring/networkpolicies'),
-    k8sListOrEmpty(ctx, '/apis/monitoring.coreos.com/v1/namespaces/monitoring/prometheuses'),
-    k8sListOrEmpty(ctx, '/apis/monitoring.coreos.com/v1/namespaces/monitoring/alertmanagers'),
-    k8sListOrEmpty(ctx, '/apis/apps/v1/namespaces/monitoring/deployments'),
+    read('StorageClass', '/apis/storage.k8s.io/v1/storageclasses'),
+    read('CSIDriver', '/apis/storage.k8s.io/v1/csidrivers'),
+    read('IngressClass', '/apis/networking.k8s.io/v1/ingressclasses'),
+    read('monitoring PVC', '/api/v1/namespaces/monitoring/persistentvolumeclaims'),
+    read('monitoring Service', '/api/v1/namespaces/monitoring/services'),
+    read('monitoring Ingress', '/apis/networking.k8s.io/v1/namespaces/monitoring/ingresses'),
+    read('monitoring NetworkPolicy', '/apis/networking.k8s.io/v1/namespaces/monitoring/networkpolicies'),
+    read('Prometheus CR', '/apis/monitoring.coreos.com/v1/namespaces/monitoring/prometheuses'),
+    read('Alertmanager CR', '/apis/monitoring.coreos.com/v1/namespaces/monitoring/alertmanagers'),
+    read('monitoring Deployment', '/apis/apps/v1/namespaces/monitoring/deployments'),
   ]);
   const csiDrivers = new Set((csiDriverList.items || []).map((driver) => driver.metadata?.name || ''));
   const storageClasses = (storageClassList.items || []).map((storageClass) => ({
@@ -1358,6 +1369,7 @@ async function observabilityLiveState(ctx) {
   const deploymentByName = new Map((deploymentList.items || []).map((item) => [item.metadata?.name || '', item]));
   return {
     installed: Boolean(prometheus || alertmanager || pvcs.grafana),
+    accessIssues,
     storageClasses,
     ingressClasses: (ingressClassList.items || []).map((item) => ({ name: item.metadata?.name || '', controller: item.spec?.controller || '' })),
     pvcs,
@@ -2959,6 +2971,7 @@ module.exports = {
   normalizeOaaObservabilityConfig,
   oaaObservabilityConfirmation,
   observabilityValues,
+  observabilityRead,
   observabilityPvcComponent,
   buildObservabilityLogQuery,
   projectLokiResponse,

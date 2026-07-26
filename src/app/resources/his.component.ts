@@ -1,7 +1,7 @@
 import { CommonModule } from '@angular/common';
 import { Component, OnDestroy, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { ClarityModule, ClrTimelineLayout, ClrTimelineStepState } from '@clr/angular';
+import { ClarityModule } from '@clr/angular';
 import {
   HisItem,
   HisOperation,
@@ -16,7 +16,7 @@ import {
 type HisLifecycleAction = 'install' | 'upgrade' | 'recover' | 'blocked';
 type HisMutationAction = 'install' | 'upgrade' | 'recover' | 'rollback' | 'uninstall';
 type ObservabilityConfigurationMode = 'install' | 'operate';
-type ObservabilityLifecycleStage = 'plan' | 'install' | 'operate' | 'configure' | 'validate' | 'rollback' | 'delete';
+type ObservabilityActionId = 'plan' | 'install' | 'configure' | 'validate' | 'rollback' | 'delete';
 
 @Component({
   selector: 'app-his',
@@ -225,63 +225,71 @@ type ObservabilityLifecycleStage = 'plan' | 'install' | 'operate' | 'configure' 
         </span>
       </h3>
       <div class="modal-body lifecycle-workspace" *ngIf="observabilityTarget() as item">
-        <div class="card lifecycle-summary-card" aria-label="Shared Observability 대상과 현재 상태">
-          <div class="card-header lifecycle-summary-header">
-            <div class="observability-product-lockup">
-              <span class="observability-logo-pair observability-logo-pair-compact">
-                <img [src]="prometheusLogo" alt="Prometheus" width="28" height="28">
-                <img [src]="grafanaLogo" alt="Grafana" width="28" height="28">
-              </span>
-              <span>
-                <strong>{{ item.chartName }}</strong>
-                <small>수집부터 시각화까지 하나의 관리 revision으로 운영</small>
-              </span>
-            </div>
+        <section class="observability-summary-bar" aria-label="Shared Observability 대상과 현재 상태">
+          <div class="observability-summary-copy">
+            <p class="eyebrow">TARGET STACK</p>
+            <div class="observability-summary-title-row">
+              <h4>{{ item.chartName }}</h4>
             <span class="label" [class.label-success]="item.check.state === 'Ready'" [class.label-danger]="item.check.state === 'Blocked'" [class.label-warning]="item.check.state === 'Degraded'">{{ item.check.state }}</span>
+            </div>
+            <p>Prometheus 수집과 Grafana 시각화를 <code>{{ item.namespace }}</code> namespace의 하나의 관리 revision으로 운영합니다.</p>
           </div>
-          <div class="card-block">
-            <div class="card-text lifecycle-summary-grid">
-              <div>
-                <p>고정·검증된 chart를 <code>{{ item.namespace }}</code> namespace에 설치하고 하나의 관리 revision으로 운영합니다.</p>
-                <dl class="lifecycle-meta">
-                  <dt>설치 상태</dt><dd>{{ releaseStateLabel(item) }}</dd>
-                  <ng-container *ngIf="item.release?.managed"><dt>Helm revision</dt><dd>{{ item.release.revision }}</dd></ng-container>
-                </dl>
-              </div>
-              <clr-input-container>
-                <label>대상 Chart version</label>
-                <input
-                  clrInput
-                  name="observabilityChartVersion"
-                  list="observability-chart-versions"
-                  [(ngModel)]="observabilityChartVersion"
-                  (ngModelChange)="chartVersionChanged()"
-                  placeholder="예: 87.19.1"
-                  autocomplete="off"
-                  required>
-                <datalist id="observability-chart-versions">
-                  <option *ngFor="let version of item.availableChartVersions" [value]="version"></option>
-                </datalist>
-                <clr-control-helper *ngIf="chartVersionSupported(item)">서명된 release에 포함된 버전만 실행됩니다.</clr-control-helper>
-                <clr-control-error *ngIf="!chartVersionSupported(item)">허용 버전: {{ (item.availableChartVersions || []).join(', ') }}</clr-control-error>
-              </clr-input-container>
+          <dl class="lifecycle-meta">
+            <dt>설치 상태</dt><dd>{{ releaseStateLabel(item) }}</dd>
+            <dt>Namespace</dt><dd><code>{{ item.namespace }}</code></dd>
+            <ng-container *ngIf="item.release?.managed"><dt>Helm revision</dt><dd>{{ item.release.revision }}</dd></ng-container>
+          </dl>
+          <clr-input-container>
+            <label>대상 Chart version</label>
+            <input
+              clrInput
+              name="observabilityChartVersion"
+              list="observability-chart-versions"
+              [(ngModel)]="observabilityChartVersion"
+              (ngModelChange)="chartVersionChanged()"
+              placeholder="예: 87.19.1"
+              autocomplete="off"
+              required>
+            <datalist id="observability-chart-versions">
+              <option *ngFor="let version of item.availableChartVersions" [value]="version"></option>
+            </datalist>
+            <clr-control-helper *ngIf="chartVersionSupported(item)">서명된 release에 포함된 버전만 실행됩니다.</clr-control-helper>
+            <clr-control-error *ngIf="!chartVersionSupported(item)">허용 버전: {{ (item.availableChartVersions || []).join(', ') }}</clr-control-error>
+          </clr-input-container>
+        </section>
+
+        <section class="observability-work-model" aria-labelledby="observability-work-model-title">
+          <div class="work-model-current">
+            <p class="eyebrow">CURRENT STATE</p>
+            <h4 id="observability-work-model-title">{{ releaseStateLabel(item) }}</h4>
+            <p>{{ observabilityCurrentStateMessage(item) }}</p>
+          </div>
+          <div class="work-model-catalog">
+            <div class="work-model-heading">
+              <div><p class="eyebrow">AVAILABLE OPERATIONS</p><h4>상태에 따라 선택하는 작업</h4></div>
+              <span>아래 작업은 순차 단계가 아닙니다.</span>
+            </div>
+            <div class="operation-group-grid">
+              <article *ngFor="let group of observabilityActionGroups">
+                <div class="operation-group-copy">
+                  <strong>{{ group.label }}</strong>
+                  <span>{{ group.description }}</span>
+                </div>
+                <div class="operation-choice-list">
+                  <span *ngFor="let operation of group.operations" [attr.data-state]="observabilityActionTone(operation.id, item)">
+                    <strong>{{ operation.label }}</strong>
+                    <small>{{ observabilityActionState(operation.id, item) }}</small>
+                  </span>
+                </div>
+              </article>
             </div>
           </div>
-        </div>
-
-        <clr-timeline [clrLayout]="timelineLayout" aria-label="Shared Observability 수명주기">
-          <clr-timeline-step *ngFor="let stage of observabilityStages" [clrState]="observabilityTimelineState(stage.id, item)">
-            <clr-timeline-step-header>{{ stage.order }}</clr-timeline-step-header>
-            <clr-timeline-step-title>{{ stage.label }}</clr-timeline-step-title>
-            <clr-timeline-step-description>{{ observabilityStageState(stage.id, item) }}</clr-timeline-step-description>
-          </clr-timeline-step>
-        </clr-timeline>
+        </section>
 
         <clr-alert *ngIf="error()" [clrAlertType]="'danger'" [clrAlertClosable]="false">
           <clr-alert-item><span class="alert-text">{{ error() }}</span></clr-alert-item>
         </clr-alert>
 
-        <div class="lifecycle-primary-grid">
         <section class="lifecycle-section lifecycle-readiness-section">
           <div class="section-heading">
             <div><p class="eyebrow">READINESS</p><h4>설치 전 필수 조건</h4></div>
@@ -358,7 +366,6 @@ type ObservabilityLifecycleStage = 'plan' | 'install' | 'operate' | 'configure' 
             </clr-alert>
           </ng-container>
         </section>
-        </div>
 
         <section class="lifecycle-section" *ngIf="item.release?.managed">
           <div class="section-heading">
@@ -808,11 +815,6 @@ type ObservabilityLifecycleStage = 'plan' | 'install' | 'operate' | 'configure' 
       box-shadow: var(--os-shadow-sm);
     }
     .observability-logo-pair img + img { margin-left: calc(var(--os-2) * -1); }
-    .observability-logo-pair-compact img { width: 1.75rem; height: 1.75rem; box-shadow: none; }
-    .observability-product-lockup { display: flex; align-items: center; gap: var(--os-4); min-width: 0; }
-    .observability-product-lockup > span:last-child { display: grid; min-width: 0; gap: var(--os-2); }
-    .observability-product-lockup strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .observability-product-lockup small { color: var(--os-ink-muted); font: var(--os-type-caption); }
     .lifecycle-workspace {
       display: grid;
       min-width: 0;
@@ -820,30 +822,60 @@ type ObservabilityLifecycleStage = 'plan' | 'install' | 'operate' | 'configure' 
       gap: var(--os-5);
       overflow: visible;
     }
-    .lifecycle-summary-card { margin: 0; box-shadow: none; }
-    .lifecycle-summary-header { display: flex; align-items: center; justify-content: space-between; gap: var(--os-4); }
-    .lifecycle-summary-grid { display: grid; grid-template-columns: minmax(18rem, 1.25fr) minmax(16rem, 0.75fr); align-items: start; gap: var(--os-6); }
-    .lifecycle-summary-grid p { margin-top: 0; color: var(--os-ink-muted); }
+    .observability-summary-bar {
+      display: grid;
+      grid-template-columns: minmax(20rem, 1.35fr) minmax(13rem, 0.65fr) minmax(15rem, 0.8fr);
+      align-items: center;
+      gap: var(--os-6);
+      padding: var(--os-5);
+      border: 1px solid var(--os-hairline);
+      background: var(--os-surface-1);
+    }
+    .observability-summary-copy { min-width: 0; }
+    .observability-summary-copy > p:last-child { margin: var(--os-2) 0 0; color: var(--os-ink-muted); }
+    .observability-summary-title-row { display: flex; align-items: center; gap: var(--os-4); min-width: 0; }
+    .observability-summary-title-row h4 { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .lifecycle-meta { display: grid; grid-template-columns: 8rem 1fr; gap: var(--os-2) var(--os-4); margin: var(--os-4) 0 0; }
     .lifecycle-meta dt { color: var(--os-ink-muted); }
     .lifecycle-meta dd { margin: 0; font-weight: 600; }
-    .lifecycle-summary-grid clr-input-container { display: block; margin-top: 0; }
-    .lifecycle-summary-grid input[clrInput] { width: 100%; }
-    .lifecycle-workspace clr-timeline { margin: var(--os-2) 0; }
-    .lifecycle-primary-grid {
+    .observability-summary-bar .lifecycle-meta { margin: 0; }
+    .observability-summary-bar clr-input-container { display: block; margin-top: 0; }
+    .observability-summary-bar input[clrInput] { width: 100%; }
+    .observability-work-model {
       display: grid;
-      grid-template-columns: minmax(0, 0.96fr) minmax(0, 1.04fr);
+      grid-template-columns: minmax(14rem, 0.3fr) minmax(0, 1fr);
       gap: var(--os-6);
-      align-items: start;
+      align-items: stretch;
+      padding: var(--os-5);
+      border: 1px solid var(--os-hairline);
+      background: var(--os-bg);
     }
-    .lifecycle-primary-grid .lifecycle-section { height: 100%; }
+    .work-model-current { display: grid; align-content: start; gap: var(--os-2); padding: var(--os-4); border-left: var(--os-2) solid var(--os-brand-500); background: var(--os-active-bg); }
+    .work-model-current h4, .work-model-current p { margin: 0; }
+    .work-model-current > p:last-child { color: var(--os-ink-muted); line-height: 1.45; }
+    .work-model-catalog { display: grid; min-width: 0; gap: var(--os-4); }
+    .work-model-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--os-5); }
+    .work-model-heading h4 { margin: 0; }
+    .work-model-heading > span { color: var(--os-ink-muted); font: var(--os-type-caption); }
+    .operation-group-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--os-4); }
+    .operation-group-grid article { display: grid; gap: var(--os-2); padding: var(--os-4); border: 1px solid var(--os-hairline); background: var(--os-surface-1); }
+    .operation-group-copy { display: grid; gap: var(--os-2); }
+    .operation-group-copy span { color: var(--os-ink-muted); font: var(--os-type-caption); }
+    .operation-choice-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--os-2); }
+    .operation-choice-list > span { display: grid; gap: var(--os-2); min-width: 0; padding: var(--os-2); border-left: var(--os-2) solid var(--os-border); background: var(--os-bg); }
+    .operation-choice-list strong { font-size: 0.7rem; }
+    .operation-choice-list small { color: var(--os-ink-muted); overflow-wrap: anywhere; }
+    .operation-choice-list > span[data-state='available'] { border-left-color: var(--os-success); }
+    .operation-choice-list > span[data-state='current'] { border-left-color: var(--os-brand-500); background: var(--os-active-bg); }
+    .operation-choice-list > span[data-state='warning'] { border-left-color: var(--os-warn); background: var(--os-warn-bg); }
+    .operation-choice-list > span[data-state='blocked'] { border-left-color: var(--os-danger); background: var(--os-danger-bg); }
     .lifecycle-section { min-width: 0; padding: var(--os-5) 0 0; border-top: 1px solid var(--os-hairline); }
-    .readiness-alerts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--os-4); }
-    .lifecycle-primary-grid .section-heading > span { max-width: 15rem; text-align: right; }
+    .readiness-alerts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--os-4); }
     .readiness-alerts clr-alert, .lifecycle-section > clr-alert { margin: 0; }
-    .storage-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--os-4) var(--os-6); margin-top: var(--os-4); }
+    .storage-form-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--os-4) var(--os-6); margin-top: var(--os-4); }
     .storage-form-grid clr-select-container { display: block; margin-top: 0; }
     .storage-form-grid select[clrSelect] { width: 100%; }
+    .lifecycle-plan-section .alert-text ul { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--os-2) var(--os-5); }
     .storage-plan { margin-top: 0.65rem; }
     .operation-facts { display: grid; grid-template-columns: repeat(4, minmax(9rem, 1fr)); gap: 0.55rem; margin-bottom: 0.65rem; }
     .operation-facts article { display: grid; gap: var(--os-2); padding: var(--os-4); border-left: var(--os-2) solid var(--os-info); background: var(--os-surface-1); }
@@ -892,12 +924,15 @@ type ObservabilityLifecycleStage = 'plan' | 'install' | 'operate' | 'configure' 
       .split-config, .exposure-options, .policy-banner, .readiness-alerts, .storage-form-grid, .operation-facts { grid-template-columns: 1fr 1fr; }
       .compact-fields, .ingress-fields { grid-template-columns: 1fr 1fr; }
       .compatibility-card { display: grid; }
-      .lifecycle-summary-grid { grid-template-columns: 1fr 1fr; }
-      .lifecycle-primary-grid { grid-template-columns: 1fr; }
+      .observability-summary-bar { grid-template-columns: 1fr 1fr; }
+      .observability-summary-copy { grid-column: 1 / -1; }
+      .observability-work-model { grid-template-columns: 1fr; }
     }
     @media (max-width: 720px) {
-      .readiness-alerts, .storage-form-grid, .operation-facts, .lifecycle-summary-grid { grid-template-columns: 1fr; }
-      .observability-modal-title-copy small, .observability-product-lockup small { display: none; }
+      .readiness-alerts, .storage-form-grid, .operation-facts, .observability-summary-bar, .operation-group-grid, .lifecycle-plan-section .alert-text ul { grid-template-columns: 1fr; }
+      .observability-modal-title-copy small { display: none; }
+      .observability-summary-copy { grid-column: auto; }
+      .work-model-heading { display: grid; }
       .lifecycle-workspace {
         max-height: calc(100vh - 9rem);
         padding-right: var(--os-2);
@@ -909,7 +944,6 @@ type ObservabilityLifecycleStage = 'plan' | 'install' | 'operate' | 'configure' 
 })
 export class HisComponent implements OnInit, OnDestroy {
   private his = inject(HisService);
-  readonly timelineLayout = ClrTimelineLayout.HORIZONTAL;
   readonly prometheusLogo = 'https://cdn.statically.io/gh/openplatform-labs/images@main/logos/prometheus-2.svg';
   readonly grafanaLogo = 'https://cdn.statically.io/gh/openplatform-labs/images@main/logos/grafana-2.svg';
   readonly status = signal<HisStatus | null>(null);
@@ -934,14 +968,26 @@ export class HisComponent implements OnInit, OnDestroy {
   readonly profileBusy = signal(false);
   readonly canaryTarget = signal<HisItem | null>(null);
   readonly canaryBusy = signal(false);
-  readonly observabilityStages: Array<{ id: ObservabilityLifecycleStage; order: number; label: string }> = [
-    { id: 'plan', order: 1, label: '계획' },
-    { id: 'install', order: 2, label: '설치' },
-    { id: 'operate', order: 3, label: '운영' },
-    { id: 'configure', order: 4, label: '구성' },
-    { id: 'validate', order: 5, label: '실검증' },
-    { id: 'rollback', order: 6, label: '롤백' },
-    { id: 'delete', order: 7, label: '삭제' },
+  readonly observabilityActionGroups: Array<{
+    label: string;
+    description: string;
+    operations: Array<{ id: ObservabilityActionId; label: string }>;
+  }> = [
+    {
+      label: '설치 준비',
+      description: '설치 전 영향 확인과 최초 배포',
+      operations: [{ id: 'plan', label: '계획' }, { id: 'install', label: '설치' }],
+    },
+    {
+      label: '반복 운영',
+      description: '운영 중 필요할 때 독립적으로 실행',
+      operations: [{ id: 'configure', label: '구성 변경' }, { id: 'validate', label: '실검증' }],
+    },
+    {
+      label: '복구·종료',
+      description: '별도 판단과 승인이 필요한 작업',
+      operations: [{ id: 'rollback', label: '롤백' }, { id: 'delete', label: '삭제' }],
+    },
   ];
   modalOpen = false;
   observabilityLifecycleModalOpen = false;
@@ -1188,31 +1234,43 @@ export class HisComponent implements OnInit, OnDestroy {
       && !this.configurationPlanning();
   }
 
-  observabilityStageState(stage: ObservabilityLifecycleStage, item: HisItem): string {
+  observabilityCurrentStateMessage(item: HisItem): string {
     const managed = Boolean(item.release?.managed);
     const active = this.operationActive(item.operation);
-    if (stage === 'plan') return this.observabilityPlan()?.canApply ? '준비' : this.configurationLoading() || this.configurationPlanning() ? '현재' : '차단';
-    if (stage === 'install') {
-      if (managed) return '완료';
-      if (active && item.operation?.action === 'install') return '현재';
-      return this.observabilityInstallReady(item) ? '준비' : '차단';
-    }
-    if (stage === 'operate') return item.check.state === 'Ready' ? '완료' : managed ? '현재' : '대기';
-    if (stage === 'configure') return managed ? (item.operation?.action === 'configure' && active ? '현재' : '준비') : '대기';
-    if (stage === 'validate') {
-      if (item.operation?.action === 'validate' && item.operation.phase === 'Ready') return '완료';
-      return this.canValidate(item) ? '준비' : managed ? '차단' : '대기';
-    }
-    if (stage === 'rollback') return this.rollbackAvailable(item) ? '준비' : '대기';
-    return managed ? '준비' : '대기';
+    if (active) return `${this.operationLabel(item.operation!)} 작업이 진행 중입니다. 작업 상태와 결과를 확인하십시오.`;
+    if (managed && item.check.state === 'Ready') return '설치된 release가 정상 운영 중입니다. 필요한 운영 작업을 개별적으로 선택할 수 있습니다.';
+    if (managed) return '설치된 release가 정상 상태가 아닙니다. 진단 결과를 확인하고 복구 또는 롤백을 선택하십시오.';
+    if (this.observabilityInstallReady(item)) return '설치 조건이 충족되었습니다. 렌더링 계획을 검토한 뒤 설치를 선택할 수 있습니다.';
+    return '아직 설치되지 않았습니다. 아래 준비 조건과 설치 계획의 차단 항목을 먼저 해소하십시오.';
   }
 
-  observabilityTimelineState(stage: ObservabilityLifecycleStage, item: HisItem): ClrTimelineStepState {
-    const state = this.observabilityStageState(stage, item);
-    if (state === '완료') return ClrTimelineStepState.SUCCESS;
-    if (state === '현재') return ClrTimelineStepState.CURRENT;
-    if (state === '차단') return ClrTimelineStepState.ERROR;
-    return ClrTimelineStepState.NOT_STARTED;
+  observabilityActionState(action: ObservabilityActionId, item: HisItem): string {
+    const managed = Boolean(item.release?.managed);
+    const active = this.operationActive(item.operation);
+    if (active && (
+      item.operation?.action === action
+      || (action === 'delete' && item.operation?.action === 'uninstall')
+    )) return '진행 중';
+    if (action === 'plan') return this.configurationLoading() || this.configurationPlanning()
+      ? '계산 중'
+      : this.chartVersionSupported(item) ? '언제든 검토' : '버전 확인 필요';
+    if (action === 'install') {
+      if (managed) return '설치 완료';
+      return this.observabilityInstallReady(item) ? '실행 가능' : '준비 조건 필요';
+    }
+    if (action === 'configure') return managed ? '필요 시 반복' : '설치 후 사용';
+    if (action === 'validate') return this.canValidate(item) ? '실행 가능' : managed ? '검증 준비 필요' : '설치 후 사용';
+    if (action === 'rollback') return this.rollbackAvailable(item) ? 'revision 선택 가능' : '이전 revision 필요';
+    return managed ? '별도 승인 필요' : '설치 후 사용';
+  }
+
+  observabilityActionTone(action: ObservabilityActionId, item: HisItem): 'available' | 'current' | 'warning' | 'blocked' | 'idle' {
+    const state = this.observabilityActionState(action, item);
+    if (state === '진행 중' || state === '계산 중') return 'current';
+    if (['실행 가능', '언제든 검토', '필요 시 반복', 'revision 선택 가능', '설치 완료'].includes(state)) return 'available';
+    if (['별도 승인 필요', '버전 확인 필요', '검증 준비 필요'].includes(state)) return 'warning';
+    if (state === '준비 조건 필요') return 'blocked';
+    return 'idle';
   }
 
   readyComponentCount(item: HisItem): number {

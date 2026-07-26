@@ -300,7 +300,10 @@ test('HISS UI renders install, upgrade and recovery as mutually exclusive lifecy
   assert.match(ui, /storagePlan/);
   assert.match(ui, /\[disabled\]="!sc\.isCsi"/);
   assert.match(ui, /CSI 선택 필요/);
-  assert.match(ui, /<clr-timeline /);
+  assert.doesNotMatch(ui, /<clr-timeline /);
+  assert.match(ui, /아래 작업은 순차 단계가 아닙니다/);
+  assert.match(ui, /class="observability-work-model"/);
+  assert.match(ui, /class="operation-group-grid"/);
   assert.match(ui, /<clr-alert /);
   assert.match(ui, /<form clrForm clrLayout="vertical" class="storage-form-grid">/);
   assert.match(ui, /<clr-select-container>/);
@@ -308,7 +311,8 @@ test('HISS UI renders install, upgrade and recovery as mutually exclusive lifecy
   assert.match(ui, /<clr-dropdown /);
   assert.doesNotMatch(ui, /class="lifecycle-rail"/);
   assert.doesNotMatch(ui, /class="configuration-summary"/);
-  for (const stage of ['계획', '설치', '운영', '구성', '실검증', '롤백', '삭제']) assert.match(ui, new RegExp(`label: '${stage}'`));
+  for (const group of ['설치 준비', '반복 운영', '복구·종료']) assert.match(ui, new RegExp(`label: '${group}'`));
+  for (const action of ['계획', '설치', '구성 변경', '실검증', '롤백', '삭제']) assert.match(ui, new RegExp(`label: '${action}'`));
 });
 
 test('kind HISS profile provisions an issuer chain and binds ingress default TLS without weakening standard clusters', () => {

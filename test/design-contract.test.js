@@ -97,13 +97,16 @@ test('shared operational surfaces keep the standard state and layout primitives'
   assert.match(tokens, /--os-focus-ring:/);
 });
 
-test('Shared Observability uses product assets and avoids a desktop nested modal scroller', () => {
+test('Shared Observability uses product assets, an accurate work model, and no desktop nested modal scroller', () => {
   const his = readFileSync(resolve(appRoot, 'resources/his.component.ts'), 'utf8');
 
   assert.match(his, /logos\/prometheus-2\.svg/);
   assert.match(his, /logos\/grafana-2\.svg/);
   assert.match(his, /class="observability-logo-pair"/);
-  assert.match(his, /class="lifecycle-primary-grid"/);
+  assert.match(his, /class="observability-work-model"/);
+  assert.match(his, /아래 작업은 순차 단계가 아닙니다/);
+  assert.doesNotMatch(his, /<clr-timeline\b/);
   assert.match(his, /\.lifecycle-workspace\s*\{[^}]*max-height:\s*none;[^}]*overflow:\s*visible;/s);
-  assert.match(his, /\.lifecycle-primary-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*0\.96fr\)\s*minmax\(0,\s*1\.04fr\)/s);
+  assert.match(his, /\.readiness-alerts\s*\{[^}]*grid-template-columns:\s*repeat\(4,/s);
+  assert.match(his, /\.storage-form-grid\s*\{[^}]*grid-template-columns:\s*repeat\(4,/s);
 });

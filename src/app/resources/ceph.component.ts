@@ -2,7 +2,7 @@ import { CommonModule } from '@angular/common';
 import { Component, OnDestroy, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ClarityModule } from '@clr/angular';
-import { CEPH_PROVIDER_GUIDE, CephConnectionInput, CephInsights, CephPlan, CephPrerequisiteRequest, CephProviderGuide, CephService, CephStatus } from '../core/ceph.service';
+import { CEPH_PROVIDER_GUIDE, CephConnectionInput, CephFsConfigurationInput, CephInsights, CephPlan, CephPrerequisiteRequest, CephProviderGuide, CephService, CephStatus, CephStorageService } from '../core/ceph.service';
 import { CephInsightsComponent } from './ceph-insights.component';
 
 @Component({
@@ -169,6 +169,81 @@ import { CephInsightsComponent } from './ceph-insights.component';
         </article>
       </div>
 
+    </section>
+
+    <section class="service-coverage" *ngIf="status()?.connection && status()?.csi?.serviceCoverage as coverage">
+      <div class="card-head service-coverage-head">
+        <div>
+          <p class="section-kicker">CSI SERVICE READINESS</p>
+          <h2>Ceph 스토리지 서비스 준비도</h2>
+          <p>설치된 드라이버와 실제 PVC에서 선택 가능한 구성을 별도로 검사합니다. 드라이버만 설치된 상태는 사용 가능으로 계산하지 않습니다.</p>
+        </div>
+        <span class="coverage-badge" [class.complete]="coverage.state === 'Ready'">
+          {{ coverage.ready }}/{{ coverage.installed }}종 사용 가능
+        </span>
+      </div>
+
+      <div *ngIf="coverage.needsConfiguration > 0" class="service-warning" role="alert">
+        <strong>구성 보완 필요</strong>
+        <span>설치된 서비스 {{ coverage.installed }}종 중 {{ coverage.needsConfiguration }}종은 Ceph 제공 정보 또는 Kubernetes 구성이 없어 아직 사용할 수 없습니다.</span>
+      </div>
+
+      <div class="service-grid">
+        <article *ngFor="let service of coverage.services" class="service-card" [class.service-ready]="service.ready" [class.service-gap]="service.driverInstalled && !service.ready">
+          <header class="service-card-head">
+            <div class="service-identity">
+              <img [src]="cephLogo" alt="" width="30" height="30" />
+              <div><h3>{{ service.name }}</h3><p>{{ service.description }}</p></div>
+            </div>
+            <span class="service-state" [class.ready]="service.ready" [class.gap]="service.driverInstalled && !service.ready">
+              {{ serviceStateLabel(service) }}
+            </span>
+          </header>
+
+          <ol class="service-checkpoints" aria-label="서비스 준비 단계">
+            <li [class.complete]="service.driverInstalled"><span>1</span><strong>CSI 드라이버</strong><small>{{ service.driverInstalled ? '설치됨' : '미설치' }}</small></li>
+            <li [class.complete]="service.configured"><span>2</span><strong>StorageClass</strong><small>{{ service.configured ? '구성됨' : '미구성' }}</small></li>
+            <li [class.complete]="service.ready"><span>3</span><strong>PVC 사용 준비</strong><small>{{ service.ready ? '사용 가능' : '대기' }}</small></li>
+          </ol>
+
+          <div *ngIf="service.storageClasses.length" class="service-class-list">
+            <div *ngFor="let storage of service.storageClasses">
+              <strong>StorageClass/{{ storage.name }}</strong>
+              <span>{{ storage.filesystem ? 'filesystem ' + storage.filesystem + ' · ' : '' }}pool {{ storage.pool || '미입력' }} · {{ storage.reclaimPolicy || '정책 미확인' }}</span>
+            </div>
+          </div>
+
+          <div *ngIf="service.blockers.length" class="service-blockers">
+            <strong>현재 부족한 구성</strong>
+            <ul><li *ngFor="let blocker of service.blockers">{{ blocker }}</li></ul>
+          </div>
+
+          <section *ngIf="service.driverInstalled && !service.ready" class="provider-request">
+            <div class="provider-request-head">
+              <div><strong>Ceph 관리자에게 요청할 정보</strong><span>아래 항목을 값과 함께 회신받으십시오.</span></div>
+              <button class="btn btn-sm btn-outline" type="button" (click)="copyProviderRequest(service)">요청 문구 복사</button>
+            </div>
+            <dl>
+              <ng-container *ngFor="let item of service.providerRequirements">
+                <dt>{{ item.label }} <span *ngIf="item.secret" class="sensitive">Secret</span></dt>
+                <dd>{{ item.description }}</dd>
+              </ng-container>
+            </dl>
+            <div class="provider-contract" *ngIf="service.id === 'cephfs'">
+              <strong>권한 조건</strong>
+              <span><code>client.admin</code>은 사용하지 않습니다. Provisioner는 CephFS subvolume 관리, Node 계정은 해당 filesystem mount에 필요한 최소 CephX caps만 가져야 합니다.</span>
+              <span>MDS 상태는 관리자가 서약하는 값이 아니라 연결 후 시스템이 관측합니다.</span>
+            </div>
+            <div class="service-actions">
+              <button *ngIf="service.id === 'cephfs'" class="btn btn-primary" type="button" [disabled]="busy()" (click)="openCephFsConfiguration()">CephFS 구성 추가</button>
+              <button class="btn btn-outline" type="button" [disabled]="loading() || busy()" (click)="load()">정보 반영 후 다시 검사</button>
+            </div>
+          </section>
+
+          <p class="service-next"><strong>다음 조치:</strong> {{ service.nextAction }}</p>
+        </article>
+      </div>
+      <p class="verification-note"><strong>판정 범위:</strong> CSI 드라이버 등록, StorageClass 필수 값과 참조 Secret을 확인합니다. 실제 읽기·쓰기 mount 검증은 테스트 PVC 또는 업무 PVC를 생성한 시점에 별도 이력으로 남겨야 합니다.</p>
     </section>
 
     <ng-container *ngIf="status() as s">
@@ -422,6 +497,77 @@ import { CephInsightsComponent } from './ceph-insights.component';
       </div>
     </clr-modal>
 
+    <clr-modal [(clrModalOpen)]="cephFsOpen" [clrModalClosable]="!busy()" [clrModalSize]="'lg'">
+      <h3 class="modal-title">CephFS 공유 파일 스토리지 구성</h3>
+      <div class="modal-body">
+        <div class="alert alert-info" role="note">
+          <div class="alert-items"><div class="alert-item static"><span class="alert-text">
+            외부 Ceph에서 전달받은 filesystem·data pool과 제한된 CephX 계정을 입력합니다. Secret 값은 Kubernetes Secret에만 저장되며 화면·감사 기록에 남기지 않습니다.
+          </span></div></div>
+        </div>
+        <div *ngIf="cephFsError()" class="alert alert-danger wizard-feedback" role="alert">
+          <div class="alert-items"><div class="alert-item static"><span class="alert-text"><strong>CephFS 구성 실패:</strong> {{ cephFsError() }}</span></div></div>
+        </div>
+        <div *ngIf="cephFsNotice()" class="alert alert-success wizard-feedback" role="status">
+          <div class="alert-items"><div class="alert-item static"><span class="alert-text"><strong>CephFS 구성 완료:</strong> {{ cephFsNotice() }}</span></div></div>
+        </div>
+        <form *ngIf="!cephFsCompleted()" clrForm clrLayout="vertical" class="connection-form cephfs-form">
+          <clr-input-container>
+            <label>CephFS filesystem 이름</label>
+            <input clrInput name="cephFsFilesystem" [(ngModel)]="cephFsFilesystem" required autocomplete="off" spellcheck="false" placeholder="예: cephfs">
+            <clr-control-helper><code>ceph fs ls</code>에 표시되는 이름</clr-control-helper>
+          </clr-input-container>
+          <clr-input-container>
+            <label>CephFS data pool</label>
+            <input clrInput name="cephFsPool" [(ngModel)]="cephFsPool" required autocomplete="off" spellcheck="false" placeholder="예: cephfs-data0">
+            <clr-control-helper>CSI subvolume을 저장할 data pool</clr-control-helper>
+          </clr-input-container>
+          <clr-input-container>
+            <label>Provisioner User ID</label>
+            <input clrInput name="cephFsProvisionerUserID" [(ngModel)]="cephFsProvisionerUserID" required autocomplete="username" spellcheck="false" placeholder="client.csi-cephfs-provisioner">
+            <clr-control-helper>subvolume 생성·삭제용 제한 계정</clr-control-helper>
+          </clr-input-container>
+          <clr-password-container>
+            <label>Provisioner User key</label>
+            <input clrPassword name="cephFsProvisionerUserKey" [(ngModel)]="cephFsProvisionerUserKey" required autocomplete="new-password">
+            <clr-control-helper>Kubernetes Secret에만 저장</clr-control-helper>
+          </clr-password-container>
+          <clr-input-container>
+            <label>Node User ID</label>
+            <input clrInput name="cephFsNodeUserID" [(ngModel)]="cephFsNodeUserID" required autocomplete="username" spellcheck="false" placeholder="client.csi-cephfs-node">
+            <clr-control-helper>Kubernetes node의 mount용 제한 계정</clr-control-helper>
+          </clr-input-container>
+          <clr-password-container>
+            <label>Node User key</label>
+            <input clrPassword name="cephFsNodeUserKey" [(ngModel)]="cephFsNodeUserKey" required autocomplete="new-password">
+            <clr-control-helper>Kubernetes Secret에만 저장</clr-control-helper>
+          </clr-password-container>
+          <clr-input-container>
+            <label>StorageClass 이름</label>
+            <input clrInput name="cephFsStorageClassName" [(ngModel)]="cephFsStorageClassName" required autocomplete="off" spellcheck="false">
+            <clr-control-helper>PVC에서 선택할 이름</clr-control-helper>
+          </clr-input-container>
+          <clr-textarea-container>
+            <label>변경 사유</label>
+            <textarea clrTextarea name="cephFsReason" [(ngModel)]="cephFsReason" required minlength="8" maxlength="500" placeholder="CephFS 구성 목적과 승인 근거(8자 이상)"></textarea>
+          </clr-textarea-container>
+        </form>
+        <div *ngIf="cephFsCompleted()" class="connection-complete">
+          <p>CephFS CSI Secret과 StorageClass를 생성하고 서비스 준비도를 다시 확인했습니다.</p>
+          <dl class="connection-meta">
+            <dt>Filesystem</dt><dd>{{ cephFsFilesystem }}</dd>
+            <dt>Data pool</dt><dd>{{ cephFsPool }}</dd>
+            <dt>StorageClass</dt><dd>{{ cephFsStorageClassName }}</dd>
+            <dt>자격 증명</dt><dd>Secret 2개 저장 · 값 비노출</dd>
+          </dl>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" type="button" [disabled]="busy()" (click)="closeCephFsConfiguration()">닫기</button>
+        <button *ngIf="!cephFsCompleted()" class="btn btn-primary" type="button" [disabled]="busy() || !cephFsInputComplete() || cephFsReason.trim().length < 8" (click)="configureCephFs()">CephFS 구성 적용</button>
+      </div>
+    </clr-modal>
+
     <clr-modal [(clrModalOpen)]="disconnectOpen" [clrModalClosable]="!busy()">
       <h3 class="modal-title">외부 Ceph 연결 해제</h3>
       <div class="modal-body">
@@ -480,7 +626,7 @@ import { CephInsightsComponent } from './ceph-insights.component';
     .tab-status { padding: 0.08rem 0.4rem; border-radius: 0.8rem; background: #dff0d4; color: #266900; font-size: 0.58rem; }
     .tab-status.warn { background: #fff0c2; color: #6b4d00; }
     .insights-placeholder { display: grid; min-height: 16rem; place-items: center; border: 1px dashed #9babb4; background: #f4f7f8; color: #51636d; }
-    .dependency, .connection-card, .empty-state, .readiness-board { border: 1px solid #d8d8d8; background: #fff; padding: 0.85rem 1rem; margin-bottom: 0.8rem; }
+    .dependency, .connection-card, .empty-state, .readiness-board, .service-coverage { border: 1px solid #d8d8d8; background: #fff; padding: 0.85rem 1rem; margin-bottom: 0.8rem; }
     .dependency-title { display: grid; grid-template-columns: 1.6rem 2.1rem minmax(0, 1fr) auto; gap: 0.6rem; align-items: center; }
     .dependency-logo { display: block; width: 1.8rem; height: 1.8rem; object-fit: contain; }
     .dependency-title > div { display: flex; flex-direction: column; gap: 0.12rem; }
@@ -539,6 +685,52 @@ import { CephInsightsComponent } from './ceph-insights.component';
     .preparation-grid > div { display: flex; flex-direction: column; gap: 0.12rem; padding-left: 0.65rem; border-left: 3px solid #4c6fff; }
     .preparation-grid span { color: #565656; }
     .network-contract { display: flex; flex-wrap: wrap; gap: 0.35rem 0.7rem; margin-top: 0.75rem; padding: 0.55rem 0.65rem; background: #eaf4ff; }
+    .service-coverage { border-top: 4px solid #0f62fe; }
+    .service-coverage-head { align-items: center; }
+    .service-coverage-head h2 { margin: 0; color: #1b2a32; font-size: 1.05rem; }
+    .service-coverage-head p:not(.section-kicker) { margin: 0.18rem 0 0; max-width: 55rem; color: #565656; line-height: 1.45; }
+    .section-kicker { margin: 0 0 0.15rem; color: #0f62fe; font-size: 0.6rem; font-weight: 700; letter-spacing: 0.08em; }
+    .coverage-badge { flex: 0 0 auto; padding: 0.35rem 0.65rem; border: 1px solid #f1c21b; border-radius: 1rem; background: #fff8d6; color: #6b4d00; font-weight: 700; }
+    .coverage-badge.complete { border-color: #69a03a; background: #f1f8e9; color: #266900; }
+    .service-warning { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.65rem; margin-top: 0.8rem; padding: 0.65rem 0.75rem; border-left: 4px solid #f1c21b; background: #fff8d6; color: #4f3b00; }
+    .service-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.8rem; margin-top: 0.8rem; }
+    .service-card { min-width: 0; padding: 0.85rem; border: 1px solid #c9d2d8; border-top: 4px solid #8d9ba3; background: #fff; }
+    .service-card.service-ready { border-top-color: #318700; }
+    .service-card.service-gap { border-top-color: #f1c21b; }
+    .service-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.75rem; }
+    .service-identity { display: grid; min-width: 0; grid-template-columns: 2rem minmax(0, 1fr); gap: 0.55rem; align-items: center; }
+    .service-identity img { display: block; width: 1.75rem; height: 1.75rem; object-fit: contain; }
+    .service-identity h3 { margin: 0; color: #1b2a32; font-size: 0.86rem; }
+    .service-identity p { margin: 0.16rem 0 0; color: #565656; line-height: 1.4; }
+    .service-state { flex: 0 0 auto; padding: 0.15rem 0.45rem; border-radius: 0.8rem; background: #e5e8ea; color: #3a4d55; font-size: 0.62rem; font-weight: 700; }
+    .service-state.ready { background: #dff0d4; color: #266900; }
+    .service-state.gap { background: #fff0c2; color: #6b4d00; }
+    .service-checkpoints { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.35rem; margin: 0.8rem 0 0; padding: 0; list-style: none; }
+    .service-checkpoints li { display: grid; grid-template-columns: 1.2rem minmax(0, 1fr); gap: 0.04rem 0.35rem; padding: 0.45rem; border: 1px solid #d8d8d8; background: #f4f7f8; }
+    .service-checkpoints li > span { display: grid; grid-row: 1 / 3; width: 1.15rem; height: 1.15rem; place-items: center; border-radius: 50%; background: #8d9ba3; color: #fff; font-size: 0.58rem; }
+    .service-checkpoints li.complete { border-color: #a8cf8b; background: #f1f8e9; }
+    .service-checkpoints li.complete > span { background: #318700; }
+    .service-checkpoints strong { font-size: 0.64rem; line-height: 1.2; }
+    .service-checkpoints small { color: #6f6f6f; font-size: 0.58rem; }
+    .service-class-list { display: grid; gap: 0.35rem; margin-top: 0.7rem; }
+    .service-class-list > div { display: flex; flex-direction: column; gap: 0.12rem; padding: 0.45rem 0.55rem; border-left: 3px solid #318700; background: #f4f7f8; }
+    .service-class-list span { color: #565656; }
+    .service-blockers { margin-top: 0.7rem; padding: 0.55rem 0.65rem; border-left: 3px solid #da1e28; background: #fff1f1; color: #750e13; }
+    .service-blockers ul { margin: 0.3rem 0 0 1rem; padding: 0; }
+    .provider-request { margin-top: 0.7rem; padding: 0.7rem; border: 1px solid #8ab4f8; background: #edf5ff; }
+    .provider-request-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.6rem; }
+    .provider-request-head > div { display: flex; flex-direction: column; gap: 0.08rem; }
+    .provider-request-head span { color: #565656; }
+    .provider-request-head .btn { flex: 0 0 auto; margin: 0; }
+    .provider-request dl { display: grid; grid-template-columns: minmax(9rem, 0.7fr) minmax(0, 1.3fr); gap: 0.35rem 0.65rem; margin: 0.65rem 0 0; }
+    .provider-request dd { color: #3a4d55; }
+    .sensitive { display: inline-block; margin-left: 0.2rem; padding: 0.04rem 0.28rem; border-radius: 0.5rem; background: #d0e2ff; color: #0043ce; font-size: 0.52rem; }
+    .provider-contract { display: grid; gap: 0.2rem; margin-top: 0.65rem; padding: 0.55rem; border-left: 3px solid #0f62fe; background: #fff; color: #3a4d55; }
+    .service-actions { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.65rem; }
+    .service-actions .btn { margin: 0; }
+    .service-next { margin: 0.7rem 0 0; color: #3a4d55; }
+    .verification-note { margin: 0.8rem 0 0; padding-top: 0.7rem; border-top: 1px solid #d8d8d8; color: #565656; line-height: 1.45; }
+    .cephfs-form clr-textarea-container { grid-column: 1 / -1; }
     .command-block { display: grid; gap: 0.35rem; margin-top: 0.75rem; }
     .command-block span { color: #565656; }
     .command-block code { display: block; padding: 0.65rem; overflow-x: auto; background: #1b2a32; color: #eef5f7; white-space: nowrap; }
@@ -568,11 +760,14 @@ import { CephInsightsComponent } from './ceph-insights.component';
     code { font-size: 0.63rem; }
     @media (max-width: 62rem) {
       .cm-ceph-page-head, .card-head { flex-direction: column; }
-      .readiness-grid, .preparation-grid, .connection-form { grid-template-columns: 1fr; }
+      .readiness-grid, .preparation-grid, .connection-form, .service-grid { grid-template-columns: 1fr; }
       .dependency dl, .connection-meta { grid-template-columns: 1fr; }
       .resource-list > div { grid-template-columns: 1fr; }
       .status-checks li { grid-template-columns: 0.7rem minmax(0, 1fr); }
       .prereq-action { grid-column: 2; justify-self: start; }
+      .service-checkpoints { grid-template-columns: 1fr; }
+      .provider-request dl { grid-template-columns: 1fr; }
+      .service-warning { grid-template-columns: 1fr; }
     }
   `],
 })
@@ -598,11 +793,15 @@ export class CephClustersComponent implements OnInit, OnDestroy {
   readonly connectNotice = signal('');
   readonly connectNoticeTitle = signal('입력 형식 확인 완료');
   readonly connectCompleted = signal(false);
+  readonly cephFsError = signal('');
+  readonly cephFsNotice = signal('');
+  readonly cephFsCompleted = signal(false);
   readonly step = signal(1);
   readonly prerequisiteRequest = signal<CephPrerequisiteRequest | null>(null);
   readonly prerequisiteError = signal('');
   prerequisiteOpen = false;
   connectOpen = false;
+  cephFsOpen = false;
   disconnectOpen = false;
   prerequisiteReason = '';
   prerequisiteSource = '';
@@ -612,6 +811,14 @@ export class CephClustersComponent implements OnInit, OnDestroy {
   userKey = '';
   pool = '';
   storageClassName = 'ceph-rbd';
+  cephFsFilesystem = '';
+  cephFsPool = '';
+  cephFsProvisionerUserID = '';
+  cephFsProvisionerUserKey = '';
+  cephFsNodeUserID = '';
+  cephFsNodeUserKey = '';
+  cephFsStorageClassName = 'cephfs';
+  cephFsReason = '';
   connectReason = '';
   disconnectReason = '';
   disconnectConfirm = '';
@@ -810,6 +1017,100 @@ export class CephClustersComponent implements OnInit, OnDestroy {
 
   consumerNamespacesReady(status: CephStatus): boolean {
     return Boolean(status.ownerPrerequisites?.namespaces?.runtime && status.ownerPrerequisites.namespaces.imports);
+  }
+
+  serviceStateLabel(service: CephStorageService): string {
+    if (service.ready) return '사용 가능';
+    if (service.driverInstalled) return '정보·구성 필요';
+    return '미설치';
+  }
+
+  async copyProviderRequest(service: CephStorageService): Promise<void> {
+    const requirements = service.providerRequirements
+      .map((item) => `- ${item.label}: ${item.secret ? '[보안 채널로 전달]' : '[값 입력]'}\n  ${item.description}`)
+      .join('\n');
+    const text = [
+      `[OpenSphere ${service.name} 구성 요청]`,
+      '',
+      '목적: Kubernetes CSI StorageClass 구성',
+      `CSI 드라이버: ${service.driver}`,
+      '',
+      '회신이 필요한 정보',
+      requirements,
+      '',
+      '보안·권한 조건',
+      '- client.admin 계정은 전달하지 마십시오.',
+      '- 대상 pool 또는 filesystem 범위의 최소 CephX 권한만 부여하십시오.',
+      '- key는 승인된 보안 채널로만 전달하고 일반 메일·메신저 본문에는 남기지 마십시오.',
+      '- Ceph health 또는 MDS 상태를 수동 확인 문구로 회신할 필요는 없습니다. 연결 후 시스템이 관측합니다.',
+    ].join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      this.notice.set(`${service.name} 구성 요청 문구를 복사했습니다.`);
+    } catch {
+      this.error.set('브라우저가 클립보드 복사를 허용하지 않았습니다. 화면의 요청 항목을 사용하십시오.');
+    }
+  }
+
+  openCephFsConfiguration(): void {
+    this.cephFsFilesystem = '';
+    this.cephFsPool = '';
+    this.cephFsProvisionerUserID = '';
+    this.cephFsProvisionerUserKey = '';
+    this.cephFsNodeUserID = '';
+    this.cephFsNodeUserKey = '';
+    this.cephFsStorageClassName = 'cephfs';
+    this.cephFsReason = '';
+    this.cephFsError.set('');
+    this.cephFsNotice.set('');
+    this.cephFsCompleted.set(false);
+    this.cephFsOpen = true;
+  }
+
+  closeCephFsConfiguration(): void {
+    this.cephFsProvisionerUserKey = '';
+    this.cephFsNodeUserKey = '';
+    this.cephFsOpen = false;
+  }
+
+  cephFsConfiguration(): CephFsConfigurationInput {
+    return {
+      filesystem: this.cephFsFilesystem.trim(),
+      pool: this.cephFsPool.trim(),
+      provisionerUserID: this.cephFsProvisionerUserID.trim(),
+      provisionerUserKey: this.cephFsProvisionerUserKey.trim(),
+      nodeUserID: this.cephFsNodeUserID.trim(),
+      nodeUserKey: this.cephFsNodeUserKey.trim(),
+      storageClassName: this.cephFsStorageClassName.trim(),
+    };
+  }
+
+  cephFsInputComplete(): boolean {
+    return Object.values(this.cephFsConfiguration()).every((value) => value.length > 0);
+  }
+
+  configureCephFs(): void {
+    if (!this.cephFsInputComplete() || this.cephFsReason.trim().length < 8) return;
+    this.busy.set(true);
+    this.cephFsError.set('');
+    this.cephFsNotice.set('');
+    this.ceph.configureCephFs(this.cephFsConfiguration(), this.cephFsReason.trim()).subscribe({
+      next: (result) => {
+        this.busy.set(false);
+        this.cephFsProvisionerUserKey = '';
+        this.cephFsNodeUserKey = '';
+        this.status.set(result.status);
+        this.cephFsCompleted.set(true);
+        this.cephFsNotice.set('CephFS StorageClass와 제한 자격 증명이 구성되어 PVC 사용 준비 상태가 되었습니다.');
+      },
+      error: (failure) => {
+        this.busy.set(false);
+        this.cephFsProvisionerUserKey = '';
+        this.cephFsNodeUserKey = '';
+        this.cephFsError.set(`${this.message(failure)} 보안을 위해 CephFS key 입력값을 지웠습니다.`);
+        this.load(true);
+      },
+    });
   }
 
   connectionInput(): CephConnectionInput {

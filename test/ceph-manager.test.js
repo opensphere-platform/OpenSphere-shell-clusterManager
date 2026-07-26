@@ -7,6 +7,8 @@ const path = require('node:path');
 const {
   validateProviderExport,
   validateConnectionInput,
+  validateCephFsInput,
+  cephStorageServiceDiagnostics,
   planFor,
   storageClassManifest,
   snapshotClassManifest,
@@ -189,6 +191,79 @@ test('direct connection plan never exposes the CephX key', () => {
   assert.ok(!text.includes(input.userKey));
   assert.match(source, /\['connection', 'confirm', 'reason'\]/);
   assert.match(source, /validateConnectionInput\(body\.connection\)/);
+});
+
+test('installed Ceph CSI services distinguish driver registration from usable StorageClass configuration', () => {
+  const drivers = [
+    { metadata: { name: 'rook-ceph.rbd.csi.ceph.com' } },
+    { metadata: { name: 'rook-ceph.cephfs.csi.ceph.com' } },
+  ];
+  const storageClasses = [{
+    metadata: { name: 'ceph-rbd' },
+    provisioner: 'rook-ceph.rbd.csi.ceph.com',
+    reclaimPolicy: 'Retain',
+    volumeBindingMode: 'WaitForFirstConsumer',
+    parameters: {
+      pool: 'opensphere-dev',
+      'csi.storage.k8s.io/provisioner-secret-name': 'rook-csi-rbd-provisioner',
+      'csi.storage.k8s.io/node-stage-secret-name': 'rook-csi-rbd-node',
+    },
+  }];
+  const coverage = cephStorageServiceDiagnostics(
+    drivers,
+    storageClasses,
+    ['rook-csi-rbd-provisioner', 'rook-csi-rbd-node'],
+  );
+  assert.equal(coverage.installed, 2);
+  assert.equal(coverage.ready, 1);
+  assert.equal(coverage.needsConfiguration, 1);
+  assert.equal(coverage.state, 'NeedsConfiguration');
+  assert.equal(coverage.services.find((item) => item.id === 'rbd').state, 'Ready');
+  const cephfs = coverage.services.find((item) => item.id === 'cephfs');
+  assert.equal(cephfs.state, 'NeedsConfiguration');
+  assert.match(cephfs.blockers.join(' '), /StorageClass/);
+  assert.ok(cephfs.providerRequirements.some((item) => item.id === 'filesystem'));
+  assert.ok(cephfs.providerRequirements.some((item) => item.id === 'node-user-key' && item.secret));
+});
+
+test('CephFS service configuration creates separate restricted CSI credentials without exposing keys', () => {
+  const input = {
+    filesystem: 'shared-fs',
+    pool: 'shared-fs-data0',
+    provisionerUserID: 'client.opensphere-cephfs-provisioner',
+    provisionerUserKey: 'AQDprovisioner0123456789abcdef==',
+    nodeUserID: 'opensphere-cephfs-node',
+    nodeUserKey: 'AQDnode0123456789abcdefghijkl==',
+    storageClassName: 'cephfs-shared',
+  };
+  const configuration = validateCephFsInput(input);
+  assert.equal(configuration.storageClass.name, 'cephfs-shared');
+  assert.equal(configuration.storageClass.data.fsName, 'shared-fs');
+  assert.equal(configuration.storageClass.data.pool, 'shared-fs-data0');
+  assert.equal(configuration.secrets.find((item) => item.name === 'rook-csi-cephfs-provisioner').data.userID, 'opensphere-cephfs-provisioner');
+  assert.equal(configuration.secrets.find((item) => item.name === 'rook-csi-cephfs-node').data.userID, 'opensphere-cephfs-node');
+  assert.ok(!JSON.stringify(configuration.audit).includes(input.provisionerUserKey));
+  assert.ok(!JSON.stringify(configuration.audit).includes(input.nodeUserKey));
+  const manifest = storageClassManifest(configuration.storageClass);
+  assert.equal(manifest.provisioner, 'rook-ceph.cephfs.csi.ceph.com');
+  assert.equal(manifest.parameters.fsName, 'shared-fs');
+  assert.throws(() => validateCephFsInput({ ...input, provisionerUserID: 'client.admin' }), /client\.admin/);
+});
+
+test('Ceph UI reports every installed storage service and provides actionable provider requirements', () => {
+  const component = fs.readFileSync(path.resolve(__dirname, '../src/app/resources/ceph.component.ts'), 'utf8');
+  const service = fs.readFileSync(path.resolve(__dirname, '../src/app/core/ceph.service.ts'), 'utf8');
+  assert.match(component, /Ceph 스토리지 서비스 준비도/);
+  assert.match(component, /드라이버만 설치된 상태는 사용 가능으로 계산하지 않습니다/);
+  assert.match(component, /Ceph 관리자에게 요청할 정보/);
+  assert.match(component, /요청 문구 복사/);
+  assert.match(component, /CephFS 구성 추가/);
+  assert.match(component, /CephFS 공유 파일 스토리지 구성/);
+  assert.match(component, /Provisioner User ID/);
+  assert.match(component, /Node User ID/);
+  assert.match(component, /실제 읽기·쓰기 mount 검증/);
+  assert.match(service, /CephServiceCoverage/);
+  assert.match(service, /configureCephFs/);
 });
 
 test('Ceph consumer prerequisite gaps create a governed installation request in place', () => {

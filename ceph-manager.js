@@ -82,8 +82,107 @@ const PROVIDER_GUIDE = Object.freeze({
   unsupportedInputs: ['client.admin keyring', 'monitor keyring', 'RGW/object-store credentials', 'Ceph dashboard credentials'],
 });
 
+const CEPH_STORAGE_SERVICES = Object.freeze([
+  {
+    id: 'rbd',
+    name: 'RBD 블록 스토리지',
+    description: 'ReadWriteOnce PVC와 가상 디스크를 제공하는 Ceph RBD 서비스',
+    driverSuffix: 'rbd.csi.ceph.com',
+    providerRequirements: [
+      { id: 'pool', label: 'RBD pool 이름', description: 'Kubernetes 볼륨을 저장할 기존 RBD pool', secret: false },
+      { id: 'user-id', label: '제한된 CephX 사용자 ID', description: 'client.<id> 또는 <id>. RBD pool 범위의 node·provisioner 권한 필요', secret: false },
+      { id: 'user-key', label: 'CephX user key', description: '해당 사용자의 인증 key. Kubernetes Secret에만 저장', secret: true },
+    ],
+  },
+  {
+    id: 'cephfs',
+    name: 'CephFS 공유 파일 스토리지',
+    description: 'ReadWriteMany PVC와 여러 Pod의 공유 파일시스템을 제공하는 CephFS 서비스',
+    driverSuffix: 'cephfs.csi.ceph.com',
+    providerRequirements: [
+      { id: 'filesystem', label: 'CephFS filesystem 이름', description: 'ceph fs ls에 표시되는 파일시스템 이름', secret: false },
+      { id: 'pool', label: 'CephFS data pool 이름', description: 'CSI subvolume을 생성할 CephFS data pool', secret: false },
+      { id: 'provisioner-user-id', label: 'Provisioner CephX 사용자 ID', description: 'subvolume 생성·삭제용 제한 계정. client.<id> 또는 <id>', secret: false },
+      { id: 'provisioner-user-key', label: 'Provisioner user key', description: 'Provisioner 계정의 인증 key. Kubernetes Secret에만 저장', secret: true },
+      { id: 'node-user-id', label: 'Node CephX 사용자 ID', description: 'Kubernetes node의 CephFS mount용 제한 계정. client.<id> 또는 <id>', secret: false },
+      { id: 'node-user-key', label: 'Node user key', description: 'Node 계정의 인증 key. Kubernetes Secret에만 저장', secret: true },
+    ],
+  },
+]);
+
 function providerGuide() {
   return structuredClone(PROVIDER_GUIDE);
+}
+
+function cephStorageServiceDiagnostics(csiDrivers, storageClasses, secretNames) {
+  const driverNames = new Set((csiDrivers || []).map((item) => String(item?.metadata?.name || item || '')));
+  const secrets = new Set(secretNames || []);
+  const classes = Array.isArray(storageClasses) ? storageClasses : [];
+  const services = CEPH_STORAGE_SERVICES.map((profile) => {
+    const driver = [...driverNames].find((name) => name.endsWith(profile.driverSuffix)) || `${NAMESPACE}.${profile.driverSuffix}`;
+    const driverInstalled = driverNames.has(driver);
+    const matchedClasses = classes.filter((item) => String(item?.provisioner || '') === driver);
+    const storageClassDetails = matchedClasses.map((item) => {
+      const parameters = item?.parameters || {};
+      const requiredParameters = profile.id === 'cephfs' ? ['fsName', 'pool'] : ['pool'];
+      const missingParameters = requiredParameters.filter((name) => !String(parameters[name] || '').trim());
+      const secretRefs = [
+        parameters['csi.storage.k8s.io/provisioner-secret-name'],
+        parameters['csi.storage.k8s.io/node-stage-secret-name'],
+      ].map((value) => String(value || '').trim()).filter(Boolean);
+      const missingSecrets = secretRefs.filter((name) => !secrets.has(name));
+      return {
+        name: String(item?.metadata?.name || ''),
+        provisioner: String(item?.provisioner || ''),
+        reclaimPolicy: String(item?.reclaimPolicy || ''),
+        volumeBindingMode: String(item?.volumeBindingMode || ''),
+        pool: String(parameters.pool || ''),
+        filesystem: String(parameters.fsName || ''),
+        missingParameters,
+        missingSecrets,
+        ready: missingParameters.length === 0 && secretRefs.length >= 2 && missingSecrets.length === 0,
+      };
+    });
+    const readyClasses = storageClassDetails.filter((item) => item.ready);
+    const blockers = [];
+    if (!driverInstalled) blockers.push('CSI 드라이버가 설치되지 않았습니다.');
+    if (driverInstalled && !matchedClasses.length) blockers.push('이 드라이버를 사용하는 StorageClass가 없습니다.');
+    for (const item of storageClassDetails) {
+      if (item.missingParameters.length) blockers.push(`StorageClass/${item.name}: ${item.missingParameters.join(', ')} 값이 없습니다.`);
+      if (item.missingSecrets.length) blockers.push(`StorageClass/${item.name}: Secret ${item.missingSecrets.join(', ')}을 찾지 못했습니다.`);
+    }
+    const ready = driverInstalled && readyClasses.length > 0;
+    return {
+      id: profile.id,
+      name: profile.name,
+      description: profile.description,
+      driver,
+      driverInstalled,
+      configured: matchedClasses.length > 0,
+      ready,
+      state: !driverInstalled ? 'NotInstalled' : ready ? 'Ready' : 'NeedsConfiguration',
+      storageClasses: storageClassDetails,
+      blockers,
+      providerRequirements: structuredClone(profile.providerRequirements),
+      nextAction: !driverInstalled
+        ? '서명된 플랫폼 변경으로 CSI 드라이버를 설치하십시오.'
+        : ready
+          ? '새 PVC에서 이 StorageClass를 선택해 사용할 수 있습니다.'
+          : profile.id === 'cephfs'
+            ? 'Ceph 관리자에게 아래 정보를 요청한 뒤 CephFS 구성을 추가하십시오.'
+            : '누락된 pool·CephX 자격 증명과 StorageClass 구성을 보완하십시오.',
+    };
+  });
+  const installed = services.filter((item) => item.driverInstalled);
+  const ready = installed.filter((item) => item.ready);
+  return {
+    scope: 'CSI persistent volume services',
+    installed: installed.length,
+    ready: ready.length,
+    needsConfiguration: installed.length - ready.length,
+    state: installed.length > 0 && installed.length === ready.length ? 'Ready' : 'NeedsConfiguration',
+    services,
+  };
 }
 
 function monitorProtocols(monitorData) {
@@ -334,6 +433,62 @@ function validateConnectionInput(input) {
     ],
     storageClasses: [storageClass],
     ignored: [],
+  };
+}
+
+function validateCephFsInput(input) {
+  const value = requireClosedObject(input, [
+    'filesystem',
+    'pool',
+    'provisionerUserID',
+    'provisionerUserKey',
+    'nodeUserID',
+    'nodeUserKey',
+    'storageClassName',
+  ], 'CephFS 구성 정보');
+  const filesystem = String(value.filesystem || '').trim();
+  const pool = String(value.pool || '').trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(filesystem)) throw error('CephFS filesystem 이름 형식이 올바르지 않습니다.');
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(pool)) throw error('CephFS data pool 이름 형식이 올바르지 않습니다.');
+  const provisioner = normalizeCephClientIdentity(value.provisionerUserID);
+  const node = normalizeCephClientIdentity(value.nodeUserID);
+  const provisionerUserKey = String(value.provisionerUserKey || '').trim();
+  const nodeUserKey = String(value.nodeUserKey || '').trim();
+  if (!/^[A-Za-z0-9+/_=-]{16,1024}$/.test(provisionerUserKey)) throw error('Provisioner user key 형식이 올바르지 않습니다.');
+  if (!/^[A-Za-z0-9+/_=-]{16,1024}$/.test(nodeUserKey)) throw error('Node user key 형식이 올바르지 않습니다.');
+  const storageClassName = safeName(value.storageClassName || 'cephfs', 'CephFS StorageClass 이름');
+  if (storageClassName.length > 240) throw error('CephFS StorageClass 이름은 240자 이하여야 합니다.');
+  return {
+    storageClass: {
+      name: storageClassName,
+      kind: 'StorageClass',
+      data: {
+        fsName: filesystem,
+        pool,
+        'csi.storage.k8s.io/provisioner-secret-name': 'rook-csi-cephfs-provisioner',
+        'csi.storage.k8s.io/controller-expand-secret-name': 'rook-csi-cephfs-provisioner',
+        'csi.storage.k8s.io/node-stage-secret-name': 'rook-csi-cephfs-node',
+      },
+    },
+    secrets: [
+      {
+        name: 'rook-csi-cephfs-provisioner',
+        kind: 'Secret',
+        data: { userID: provisioner.csiUserID, userKey: provisionerUserKey },
+      },
+      {
+        name: 'rook-csi-cephfs-node',
+        kind: 'Secret',
+        data: { userID: node.csiUserID, userKey: nodeUserKey },
+      },
+    ],
+    audit: {
+      filesystem,
+      pool,
+      storageClassName,
+      provisionerEntity: provisioner.cephEntity,
+      nodeEntity: node.cephEntity,
+    },
   };
 }
 
@@ -627,7 +782,7 @@ async function deleteProviderImport(ctx, name) {
 }
 
 function storageClassManifest(item) {
-  const cephfs = item.name === 'cephfs';
+  const cephfs = Boolean(item.data.fsName);
   const provisionerSecret = item.data['csi.storage.k8s.io/provisioner-secret-name'];
   const nodeSecret = item.data['csi.storage.k8s.io/node-stage-secret-name'];
   const parameters = {
@@ -662,7 +817,7 @@ function storageClassManifest(item) {
 }
 
 function snapshotClassManifest(storageClass) {
-  const cephfs = storageClass.name === 'cephfs';
+  const cephfs = Boolean(storageClass.data.fsName);
   const secret = storageClass.data['csi.storage.k8s.io/provisioner-secret-name'];
   return {
     apiVersion: 'snapshot.storage.k8s.io/v1', kind: 'VolumeSnapshotClass',
@@ -760,18 +915,26 @@ async function cephStatus(ctx) {
     return { state: 'Blocked', reason: 'KubernetesUnavailable', checkedAt: new Date().toISOString(), kubernetes: { ready: false }, connection: null, providerGuide: providerGuide(), message: safeError(e) };
   }
 
-  const [metadataConfig, cephCluster, storageClasses, csiDrivers, operator, cluster] = await Promise.all([
+  const [metadataConfig, cephCluster, storageClasses, csiDrivers, cephSecrets, operator, cluster] = await Promise.all([
     optionalKube(ctx, `/api/v1/namespaces/${NAMESPACE}/configmaps/${CONNECTION_CONFIGMAP}`),
     optionalKube(ctx, `/apis/ceph.rook.io/v1/namespaces/${NAMESPACE}/cephclusters/${NAMESPACE}`),
     kube(ctx, 'GET', '/apis/storage.k8s.io/v1/storageclasses'),
     kube(ctx, 'GET', '/apis/storage.k8s.io/v1/csidrivers'),
+    kube(ctx, 'GET', `/api/v1/namespaces/${NAMESPACE}/secrets`),
     helmStatus(ctx, OPERATOR_RELEASE, NAMESPACE, true),
     helmStatus(ctx, CLUSTER_RELEASE, NAMESPACE, true),
   ]);
   const metadata = parseMetadata(metadataConfig);
   const wantedClasses = new Set(metadata?.storageClasses || []);
-  const classes = (storageClasses.items || []).filter((item) => wantedClasses.has(item.metadata?.name)).map((item) => ({ name: item.metadata.name, provisioner: item.provisioner, reclaimPolicy: item.reclaimPolicy }));
-  const drivers = (csiDrivers.items || []).filter((item) => String(item.metadata?.name || '').startsWith(`${NAMESPACE}.`)).map((item) => item.metadata.name);
+  const allClasses = storageClasses.items || [];
+  const classes = allClasses.filter((item) => wantedClasses.has(item.metadata?.name)).map((item) => ({ name: item.metadata.name, provisioner: item.provisioner, reclaimPolicy: item.reclaimPolicy }));
+  const driverItems = (csiDrivers.items || []).filter((item) => String(item.metadata?.name || '').startsWith(`${NAMESPACE}.`));
+  const drivers = driverItems.map((item) => item.metadata.name);
+  const serviceCoverage = cephStorageServiceDiagnostics(
+    driverItems,
+    allClasses,
+    (cephSecrets.items || []).map((item) => item.metadata?.name).filter(Boolean),
+  );
   const conditionReady = (cephCluster?.status?.conditions || []).some((condition) => condition.type === 'Ready' && condition.status === 'True');
   const connected = conditionReady || cephCluster?.status?.state === 'Connected' || cephCluster?.status?.phase === 'Connected';
   let state = 'NotConfigured';
@@ -781,7 +944,10 @@ async function cephStatus(ctx) {
     state = 'Blocked'; reason = 'KubernetesNotReady'; message = `Kubernetes 노드 ${kubernetes.readyNodes}/${kubernetes.nodes} Ready`;
   } else if (metadata) {
     if (connected && drivers.length && classes.length === wantedClasses.size) {
-      state = 'Ready'; reason = 'ExternalCephConnected'; message = `외부 Ceph과 CSI StorageClass ${classes.length}개가 Ready입니다.`;
+      state = 'Ready'; reason = 'ExternalCephConnected';
+      message = serviceCoverage.state === 'Ready'
+        ? `외부 Ceph과 설치된 CSI 스토리지 ${serviceCoverage.ready}/${serviceCoverage.installed}종이 사용 가능하도록 구성되었습니다.`
+        : `외부 Ceph 연결은 정상이며 CSI 스토리지 ${serviceCoverage.ready}/${serviceCoverage.installed}종이 구성되었습니다. 미구성 서비스를 확인하십시오.`;
     } else {
       state = 'Degraded'; reason = 'ExternalCephNotReady'; message = '외부 Ceph 연결 리소스가 존재하지만 CephCluster/CSI가 아직 Ready가 아닙니다.';
     }
@@ -797,7 +963,7 @@ async function cephStatus(ctx) {
       chartVersion: metadata.chartVersion,
     } : null,
     rook: { operator, cluster, cephCluster: cephCluster ? { state: cephCluster.status?.state || cephCluster.status?.phase || 'Unknown', health: cephCluster.status?.ceph?.health || 'Unknown' } : null },
-    csi: { drivers, storageClasses: classes },
+    csi: { drivers, storageClasses: classes, serviceCoverage },
   };
 }
 
@@ -900,6 +1066,54 @@ async function installConnection(ctx, connection, actor) {
     status = await cephStatus(ctx);
   }
   return status;
+}
+
+async function configureCephFsService(ctx, configuration, actor) {
+  const metadataConfig = await optionalKube(ctx, `/api/v1/namespaces/${NAMESPACE}/configmaps/${CONNECTION_CONFIGMAP}`);
+  const metadata = parseMetadata(metadataConfig);
+  if (!metadata) throw error('먼저 외부 Ceph 연결을 완료해야 CephFS 서비스를 추가할 수 있습니다.', 409);
+  const driverName = `${NAMESPACE}.cephfs.csi.ceph.com`;
+  if (!await optionalKube(ctx, `/apis/storage.k8s.io/v1/csidrivers/${encodeURIComponent(driverName)}`)) {
+    throw error(`CSIDriver/${driverName}가 설치되어 있지 않습니다.`, 409);
+  }
+  const validated = validateCephFsInput(configuration);
+  const existingClass = await optionalKube(ctx, `/apis/storage.k8s.io/v1/storageclasses/${encodeURIComponent(validated.storageClass.name)}`);
+  if (existingClass && existingClass.provisioner !== driverName) {
+    throw error(`StorageClass/${validated.storageClass.name}가 다른 provisioner에서 사용 중입니다.`, 409);
+  }
+  for (const item of validated.secrets) {
+    await upsert(ctx, `/api/v1/namespaces/${NAMESPACE}/secrets`, item.name, secretManifest(item));
+  }
+  await upsert(
+    ctx,
+    '/apis/storage.k8s.io/v1/storageclasses',
+    validated.storageClass.name,
+    storageClassManifest(validated.storageClass),
+  );
+  const snapshotClasses = new Set(metadata.snapshotClasses || []);
+  if (await snapshotApiAvailable(ctx)) {
+    const snapshot = snapshotClassManifest(validated.storageClass);
+    await upsert(ctx, '/apis/snapshot.storage.k8s.io/v1/volumesnapshotclasses', snapshot.metadata.name, snapshot);
+    snapshotClasses.add(snapshot.metadata.name);
+  }
+  const nextMetadata = {
+    ...metadata,
+    storageClasses: [...new Set([...(metadata.storageClasses || []), validated.storageClass.name])],
+    snapshotClasses: [...snapshotClasses],
+    secretRefs: [...new Set([
+      ...(metadata.secretRefs || []),
+      ...validated.secrets.map((item) => `${NAMESPACE}/${item.name}`),
+    ])],
+    updatedBy: actor.username,
+    updatedAt: new Date().toISOString(),
+  };
+  await upsert(ctx, `/api/v1/namespaces/${NAMESPACE}/configmaps`, CONNECTION_CONFIGMAP, {
+    apiVersion: 'v1',
+    kind: 'ConfigMap',
+    metadata: { name: CONNECTION_CONFIGMAP, namespace: NAMESPACE, labels: MANAGED_LABELS },
+    data: { connection: JSON.stringify(nextMetadata) },
+  });
+  return { status: await cephStatus(ctx), configuration: validated.audit };
 }
 
 async function usageFor(ctx, storageClassNames) {
@@ -1263,6 +1477,32 @@ function createCephManager(ctx) {
           return true;
         } finally { activeOperations.delete('external'); }
       }
+      if (req.method === 'POST' && pathname === '/api/ceph/services/cephfs') {
+        const actor = await actorForOaaOwner(ctx, req, true);
+        const body = requireClosedObject(await readJson(req), ['configuration', 'confirm', 'reason'], 'request');
+        if (String(body.confirm || '') !== 'configure CephFS storage service') {
+          throw error("CephFS 구성 확인 값으로 'configure CephFS storage service'를 입력해야 합니다.");
+        }
+        const reason = reasonFrom(body);
+        const validated = validateCephFsInput(body.configuration);
+        if (activeOperations.has('cephfs')) throw error('CephFS 구성 작업이 이미 진행 중입니다.', 409);
+        activeOperations.add('cephfs');
+        try {
+          await auditRequired(ctx, actor, 'CephFsServiceConfigurationRequested', reason, validated.audit);
+          const result = await configureCephFsService(ctx, body.configuration, actor);
+          const service = result.status.csi?.serviceCoverage?.services?.find((item) => item.id === 'cephfs');
+          const ready = service?.ready === true;
+          await ctx.publishNotify({
+            userActor: actor.username,
+            action: 'CephFsServiceConfigured',
+            target: `StorageClass/${validated.audit.storageClassName}`,
+            result: ready ? 'Ready' : 'NeedsConfiguration',
+            reason: `${reason} · filesystem=${validated.audit.filesystem} pool=${validated.audit.pool}`,
+          });
+          ctx.jsonRes(res, ready ? 200 : 502, { ok: ready, ...result });
+          return true;
+        } finally { activeOperations.delete('cephfs'); }
+      }
       if (req.method === 'POST' && pathname === '/api/ceph/oaa/disconnect') {
         const actor = await actorForOaaOwner(ctx, req, true);
         const body = requireClosedObject(await readJson(req), ['confirm', 'reason'], 'request');
@@ -1341,6 +1581,8 @@ module.exports = {
   createCephManager,
   validateProviderExport,
   validateConnectionInput,
+  validateCephFsInput,
+  cephStorageServiceDiagnostics,
   planFor,
   storageClassManifest,
   snapshotClassManifest,

@@ -53,6 +53,7 @@ export interface CephStatus {
   csi?: {
     drivers: string[];
     storageClasses: Array<{ name: string; provisioner: string; reclaimPolicy: string }>;
+    serviceCoverage?: CephServiceCoverage;
   };
   ownerPrerequisites?: {
     ready: boolean;
@@ -65,6 +66,50 @@ export interface CephStatus {
     policy?: { operatorOwner: string; runtimeOwner: string; importTransport: string };
     installationRequest?: CephPrerequisiteRequest | null;
   };
+}
+
+export interface CephStorageService {
+  id: 'rbd' | 'cephfs';
+  name: string;
+  description: string;
+  driver: string;
+  driverInstalled: boolean;
+  configured: boolean;
+  ready: boolean;
+  state: 'Ready' | 'NeedsConfiguration' | 'NotInstalled';
+  storageClasses: Array<{
+    name: string;
+    provisioner: string;
+    reclaimPolicy: string;
+    volumeBindingMode: string;
+    pool: string;
+    filesystem: string;
+    missingParameters: string[];
+    missingSecrets: string[];
+    ready: boolean;
+  }>;
+  blockers: string[];
+  providerRequirements: Array<{ id: string; label: string; description: string; secret: boolean }>;
+  nextAction: string;
+}
+
+export interface CephServiceCoverage {
+  scope: string;
+  installed: number;
+  ready: number;
+  needsConfiguration: number;
+  state: 'Ready' | 'NeedsConfiguration';
+  services: CephStorageService[];
+}
+
+export interface CephFsConfigurationInput {
+  filesystem: string;
+  pool: string;
+  provisionerUserID: string;
+  provisionerUserKey: string;
+  nodeUserID: string;
+  nodeUserKey: string;
+  storageClassName: string;
 }
 
 export interface CephPlan {
@@ -244,6 +289,13 @@ export class CephService {
   connectImport(importRef: string, reason: string): Observable<{ ok: boolean; status: CephStatus }> {
     const confirm = `connect Ceph external storage using ${importRef}`;
     return this.http.post<{ ok: boolean; status: CephStatus }>(this.url('oaa/connect'), { importRef, reason, confirm });
+  }
+  configureCephFs(configuration: CephFsConfigurationInput, reason: string): Observable<{ ok: boolean; status: CephStatus }> {
+    return this.http.post<{ ok: boolean; status: CephStatus }>(this.url('services/cephfs'), {
+      configuration,
+      reason,
+      confirm: 'configure CephFS storage service',
+    });
   }
   disconnect(reason: string): Observable<{ ok: boolean; retained: string[]; removed: string[] }> {
     const confirm = 'disconnect Ceph external storage';

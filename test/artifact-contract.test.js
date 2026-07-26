@@ -11,6 +11,7 @@ test('production build closes the browser module graph before packaging', () => 
   const verifier = readFileSync(resolve(root, 'tools/verify-artifacts.mjs'), 'utf8');
 
   assert.match(pkg.scripts.build, /tools\/bundle-app\.mjs/);
+  assert.match(dockerfile, /COPY tools\/bundle-app\.mjs \.\/tools\/bundle-app\.mjs/);
   assert.match(dockerfile, /RUN npm run build/);
   assert.match(dockerfile, new RegExp(`org\\.opencontainers\\.image\\.version="${pkg.version}"`));
   const descriptor = JSON.parse(readFileSync(resolve(root, 'module-package.json'), 'utf8'));

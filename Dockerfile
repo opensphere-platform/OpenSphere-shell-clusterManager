@@ -8,6 +8,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm install --no-audit --no-fund
 COPY angular.json tsconfig.json tsconfig.app.json ./
+COPY tools/bundle-app.mjs ./tools/bundle-app.mjs
 COPY src ./src
 RUN npm run build
 

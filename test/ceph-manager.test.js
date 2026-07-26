@@ -258,6 +258,9 @@ test('Ceph UI reports every installed storage service and provides actionable pr
   assert.match(component, /activeTab\(\) === 'services'/);
   assert.match(component, /스토리지 서비스/);
   assert.match(component, /align-items: stretch/);
+  assert.match(component, /--ceph-body-font-size: 0\.72rem/);
+  assert.match(component, /\.cm-ceph-summary \{[^}]*font-size: var\(--ceph-body-font-size\)/);
+  assert.match(component, /\.dependency, \.connection-card, \.empty-state, \.readiness-board, \.service-coverage \{[^}]*font-size: var\(--ceph-body-font-size\)/);
   assert.match(component, /storage-service-header/);
   assert.doesNotMatch(component, /class="service-card-head"/);
   assert.doesNotMatch(component, /class="coverage-badge"/);

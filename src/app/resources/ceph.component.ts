@@ -631,7 +631,10 @@ import { CephInsightsComponent } from './ceph-insights.component';
     </clr-modal>
   `,
   styles: [`
-    :host { display: block; }
+    :host {
+      display: block;
+      --ceph-body-font-size: 0.72rem;
+    }
     .cm-ceph-page-head {
       box-sizing: border-box;
       display: flex;
@@ -653,7 +656,7 @@ import { CephInsightsComponent } from './ceph-insights.component';
     .cm-ceph-title__logo { display: grid; width: 3rem; height: 3rem; flex: 0 0 3rem; place-items: center; border: 1px solid #d7e1e7; border-radius: 50%; background: #fff; box-shadow: 0 0.2rem 0.7rem rgb(31 95 141 / 12%); }
     .cm-ceph-title__logo img { display: block; max-width: 2.25rem; max-height: 2.25rem; object-fit: contain; }
     .cm-ceph-page-head h1 { margin: 0.15rem 0 0.35rem; color: #2d4048; font-size: 1.45rem; font-weight: 400; line-height: 1.25; }
-    .cm-ceph-summary { margin: 0; max-width: 63rem; color: #565656; line-height: 1.5; }
+    .cm-ceph-summary { margin: 0; max-width: 63rem; color: #565656; font-size: var(--ceph-body-font-size); line-height: 1.5; }
     .cm-ceph-eyebrow { margin: 0; color: #4c6fff; font-size: 0.65rem; font-weight: 600; line-height: 1.5; letter-spacing: 0.06em; text-transform: uppercase; }
     .cm-ceph-page-head__actions { display: flex; gap: 0.35rem; flex: 0 0 auto; }
     .cm-ceph-tabs { display: flex; gap: 0; margin: 0 0 0.9rem; border-bottom: 1px solid #b8c4ca; }
@@ -664,7 +667,13 @@ import { CephInsightsComponent } from './ceph-insights.component';
     .tab-status { padding: 0.08rem 0.4rem; border-radius: 0.8rem; background: #dff0d4; color: #266900; font-size: 0.58rem; }
     .tab-status.warn { background: #fff0c2; color: #6b4d00; }
     .insights-placeholder { display: grid; min-height: 16rem; place-items: center; border: 1px dashed #9babb4; background: #f4f7f8; color: #51636d; }
-    .dependency, .connection-card, .empty-state, .readiness-board, .service-coverage { border: 1px solid #d8d8d8; background: #fff; padding: 0.85rem 1rem; margin-bottom: 0.8rem; }
+    .dependency, .connection-card, .empty-state, .readiness-board, .service-coverage {
+      border: 1px solid #d8d8d8;
+      background: #fff;
+      padding: 0.85rem 1rem;
+      margin-bottom: 0.8rem;
+      font-size: var(--ceph-body-font-size);
+    }
     .dependency-title { display: grid; grid-template-columns: 1.6rem 2.1rem minmax(0, 1fr) auto; gap: 0.6rem; align-items: center; }
     .dependency-logo { display: block; width: 1.8rem; height: 1.8rem; object-fit: contain; }
     .dependency-title > div { display: flex; flex-direction: column; gap: 0.12rem; }
@@ -783,6 +792,7 @@ import { CephInsightsComponent } from './ceph-insights.component';
     .wizard-progress li { padding: 0.45rem 0.5rem; border-bottom: 3px solid #d8d8d8; color: #6f6f6f; font-size: 0.68rem; }
     .wizard-progress li.active { border-color: #4c6fff; color: #1b2a32; font-weight: 600; }
     .wizard-feedback { margin: 0 0 0.8rem; }
+    .wizard-step { font-size: var(--ceph-body-font-size); }
     .wizard-step h4 { margin-top: 0; }
     .connection-complete { min-height: 15rem; }
     .connection-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 1rem; align-items: start; }

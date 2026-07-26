@@ -16,7 +16,6 @@ import {
 type HisLifecycleAction = 'install' | 'upgrade' | 'recover' | 'blocked';
 type HisMutationAction = 'install' | 'upgrade' | 'recover' | 'rollback' | 'uninstall';
 type ObservabilityConfigurationMode = 'install' | 'operate';
-type ObservabilityActionId = 'plan' | 'install' | 'configure' | 'validate' | 'rollback' | 'delete';
 
 @Component({
   selector: 'app-his',
@@ -225,22 +224,59 @@ type ObservabilityActionId = 'plan' | 'install' | 'configure' | 'validate' | 'ro
         </span>
       </h3>
       <div class="modal-body lifecycle-workspace" *ngIf="observabilityTarget() as item">
-        <section class="observability-summary-bar" aria-label="Shared Observability 대상과 현재 상태">
-          <div class="observability-summary-copy">
-            <p class="eyebrow">TARGET STACK</p>
-            <div class="observability-summary-title-row">
-              <h4>{{ item.chartName }}</h4>
-            <span class="label" [class.label-success]="item.check.state === 'Ready'" [class.label-danger]="item.check.state === 'Blocked'" [class.label-warning]="item.check.state === 'Degraded'">{{ item.check.state }}</span>
+        <section class="observability-quick-card" [class.is-ready]="observabilityInstallReady(item) || item.check.state === 'Ready'" aria-labelledby="observability-quick-title">
+          <div class="quick-card-copy">
+            <p class="eyebrow">{{ item.release?.managed ? 'CURRENT SERVICE' : 'QUICK INSTALL' }}</p>
+            <div class="quick-card-title">
+              <h4 id="observability-quick-title">{{ item.release?.managed ? 'Shared Observability 운영 중' : '권장 설정으로 한 번에 설치' }}</h4>
+              <span class="label" [class.label-success]="item.check.state === 'Ready'" [class.label-danger]="item.check.state === 'Blocked'" [class.label-warning]="item.check.state === 'Degraded'">{{ releaseStateLabel(item) }}</span>
             </div>
-            <p>Prometheus 수집과 Grafana 시각화를 <code>{{ item.namespace }}</code> namespace의 하나의 관리 revision으로 운영합니다.</p>
+            <p>{{ item.release?.managed
+              ? 'Prometheus 수집과 Grafana 시각화의 현재 상태를 확인하고 필요한 운영 작업만 선택합니다.'
+              : 'OpenSphere가 Chart, namespace, 내부 노출 정책과 사용 가능한 CSI 저장소를 권장값으로 구성합니다.' }}</p>
+            <dl class="quick-facts">
+              <div><dt>Chart</dt><dd>{{ item.chartName }} {{ observabilityChartVersion }}</dd></div>
+              <div><dt>Namespace</dt><dd><code>{{ item.namespace }}</code></dd></div>
+              <div><dt>Storage</dt><dd>{{ quickStorageSummary() }}</dd></div>
+              <div *ngIf="item.release?.managed"><dt>Helm revision</dt><dd>{{ item.release.revision }}</dd></div>
+            </dl>
           </div>
-          <dl class="lifecycle-meta">
-            <dt>설치 상태</dt><dd>{{ releaseStateLabel(item) }}</dd>
-            <dt>Namespace</dt><dd><code>{{ item.namespace }}</code></dd>
-            <ng-container *ngIf="item.release?.managed"><dt>Helm revision</dt><dd>{{ item.release.revision }}</dd></ng-container>
-          </dl>
+          <div class="quick-card-readiness" role="status" aria-live="polite">
+            <ng-container *ngIf="configurationLoading() || configurationPlanning(); else quickReadinessResolved">
+              <span class="spinner spinner-sm" aria-hidden="true"></span>
+              <div><strong>설치 조건 확인 중</strong><p>클러스터 권한과 저장소를 자동으로 점검하고 있습니다.</p></div>
+            </ng-container>
+            <ng-template #quickReadinessResolved>
+              <ng-container *ngIf="observabilityBlockingIssues(item) as issues">
+                <ng-container *ngIf="!issues.length; else quickBlocked">
+                  <cds-icon shape="check-circle" status="success" size="28" aria-hidden="true"></cds-icon>
+                  <div><strong>{{ item.release?.managed ? '서비스 정상' : '설치 준비 완료' }}</strong><p>{{ item.release?.managed ? '필요할 때 구성 변경이나 실검증을 실행할 수 있습니다.' : '빠른 설치 요청을 제출할 수 있습니다.' }}</p></div>
+                </ng-container>
+                <ng-template #quickBlocked>
+                  <cds-icon shape="warning-standard" status="warning" size="28" aria-hidden="true"></cds-icon>
+                  <div>
+                    <strong>준비할 항목 {{ issues.length }}개</strong>
+                    <ul><li *ngFor="let issue of issues">{{ issue }}</li></ul>
+                  </div>
+                </ng-template>
+              </ng-container>
+            </ng-template>
+          </div>
+        </section>
+
+        <clr-alert *ngIf="error()" [clrAlertType]="'danger'" [clrAlertClosable]="false">
+          <clr-alert-item><span class="alert-text">{{ error() }}</span></clr-alert-item>
+        </clr-alert>
+
+        <section class="observability-advanced" *ngIf="observabilityAdvancedOpen && observabilityConfig() as config">
+          <div class="section-heading">
+            <div><p class="eyebrow">ADVANCED SETTINGS</p><h4>{{ item.release?.managed ? '현재 운영 구성' : '설치 세부 설정' }}</h4></div>
+            <button class="btn btn-sm btn-outline" type="button" [disabled]="configurationLoading() || operationActive(item.operation)" (click)="openObservabilityConfiguration(item.release?.managed ? 'operate' : 'install')">
+              {{ item.release?.managed ? '구성 변경' : '전체 옵션 편집' }}
+            </button>
+          </div>
           <clr-input-container>
-            <label>대상 Chart version</label>
+            <label>Chart version</label>
             <input
               clrInput
               name="observabilityChartVersion"
@@ -253,74 +289,9 @@ type ObservabilityActionId = 'plan' | 'install' | 'configure' | 'validate' | 'ro
             <datalist id="observability-chart-versions">
               <option *ngFor="let version of item.availableChartVersions" [value]="version"></option>
             </datalist>
-            <clr-control-helper *ngIf="chartVersionSupported(item)">서명된 release에 포함된 버전만 실행됩니다.</clr-control-helper>
+            <clr-control-helper *ngIf="chartVersionSupported(item)">서명된 release에 포함된 버전입니다.</clr-control-helper>
             <clr-control-error *ngIf="!chartVersionSupported(item)">허용 버전: {{ (item.availableChartVersions || []).join(', ') }}</clr-control-error>
           </clr-input-container>
-        </section>
-
-        <section class="observability-work-model" aria-labelledby="observability-work-model-title">
-          <div class="work-model-current">
-            <p class="eyebrow">CURRENT STATE</p>
-            <h4 id="observability-work-model-title">{{ releaseStateLabel(item) }}</h4>
-            <p>{{ observabilityCurrentStateMessage(item) }}</p>
-          </div>
-          <div class="work-model-catalog">
-            <div class="work-model-heading">
-              <div><p class="eyebrow">AVAILABLE OPERATIONS</p><h4>상태에 따라 선택하는 작업</h4></div>
-              <span>아래 작업은 순차 단계가 아닙니다.</span>
-            </div>
-            <div class="operation-group-grid">
-              <article *ngFor="let group of observabilityActionGroups">
-                <div class="operation-group-copy">
-                  <strong>{{ group.label }}</strong>
-                  <span>{{ group.description }}</span>
-                </div>
-                <div class="operation-choice-list">
-                  <span *ngFor="let operation of group.operations" [attr.data-state]="observabilityActionTone(operation.id, item)">
-                    <strong>{{ operation.label }}</strong>
-                    <small>{{ observabilityActionState(operation.id, item) }}</small>
-                  </span>
-                </div>
-              </article>
-            </div>
-          </div>
-        </section>
-
-        <clr-alert *ngIf="error()" [clrAlertType]="'danger'" [clrAlertClosable]="false">
-          <clr-alert-item><span class="alert-text">{{ error() }}</span></clr-alert-item>
-        </clr-alert>
-
-        <section class="lifecycle-section lifecycle-readiness-section">
-          <div class="section-heading">
-            <div><p class="eyebrow">READINESS</p><h4>설치 전 필수 조건</h4></div>
-            <span>차단 조건을 모두 해소해야 설치를 실행할 수 있습니다.</span>
-          </div>
-          <div class="readiness-alerts">
-            <clr-alert [clrAlertType]="observabilityOwnerReady(item) ? 'success' : 'danger'" [clrAlertClosable]="false">
-              <clr-alert-item><span class="alert-text">
-                <strong>HISS 실행 권한 · {{ observabilityOwnerReady(item) ? 'Ready' : 'Blocked' }}</strong><br>
-                {{ observabilityOwnerReady(item) ? '고정 owner 권한으로 Helm release를 조회할 수 있습니다.' : '서명된 HISS runtime owner RBAC를 먼저 적용해야 합니다. 상태 변경 관리에서 hiss-runtime-owner.yaml 적용을 승인한 뒤 다시 검사하십시오.' }}
-              </span></clr-alert-item>
-            </clr-alert>
-            <clr-alert [clrAlertType]="storageReadiness() === 'Ready' ? 'success' : 'warning'" [clrAlertClosable]="false">
-              <clr-alert-item><span class="alert-text"><strong>CSI 영구 저장소 · {{ storageReadiness() }}</strong><br>{{ storageReadinessMessage() }}</span></clr-alert-item>
-            </clr-alert>
-            <clr-alert [clrAlertType]="'info'" [clrAlertClosable]="false">
-              <clr-alert-item><span class="alert-text"><strong>공급망 고정</strong><br>{{ item.chartName }} {{ observabilityChartVersion }}와 구성요소 image가 HISS release에 고정됩니다.</span></clr-alert-item>
-            </clr-alert>
-            <clr-alert [clrAlertType]="'info'" [clrAlertClosable]="false">
-              <clr-alert-item><span class="alert-text"><strong>기본 노출 정책</strong><br>Prometheus·Alertmanager는 ClusterIP 전용이며 Grafana 외부 공개는 TLS·OIDC·승인 조건이 필요합니다.</span></clr-alert-item>
-            </clr-alert>
-          </div>
-        </section>
-
-        <section class="lifecycle-section lifecycle-plan-section" *ngIf="observabilityConfig() as config">
-          <div class="section-heading">
-            <div><p class="eyebrow">PLAN</p><h4>{{ item.release?.managed ? '현재 운영 구성' : '초기 설치 옵션' }}</h4></div>
-            <button class="btn btn-sm btn-outline" type="button" [disabled]="configurationLoading() || operationActive(item.operation)" (click)="openObservabilityConfiguration(item.release?.managed ? 'operate' : 'install')">
-              {{ item.release?.managed ? '구성 변경 계획' : '설치 옵션 편집' }}
-            </button>
-          </div>
           <clr-alert *ngIf="observabilityState()?.live?.accessIssues?.length" [clrAlertType]="'warning'" [clrAlertClosable]="false">
             <clr-alert-item><span class="alert-text">
               <strong>일부 운영 상태는 권한 승인 후 확인됩니다.</strong>
@@ -359,7 +330,7 @@ type ObservabilityActionId = 'plan' | 'install' | 'configure' | 'validate' | 'ro
           </form>
           <ng-container *ngIf="observabilityPlan() as configPlan">
             <clr-alert *ngIf="configPlan.blockers.length" [clrAlertType]="'danger'" [clrAlertClosable]="false">
-              <clr-alert-item><span class="alert-text"><strong>계획 차단</strong><ul><li *ngFor="let blocker of configPlan.blockers">{{ blocker }}</li></ul></span></clr-alert-item>
+              <clr-alert-item><span class="alert-text"><strong>설치 전 해결 필요</strong><ul><li *ngFor="let blocker of configPlan.blockers">{{ blocker }}</li></ul></span></clr-alert-item>
             </clr-alert>
             <clr-alert *ngIf="configPlan.warnings.length" [clrAlertType]="'warning'" [clrAlertClosable]="false">
               <clr-alert-item><span class="alert-text"><strong>운영 주의</strong><ul><li *ngFor="let warning of configPlan.warnings">{{ warning }}</li></ul></span></clr-alert-item>
@@ -415,9 +386,11 @@ type ObservabilityActionId = 'plan' | 'install' | 'configure' | 'validate' | 'ro
       </div>
       <div class="modal-footer" *ngIf="observabilityTarget() as item">
         <button class="btn btn-outline" type="button" [disabled]="busy() || configurationBusy()" (click)="observabilityLifecycleModalOpen = false">닫기</button>
-        <button class="btn btn-outline" type="button" [disabled]="busy() || operationActive(item.operation) || releaseLifecycle(item) === 'blocked' || !chartVersionSupported(item)" (click)="openPlanFromObservability(item, planAction(item))">렌더링 계획</button>
-        <button *ngIf="releaseLifecycle(item) === 'install'" class="btn btn-primary" type="button" [disabled]="!observabilityInstallReady(item)" (click)="openPlanFromObservability(item, 'install', true)">설치</button>
-        <button *ngIf="releaseLifecycle(item) === 'upgrade'" class="btn btn-primary" type="button" [disabled]="busy() || operationActive(item.operation)" (click)="openPlanFromObservability(item, 'upgrade', true)">업그레이드</button>
+        <button class="btn btn-outline" type="button" [disabled]="configurationLoading()" (click)="observabilityAdvancedOpen = !observabilityAdvancedOpen">
+          {{ observabilityAdvancedOpen ? '간단히 보기' : '고급 설정' }}
+        </button>
+        <button *ngIf="releaseLifecycle(item) === 'install'" class="btn btn-primary" type="button" [disabled]="!observabilityInstallReady(item)" (click)="openPlanFromObservability(item, 'install', true)">빠른 설치 요청</button>
+        <button *ngIf="releaseLifecycle(item) === 'upgrade'" class="btn btn-primary" type="button" [disabled]="busy() || operationActive(item.operation)" (click)="openPlanFromObservability(item, 'upgrade', true)">업그레이드 요청</button>
         <button *ngIf="releaseLifecycle(item) === 'recover'" class="btn btn-warning-outline" type="button" [disabled]="busy() || operationActive(item.operation)" (click)="openPlanFromObservability(item, 'recover', true)">복구</button>
         <clr-dropdown *ngIf="item.release?.managed">
           <button clrDropdownTrigger class="btn btn-outline" type="button">추가 작업</button>
@@ -439,35 +412,62 @@ type ObservabilityActionId = 'plan' | 'install' | 'configure' | 'validate' | 'ro
         </clr-alert>
         <clr-spinner *ngIf="planLoading()" clrInline aria-label="계획을 불러오는 중"></clr-spinner>
         <div *ngIf="plan() as p">
-          <dl class="plan-meta">
-            <dt>Release</dt><dd>{{ p.release }}</dd>
-            <dt>Chart version</dt><dd>{{ p.chartVersion }}</dd>
-            <dt>Namespace</dt><dd>{{ p.namespace }}</dd>
-            <dt>Cluster profile</dt><dd>{{ p.clusterVariant }}</dd>
-            <dt>Rendered resources</dt><dd>{{ p.resources.length }}</dd>
-            <dt>Workloads / Services</dt><dd>{{ p.summary.workloads }} / {{ p.summary.services }}</dd>
-            <dt>CRD / PVC</dt><dd>{{ p.summary.customResourceDefinitions }} / {{ p.summary.persistentVolumeClaims }}</dd>
-          </dl>
-          <div class="profile-card" *ngIf="p.operationalProfile as profile">
-            <strong>설치 서비스</strong><span>{{ profile.components.join(', ') }}</span>
-            <strong>영구 저장소</strong><span>{{ profile.storage.join(', ') }}</span>
-            <strong>보존 정책</strong><span>{{ profile.retention.join(', ') }}</span>
-            <strong>접근 방식</strong><span>{{ profile.exposure }}</span>
-          </div>
-          <clr-datagrid class="storage-plan" *ngIf="p.storagePlan?.length">
-            <clr-dg-column>구성요소</clr-dg-column><clr-dg-column>StorageClass</clr-dg-column>
-            <clr-dg-column>용량</clr-dg-column><clr-dg-column>보존기간</clr-dg-column>
-            <clr-dg-row *ngFor="let storage of p.storagePlan">
-              <clr-dg-cell>{{ storage.component }}</clr-dg-cell>
-              <clr-dg-cell><strong>{{ storage.storageClassName }}</strong></clr-dg-cell>
-              <clr-dg-cell>{{ storage.storageSize }}</clr-dg-cell>
-              <clr-dg-cell>{{ storage.retention }}</clr-dg-cell>
-            </clr-dg-row>
-          </clr-datagrid>
-          <div class="resource-list" *ngIf="action() === 'install'">
-            <div *ngFor="let r of p.resources | slice:0:40"><code>{{ r.kind }}/{{ r.name }}</code><span>{{ r.namespace }}</span></div>
-            <p class="muted" *ngIf="p.resources.length > 40">외 {{ p.resources.length - 40 }}개</p>
-          </div>
+          <ng-container *ngIf="quickInstallRequest(item); else fullPlan">
+            <clr-alert [clrAlertType]="'info'" [clrAlertClosable]="false">
+              <clr-alert-item><span class="alert-text">
+                승인되면 OpenSphere가 권장값으로 설치하고 진행 상태와 결과를 이 화면에 기록합니다.
+              </span></clr-alert-item>
+            </clr-alert>
+            <dl class="quick-confirmation">
+              <div><dt>설치 항목</dt><dd>Prometheus · Grafana · Alertmanager</dd></div>
+              <div><dt>Chart</dt><dd>{{ p.chart }} {{ p.chartVersion }}</dd></div>
+              <div><dt>Namespace</dt><dd><code>{{ p.namespace }}</code></dd></div>
+              <div><dt>영구 저장소</dt><dd>{{ quickStorageSummary() }}</dd></div>
+            </dl>
+            <details class="technical-plan">
+              <summary>기술 계획 보기</summary>
+              <dl class="plan-meta">
+                <dt>Rendered resources</dt><dd>{{ p.resources.length }}</dd>
+                <dt>Workloads / Services</dt><dd>{{ p.summary.workloads }} / {{ p.summary.services }}</dd>
+                <dt>CRD / PVC</dt><dd>{{ p.summary.customResourceDefinitions }} / {{ p.summary.persistentVolumeClaims }}</dd>
+              </dl>
+              <div class="resource-list">
+                <div *ngFor="let r of p.resources | slice:0:40"><code>{{ r.kind }}/{{ r.name }}</code><span>{{ r.namespace }}</span></div>
+                <p class="muted" *ngIf="p.resources.length > 40">외 {{ p.resources.length - 40 }}개</p>
+              </div>
+            </details>
+          </ng-container>
+          <ng-template #fullPlan>
+            <dl class="plan-meta">
+              <dt>Release</dt><dd>{{ p.release }}</dd>
+              <dt>Chart version</dt><dd>{{ p.chartVersion }}</dd>
+              <dt>Namespace</dt><dd>{{ p.namespace }}</dd>
+              <dt>Cluster profile</dt><dd>{{ p.clusterVariant }}</dd>
+              <dt>Rendered resources</dt><dd>{{ p.resources.length }}</dd>
+              <dt>Workloads / Services</dt><dd>{{ p.summary.workloads }} / {{ p.summary.services }}</dd>
+              <dt>CRD / PVC</dt><dd>{{ p.summary.customResourceDefinitions }} / {{ p.summary.persistentVolumeClaims }}</dd>
+            </dl>
+            <div class="profile-card" *ngIf="p.operationalProfile as profile">
+              <strong>설치 서비스</strong><span>{{ profile.components.join(', ') }}</span>
+              <strong>영구 저장소</strong><span>{{ profile.storage.join(', ') }}</span>
+              <strong>보존 정책</strong><span>{{ profile.retention.join(', ') }}</span>
+              <strong>접근 방식</strong><span>{{ profile.exposure }}</span>
+            </div>
+            <clr-datagrid class="storage-plan" *ngIf="p.storagePlan?.length">
+              <clr-dg-column>구성요소</clr-dg-column><clr-dg-column>StorageClass</clr-dg-column>
+              <clr-dg-column>용량</clr-dg-column><clr-dg-column>보존기간</clr-dg-column>
+              <clr-dg-row *ngFor="let storage of p.storagePlan">
+                <clr-dg-cell>{{ storage.component }}</clr-dg-cell>
+                <clr-dg-cell><strong>{{ storage.storageClassName }}</strong></clr-dg-cell>
+                <clr-dg-cell>{{ storage.storageSize }}</clr-dg-cell>
+                <clr-dg-cell>{{ storage.retention }}</clr-dg-cell>
+              </clr-dg-row>
+            </clr-datagrid>
+            <div class="resource-list" *ngIf="action() === 'install'">
+              <div *ngFor="let r of p.resources | slice:0:40"><code>{{ r.kind }}/{{ r.name }}</code><span>{{ r.namespace }}</span></div>
+              <p class="muted" *ngIf="p.resources.length > 40">외 {{ p.resources.length - 40 }}개</p>
+            </div>
+          </ng-template>
           <clr-alert *ngIf="action() === 'uninstall' && p.retainedOnDelete.length"
                      [clrAlertType]="'warning'" [clrAlertClosable]="false">
             <clr-alert-item><span class="alert-text">삭제 후 보존: {{ p.retainedOnDelete.join(', ') }}</span></clr-alert-item>
@@ -793,6 +793,14 @@ type ObservabilityActionId = 'plan' | 'install' | 'configure' | 'validate' | 'ro
     .plan-meta { display: grid; grid-template-columns: 9rem 1fr; gap: 0.35rem 0.8rem; margin: 0.8rem 0; }
     .plan-meta dt { font-weight: 600; }
     .plan-meta dd { margin: 0; }
+    .quick-confirmation { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--os-2) var(--os-6); margin: var(--os-5) 0; }
+    .quick-confirmation > div { display: grid; grid-template-columns: 7rem 1fr; gap: var(--os-3); padding: var(--os-3) 0; border-bottom: 1px solid var(--os-hairline); }
+    .quick-confirmation dt { color: var(--os-ink-muted); }
+    .quick-confirmation dd { margin: 0; font-weight: 600; }
+    .technical-plan { margin: var(--os-4) 0; border: 1px solid var(--os-hairline); }
+    .technical-plan summary { padding: var(--os-4); cursor: pointer; font-weight: 600; }
+    .technical-plan[open] { padding: 0 var(--os-4) var(--os-4); }
+    .technical-plan[open] summary { margin: 0 calc(var(--os-4) * -1); border-bottom: 1px solid var(--os-hairline); }
     .resource-list { max-height: 16rem; overflow: auto; border: 1px solid var(--os-border); }
     .resource-list > div { display: grid; grid-template-columns: minmax(16rem, 1fr) minmax(8rem, 0.5fr); padding: 0.3rem 0.5rem; border-bottom: 1px solid var(--os-border); }
     .profile-card { display: grid; grid-template-columns: 8rem 1fr; gap: 0.3rem 0.75rem; padding: 0.65rem; margin-bottom: 0.7rem; border: 1px solid var(--os-border); background: var(--os-bg-subtle); }
@@ -822,60 +830,47 @@ type ObservabilityActionId = 'plan' | 'install' | 'configure' | 'validate' | 'ro
       gap: var(--os-5);
       overflow: visible;
     }
-    .observability-summary-bar {
+    .observability-quick-card {
       display: grid;
-      grid-template-columns: minmax(20rem, 1.35fr) minmax(13rem, 0.65fr) minmax(15rem, 0.8fr);
-      align-items: center;
+      grid-template-columns: minmax(0, 1.4fr) minmax(18rem, 0.6fr);
+      align-items: stretch;
       gap: var(--os-6);
       padding: var(--os-5);
       border: 1px solid var(--os-hairline);
       background: var(--os-surface-1);
     }
-    .observability-summary-copy { min-width: 0; }
-    .observability-summary-copy > p:last-child { margin: var(--os-2) 0 0; color: var(--os-ink-muted); }
-    .observability-summary-title-row { display: flex; align-items: center; gap: var(--os-4); min-width: 0; }
-    .observability-summary-title-row h4 { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .lifecycle-meta { display: grid; grid-template-columns: 8rem 1fr; gap: var(--os-2) var(--os-4); margin: var(--os-4) 0 0; }
-    .lifecycle-meta dt { color: var(--os-ink-muted); }
-    .lifecycle-meta dd { margin: 0; font-weight: 600; }
-    .observability-summary-bar .lifecycle-meta { margin: 0; }
-    .observability-summary-bar clr-input-container { display: block; margin-top: 0; }
-    .observability-summary-bar input[clrInput] { width: 100%; }
-    .observability-work-model {
-      display: grid;
-      grid-template-columns: minmax(14rem, 0.3fr) minmax(0, 1fr);
-      gap: var(--os-6);
-      align-items: stretch;
-      padding: var(--os-5);
-      border: 1px solid var(--os-hairline);
+    .observability-quick-card.is-ready { border-left: var(--os-2) solid var(--os-success); }
+    .quick-card-copy { min-width: 0; }
+    .quick-card-copy > p:last-of-type { max-width: 48rem; margin: var(--os-2) 0 0; color: var(--os-ink-muted); line-height: 1.45; }
+    .quick-card-title { display: flex; align-items: center; gap: var(--os-4); min-width: 0; }
+    .quick-card-title h4 { margin: 0; font-size: 1rem; }
+    .quick-facts { display: flex; flex-wrap: wrap; gap: var(--os-3) var(--os-6); margin: var(--os-5) 0 0; }
+    .quick-facts > div { display: grid; grid-template-columns: auto auto; gap: var(--os-2); align-items: baseline; }
+    .quick-facts dt { color: var(--os-ink-muted); font: var(--os-type-caption); }
+    .quick-facts dd { margin: 0; font-weight: 600; }
+    .quick-card-readiness {
+      display: flex;
+      min-width: 0;
+      gap: var(--os-4);
+      align-items: flex-start;
+      padding: var(--os-4);
+      border-left: 1px solid var(--os-hairline);
       background: var(--os-bg);
     }
-    .work-model-current { display: grid; align-content: start; gap: var(--os-2); padding: var(--os-4); border-left: var(--os-2) solid var(--os-brand-500); background: var(--os-active-bg); }
-    .work-model-current h4, .work-model-current p { margin: 0; }
-    .work-model-current > p:last-child { color: var(--os-ink-muted); line-height: 1.45; }
-    .work-model-catalog { display: grid; min-width: 0; gap: var(--os-4); }
-    .work-model-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--os-5); }
-    .work-model-heading h4 { margin: 0; }
-    .work-model-heading > span { color: var(--os-ink-muted); font: var(--os-type-caption); }
-    .operation-group-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--os-4); }
-    .operation-group-grid article { display: grid; gap: var(--os-2); padding: var(--os-4); border: 1px solid var(--os-hairline); background: var(--os-surface-1); }
-    .operation-group-copy { display: grid; gap: var(--os-2); }
-    .operation-group-copy span { color: var(--os-ink-muted); font: var(--os-type-caption); }
-    .operation-choice-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--os-2); }
-    .operation-choice-list > span { display: grid; gap: var(--os-2); min-width: 0; padding: var(--os-2); border-left: var(--os-2) solid var(--os-border); background: var(--os-bg); }
-    .operation-choice-list strong { font-size: 0.7rem; }
-    .operation-choice-list small { color: var(--os-ink-muted); overflow-wrap: anywhere; }
-    .operation-choice-list > span[data-state='available'] { border-left-color: var(--os-success); }
-    .operation-choice-list > span[data-state='current'] { border-left-color: var(--os-brand-500); background: var(--os-active-bg); }
-    .operation-choice-list > span[data-state='warning'] { border-left-color: var(--os-warn); background: var(--os-warn-bg); }
-    .operation-choice-list > span[data-state='blocked'] { border-left-color: var(--os-danger); background: var(--os-danger-bg); }
+    .quick-card-readiness cds-icon, .quick-card-readiness .spinner { flex: 0 0 auto; }
+    .quick-card-readiness p { margin: var(--os-2) 0 0; color: var(--os-ink-muted); line-height: 1.4; }
+    .quick-card-readiness ul { margin: var(--os-2) 0 0; padding-left: var(--os-5); }
+    .quick-card-readiness li + li { margin-top: var(--os-2); }
+    .observability-advanced { min-width: 0; padding: var(--os-5); border: 1px solid var(--os-hairline); background: var(--os-bg); }
+    .observability-advanced > clr-input-container { display: block; width: min(100%, 20rem); margin: 0 0 var(--os-4); }
+    .observability-advanced input[clrInput] { width: 100%; }
+    .observability-advanced > clr-alert { margin: var(--os-4) 0 0; }
     .lifecycle-section { min-width: 0; padding: var(--os-5) 0 0; border-top: 1px solid var(--os-hairline); }
-    .readiness-alerts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--os-4); }
-    .readiness-alerts clr-alert, .lifecycle-section > clr-alert { margin: 0; }
+    .lifecycle-section > clr-alert { margin: 0; }
     .storage-form-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--os-4) var(--os-6); margin-top: var(--os-4); }
     .storage-form-grid clr-select-container { display: block; margin-top: 0; }
     .storage-form-grid select[clrSelect] { width: 100%; }
-    .lifecycle-plan-section .alert-text ul { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--os-2) var(--os-5); }
+    .observability-advanced .alert-text ul { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--os-2) var(--os-5); }
     .storage-plan { margin-top: 0.65rem; }
     .operation-facts { display: grid; grid-template-columns: repeat(4, minmax(9rem, 1fr)); gap: 0.55rem; margin-bottom: 0.65rem; }
     .operation-facts article { display: grid; gap: var(--os-2); padding: var(--os-4); border-left: var(--os-2) solid var(--os-info); background: var(--os-surface-1); }
@@ -921,18 +916,17 @@ type ObservabilityActionId = 'plan' | 'install' | 'configure' | 'validate' | 'ro
     .reset-confirmation-field .clr-control-helper { color: var(--os-danger); }
     .reset-confirmation-field .clr-control-helper.ready { color: var(--os-success); }
     @media (max-width: 1100px) {
-      .split-config, .exposure-options, .policy-banner, .readiness-alerts, .storage-form-grid, .operation-facts { grid-template-columns: 1fr 1fr; }
+      .split-config, .exposure-options, .policy-banner, .storage-form-grid, .operation-facts { grid-template-columns: 1fr 1fr; }
       .compact-fields, .ingress-fields { grid-template-columns: 1fr 1fr; }
       .compatibility-card { display: grid; }
-      .observability-summary-bar { grid-template-columns: 1fr 1fr; }
-      .observability-summary-copy { grid-column: 1 / -1; }
-      .observability-work-model { grid-template-columns: 1fr; }
+      .observability-quick-card { grid-template-columns: 1fr; }
+      .quick-card-readiness { border-top: 1px solid var(--os-hairline); border-left: 0; }
     }
     @media (max-width: 720px) {
-      .readiness-alerts, .storage-form-grid, .operation-facts, .observability-summary-bar, .operation-group-grid, .lifecycle-plan-section .alert-text ul { grid-template-columns: 1fr; }
+      .storage-form-grid, .operation-facts, .observability-advanced .alert-text ul, .quick-confirmation { grid-template-columns: 1fr; }
       .observability-modal-title-copy small { display: none; }
-      .observability-summary-copy { grid-column: auto; }
-      .work-model-heading { display: grid; }
+      .quick-card-title { display: grid; }
+      .quick-facts { display: grid; }
       .lifecycle-workspace {
         max-height: calc(100vh - 9rem);
         padding-right: var(--os-2);
@@ -968,29 +962,9 @@ export class HisComponent implements OnInit, OnDestroy {
   readonly profileBusy = signal(false);
   readonly canaryTarget = signal<HisItem | null>(null);
   readonly canaryBusy = signal(false);
-  readonly observabilityActionGroups: Array<{
-    label: string;
-    description: string;
-    operations: Array<{ id: ObservabilityActionId; label: string }>;
-  }> = [
-    {
-      label: '설치 준비',
-      description: '설치 전 영향 확인과 최초 배포',
-      operations: [{ id: 'plan', label: '계획' }, { id: 'install', label: '설치' }],
-    },
-    {
-      label: '반복 운영',
-      description: '운영 중 필요할 때 독립적으로 실행',
-      operations: [{ id: 'configure', label: '구성 변경' }, { id: 'validate', label: '실검증' }],
-    },
-    {
-      label: '복구·종료',
-      description: '별도 판단과 승인이 필요한 작업',
-      operations: [{ id: 'rollback', label: '롤백' }, { id: 'delete', label: '삭제' }],
-    },
-  ];
   modalOpen = false;
   observabilityLifecycleModalOpen = false;
+  observabilityAdvancedOpen = false;
   configurationModalOpen = false;
   profileModalOpen = false;
   canaryModalOpen = false;
@@ -1142,6 +1116,7 @@ export class HisComponent implements OnInit, OnDestroy {
     this.observabilityTarget.set(item);
     this.observabilityChartVersion = item.chartVersion || '87.19.1';
     this.configurationMode = item.release?.managed ? 'operate' : 'install';
+    this.observabilityAdvancedOpen = false;
     this.observabilityLifecycleModalOpen = true;
     this.error.set('');
     this.loadObservabilityConfiguration();
@@ -1171,7 +1146,7 @@ export class HisComponent implements OnInit, OnDestroy {
   observabilityNextAction(item: HisItem): string {
     if (this.operationActive(item.operation)) return `${this.operationLabel(item.operation!)} 작업 진행 중`;
     const lifecycle = this.releaseLifecycle(item);
-    if (lifecycle === 'install') return '필수 조건과 설치 옵션을 검토한 뒤 설치';
+    if (lifecycle === 'install') return '권장값으로 빠른 설치';
     if (lifecycle === 'recover') return '중단된 Helm release 복구 필요';
     if (lifecycle === 'blocked') return 'HISS 실행 권한과 Helm 상태 확인 필요';
     if (item.check.state === 'Ready') return '운영 상태 정상 · 구성/실검증/롤백 가능';
@@ -1234,43 +1209,32 @@ export class HisComponent implements OnInit, OnDestroy {
       && !this.configurationPlanning();
   }
 
-  observabilityCurrentStateMessage(item: HisItem): string {
-    const managed = Boolean(item.release?.managed);
-    const active = this.operationActive(item.operation);
-    if (active) return `${this.operationLabel(item.operation!)} 작업이 진행 중입니다. 작업 상태와 결과를 확인하십시오.`;
-    if (managed && item.check.state === 'Ready') return '설치된 release가 정상 운영 중입니다. 필요한 운영 작업을 개별적으로 선택할 수 있습니다.';
-    if (managed) return '설치된 release가 정상 상태가 아닙니다. 진단 결과를 확인하고 복구 또는 롤백을 선택하십시오.';
-    if (this.observabilityInstallReady(item)) return '설치 조건이 충족되었습니다. 렌더링 계획을 검토한 뒤 설치를 선택할 수 있습니다.';
-    return '아직 설치되지 않았습니다. 아래 준비 조건과 설치 계획의 차단 항목을 먼저 해소하십시오.';
-  }
-
-  observabilityActionState(action: ObservabilityActionId, item: HisItem): string {
-    const managed = Boolean(item.release?.managed);
-    const active = this.operationActive(item.operation);
-    if (active && (
-      item.operation?.action === action
-      || (action === 'delete' && item.operation?.action === 'uninstall')
-    )) return '진행 중';
-    if (action === 'plan') return this.configurationLoading() || this.configurationPlanning()
-      ? '계산 중'
-      : this.chartVersionSupported(item) ? '언제든 검토' : '버전 확인 필요';
-    if (action === 'install') {
-      if (managed) return '설치 완료';
-      return this.observabilityInstallReady(item) ? '실행 가능' : '준비 조건 필요';
+  observabilityBlockingIssues(item: HisItem): string[] {
+    if (item.release?.managed && item.check.state === 'Ready') return [];
+    const issues: string[] = [];
+    if (!this.observabilityOwnerReady(item)) issues.push('HISS 실행 권한 승인');
+    if (this.storageReadiness() !== 'Ready') issues.push('CSI 영구 저장소 선택');
+    if (!this.chartVersionSupported(item)) issues.push('지원 Chart 버전 선택');
+    if (!item.release?.managed && this.observabilityPlan() && !this.observabilityPlan()?.canApply && !issues.length) {
+      issues.push('클러스터 설치 조건 확인');
     }
-    if (action === 'configure') return managed ? '필요 시 반복' : '설치 후 사용';
-    if (action === 'validate') return this.canValidate(item) ? '실행 가능' : managed ? '검증 준비 필요' : '설치 후 사용';
-    if (action === 'rollback') return this.rollbackAvailable(item) ? 'revision 선택 가능' : '이전 revision 필요';
-    return managed ? '별도 승인 필요' : '설치 후 사용';
+    return issues;
   }
 
-  observabilityActionTone(action: ObservabilityActionId, item: HisItem): 'available' | 'current' | 'warning' | 'blocked' | 'idle' {
-    const state = this.observabilityActionState(action, item);
-    if (state === '진행 중' || state === '계산 중') return 'current';
-    if (['실행 가능', '언제든 검토', '필요 시 반복', 'revision 선택 가능', '설치 완료'].includes(state)) return 'available';
-    if (['별도 승인 필요', '버전 확인 필요', '검증 준비 필요'].includes(state)) return 'warning';
-    if (state === '준비 조건 필요') return 'blocked';
-    return 'idle';
+  quickStorageSummary(): string {
+    const state = this.observabilityState();
+    const config = this.observabilityConfig();
+    if (!state || !config) return '자동 선택';
+    const fallback = state.storageClasses.find((item) => item.isDefault)?.name || '';
+    const selected = [
+      config.prometheus.storageClassName || fallback,
+      config.alertmanager.storageClassName || fallback,
+      config.grafana.storageClassName || fallback,
+      ...(config.telemetry.enabled ? [config.telemetry.storageClassName || fallback] : []),
+    ].filter(Boolean);
+    const unique = [...new Set(selected)];
+    if (!unique.length) return '사용 가능한 CSI 없음';
+    return unique.length === 1 ? `${unique[0]} · 자동 선택` : `${unique.length}개 CSI · 구성요소별 자동 선택`;
   }
 
   readyComponentCount(item: HisItem): number {
@@ -1292,6 +1256,10 @@ export class HisComponent implements OnInit, OnDestroy {
   openCanaryFromObservability(item: HisItem): void {
     this.observabilityLifecycleModalOpen = false;
     this.openCanaryValidation(item);
+  }
+
+  quickInstallRequest(item: HisItem): boolean {
+    return item.id === 'kube-prometheus-stack' && this.action() === 'install' && this.executeRequested();
   }
 
   openPlan(item: HisItem, action: HisMutationAction, execute = false): void {
@@ -1400,7 +1368,7 @@ export class HisComponent implements OnInit, OnDestroy {
     this.his.observabilityConfig().subscribe({
       next: (state) => {
         this.observabilityState.set(state);
-        const config = this.cloneConfig(state.config);
+        const config = this.applyQuickInstallDefaults(state, this.cloneConfig(state.config));
         this.observabilityConfig.set(config);
         this.allowedCidrsText = config.grafana.allowedCidrs.join('\n');
         this.configurationLoading.set(false);
@@ -1461,7 +1429,7 @@ export class HisComponent implements OnInit, OnDestroy {
     if (this.configurationMode === 'install') {
       this.configurationModalOpen = false;
       this.observabilityLifecycleModalOpen = true;
-      this.notice.set('Shared Observability 초기 설치 옵션이 계획에 반영되었습니다. 설치 실행 전 렌더링 계획과 차단 조건을 확인하십시오.');
+      this.notice.set('Shared Observability 고급 설정이 빠른 설치 요청에 반영되었습니다.');
       return;
     }
     this.configurationBusy.set(true);
@@ -1498,6 +1466,21 @@ export class HisComponent implements OnInit, OnDestroy {
     if (!current) return null;
     const config = this.cloneConfig(current);
     config.grafana.allowedCidrs = this.allowedCidrsText.split(/[\n,]+/).map((value) => value.trim()).filter(Boolean);
+    return config;
+  }
+
+  private applyQuickInstallDefaults(state: ObservabilityConfigurationState, config: ObservabilityConfig): ObservabilityConfig {
+    if (this.observabilityTarget()?.release?.managed) return config;
+    const preferred = state.storageClasses.find((item) => item.isDefault && item.isCsi)
+      || state.storageClasses.find((item) => item.isCsi);
+    if (!preferred) return config;
+    const choose = (current: string): string => state.storageClasses.find((item) => item.name === current)?.isCsi
+      ? current
+      : preferred.name;
+    config.prometheus.storageClassName = choose(config.prometheus.storageClassName);
+    config.alertmanager.storageClassName = choose(config.alertmanager.storageClassName);
+    config.grafana.storageClassName = choose(config.grafana.storageClassName);
+    if (config.telemetry.enabled) config.telemetry.storageClassName = choose(config.telemetry.storageClassName);
     return config;
   }
 

@@ -290,20 +290,24 @@ test('Helm lifecycle exposes exactly one primary action for each release state',
 
 test('HISS UI renders install, upgrade and recovery as mutually exclusive lifecycle actions', () => {
   const ui = fs.readFileSync(path.resolve(__dirname, '../src/app/resources/his.component.ts'), 'utf8');
-  assert.match(ui, /\*ngIf="releaseLifecycle\(item\) === 'install'"[^>]*>[\s\S]*?설치<\/button>/);
-  assert.match(ui, /\*ngIf="releaseLifecycle\(item\) === 'upgrade'"[^>]*>[\s\S]*?업그레이드<\/button>/);
+  assert.match(ui, /\*ngIf="releaseLifecycle\(item\) === 'install'"[^>]*>[\s\S]*?설치(?: 요청)?<\/button>/);
+  assert.match(ui, /\*ngIf="releaseLifecycle\(item\) === 'upgrade'"[^>]*>[\s\S]*?업그레이드(?: 요청)?<\/button>/);
   assert.match(ui, /\*ngIf="releaseLifecycle\(item\) === 'recover'"[^>]*>[\s\S]*?복구<\/button>/);
   assert.match(ui, /if \(this\.releaseLifecycle\(item\) !== 'install'\) return false;/);
   assert.match(ui, /Shared Observability 관리/);
-  assert.match(ui, /대상 Chart version/);
+  assert.match(ui, /Chart version/);
   assert.match(ui, /Prometheus StorageClass/);
   assert.match(ui, /storagePlan/);
   assert.match(ui, /\[disabled\]="!sc\.isCsi"/);
   assert.match(ui, /CSI 선택 필요/);
   assert.doesNotMatch(ui, /<clr-timeline /);
-  assert.match(ui, /아래 작업은 순차 단계가 아닙니다/);
-  assert.match(ui, /class="observability-work-model"/);
-  assert.match(ui, /class="operation-group-grid"/);
+  assert.doesNotMatch(ui, /class="observability-work-model"/);
+  assert.match(ui, /class="observability-quick-card"/);
+  assert.match(ui, /권장 설정으로 한 번에 설치/);
+  assert.match(ui, /빠른 설치 요청/);
+  assert.match(ui, /고급 설정/);
+  assert.match(ui, /applyQuickInstallDefaults/);
+  assert.match(ui, /기술 계획 보기/);
   assert.match(ui, /<clr-alert /);
   assert.match(ui, /<form clrForm clrLayout="vertical" class="storage-form-grid">/);
   assert.match(ui, /<clr-select-container>/);
@@ -311,8 +315,6 @@ test('HISS UI renders install, upgrade and recovery as mutually exclusive lifecy
   assert.match(ui, /<clr-dropdown /);
   assert.doesNotMatch(ui, /class="lifecycle-rail"/);
   assert.doesNotMatch(ui, /class="configuration-summary"/);
-  for (const group of ['설치 준비', '반복 운영', '복구·종료']) assert.match(ui, new RegExp(`label: '${group}'`));
-  for (const action of ['계획', '설치', '구성 변경', '실검증', '롤백', '삭제']) assert.match(ui, new RegExp(`label: '${action}'`));
 });
 
 test('kind HISS profile provisions an issuer chain and binds ingress default TLS without weakening standard clusters', () => {

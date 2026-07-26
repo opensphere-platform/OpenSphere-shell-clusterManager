@@ -41,7 +41,7 @@ LABEL org.opencontainers.image.title="OpenSphere Cluster Manager" \
       org.opencontainers.image.source="https://github.com/opensphere-platform/OpenSphere-shell-clusterManager" \
       io.opensphere.module.descriptor=$OS_MODULE_DESCRIPTOR \
       io.opensphere.module.descriptor.signature=$OS_MODULE_SIGNATURE \
-      io.opensphere.module.descriptor.key-id="opensphere-plugins-v4"
+      io.opensphere.module.descriptor.key-id="opensphere-plugins-v1"
 RUN apk upgrade --no-cache
 WORKDIR /app
 RUN npm install --omit=dev --no-audit --no-fund --no-save ws@8.21.0 js-yaml@4.3.0 \

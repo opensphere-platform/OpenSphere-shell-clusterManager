@@ -298,8 +298,11 @@ test('HISS UI renders install, upgrade and recovery as mutually exclusive lifecy
   assert.match(ui, /Chart version/);
   assert.match(ui, /Prometheus StorageClass/);
   assert.match(ui, /storagePlan/);
-  assert.match(ui, /\[disabled\]="!sc\.isCsi"/);
-  assert.match(ui, /CSI 선택 필요/);
+  assert.match(ui, /name="quickChartVersion"/);
+  assert.match(ui, /name="quickStorageClass"/);
+  assert.match(ui, /sharedStorageClassChanged/);
+  assert.doesNotMatch(ui, /\[disabled\]="!sc\.isCsi"/);
+  assert.match(ui, /StorageClass 선택 필요/);
   assert.doesNotMatch(ui, /<clr-timeline /);
   assert.doesNotMatch(ui, /class="observability-work-model"/);
   assert.match(ui, /class="observability-quick-card"/);
@@ -382,11 +385,11 @@ test('Shared Observability preserves readable install options when one live reso
   }, accessIssues), /API unavailable/);
 });
 
-test('Observability installation rejects non-CSI storage and allows explicit CSI selection', () => {
+test('Observability installation accepts any existing StorageClass and warns when CSI capabilities are unavailable', () => {
   const manager = fs.readFileSync(path.resolve(__dirname, '../his-manager.js'), 'utf8');
   assert.match(manager, /csiDrivers\.has\(storageClass\.provisioner/);
-  assert.match(manager, /는 등록된 CSIDriver가 아닙니다/);
-  assert.doesNotMatch(manager, /노드 로컬 provisioner이므로 운영 내구성 저장소로 권장하지 않습니다/);
+  assert.match(manager, /설치는 허용하지만 snapshot과 온라인 확장 기능은 제한될 수 있습니다/);
+  assert.doesNotMatch(manager, /blockers\.push\(`\$\{component\}:.*등록된 CSIDriver가 아닙니다/);
 });
 
 test('OAA Observability owner input is recursively closed and confirmations expose high-risk choices', () => {

@@ -233,24 +233,48 @@ type ObservabilityConfigurationMode = 'install' | 'operate';
             </div>
             <p>{{ item.release?.managed
               ? 'Prometheus 수집과 Grafana 시각화의 현재 상태를 확인하고 필요한 운영 작업만 선택합니다.'
-              : 'OpenSphere가 Chart, namespace, 내부 노출 정책과 사용 가능한 CSI 저장소를 권장값으로 구성합니다.' }}</p>
-            <dl class="quick-facts">
+              : '필요한 설치 값을 선택하면 OpenSphere가 나머지 내부 준비와 실행 기록을 처리합니다.' }}</p>
+            <form *ngIf="!item.release?.managed" clrForm clrLayout="vertical" class="quick-install-options">
+              <clr-select-container>
+                <label>Chart version</label>
+                <select clrSelect name="quickChartVersion" [(ngModel)]="observabilityChartVersion" (ngModelChange)="chartVersionChanged()">
+                  <option *ngFor="let version of item.availableChartVersions" [value]="version">{{ item.chartName }} {{ version }}</option>
+                </select>
+                <clr-control-helper>서명된 release에서 선택합니다.</clr-control-helper>
+              </clr-select-container>
+              <div class="quick-static-field">
+                <span>Namespace</span>
+                <strong><code>{{ item.namespace }}</code></strong>
+                <small>Shared Observability의 고정 관리 namespace</small>
+              </div>
+              <clr-select-container>
+                <label>StorageClass</label>
+                <select clrSelect name="quickStorageClass" [ngModel]="sharedStorageClassName()" (ngModelChange)="sharedStorageClassChanged($event)">
+                  <option value="">Cluster default</option>
+                  <option *ngFor="let sc of observabilityState()?.storageClasses" [value]="sc.name">
+                    {{ sc.name }}{{ sc.isDefault ? ' (default)' : '' }} · {{ sc.isCsi ? 'CSI' : sc.provisioner }}
+                  </option>
+                </select>
+                <clr-control-helper>{{ sharedStorageClassHint() }}</clr-control-helper>
+              </clr-select-container>
+            </form>
+            <dl class="quick-facts" *ngIf="item.release?.managed">
               <div><dt>Chart</dt><dd>{{ item.chartName }} {{ observabilityChartVersion }}</dd></div>
               <div><dt>Namespace</dt><dd><code>{{ item.namespace }}</code></dd></div>
               <div><dt>Storage</dt><dd>{{ quickStorageSummary() }}</dd></div>
-              <div *ngIf="item.release?.managed"><dt>Helm revision</dt><dd>{{ item.release.revision }}</dd></div>
+              <div><dt>Helm revision</dt><dd>{{ item.release.revision }}</dd></div>
             </dl>
           </div>
           <div class="quick-card-readiness" role="status" aria-live="polite">
             <ng-container *ngIf="configurationLoading() || configurationPlanning(); else quickReadinessResolved">
               <span class="spinner spinner-sm" aria-hidden="true"></span>
-              <div><strong>설치 조건 확인 중</strong><p>클러스터 권한과 저장소를 자동으로 점검하고 있습니다.</p></div>
+              <div><strong>선택값 확인 중</strong><p>Chart와 StorageClass를 확인하고 있습니다.</p></div>
             </ng-container>
             <ng-template #quickReadinessResolved>
               <ng-container *ngIf="observabilityBlockingIssues(item) as issues">
                 <ng-container *ngIf="!issues.length; else quickBlocked">
                   <cds-icon shape="check-circle" status="success" size="28" aria-hidden="true"></cds-icon>
-                  <div><strong>{{ item.release?.managed ? '서비스 정상' : '설치 준비 완료' }}</strong><p>{{ item.release?.managed ? '필요할 때 구성 변경이나 실검증을 실행할 수 있습니다.' : '빠른 설치 요청을 제출할 수 있습니다.' }}</p></div>
+                  <div><strong>{{ item.release?.managed ? '서비스 정상' : '설치 가능' }}</strong><p>{{ item.release?.managed ? '필요할 때 구성 변경이나 실검증을 실행할 수 있습니다.' : '선택한 값으로 설치 요청을 제출할 수 있습니다.' }}</p></div>
                 </ng-container>
                 <ng-template #quickBlocked>
                   <cds-icon shape="warning-standard" status="warning" size="28" aria-hidden="true"></cds-icon>
@@ -275,23 +299,6 @@ type ObservabilityConfigurationMode = 'install' | 'operate';
               {{ item.release?.managed ? '구성 변경' : '전체 옵션 편집' }}
             </button>
           </div>
-          <clr-input-container>
-            <label>Chart version</label>
-            <input
-              clrInput
-              name="observabilityChartVersion"
-              list="observability-chart-versions"
-              [(ngModel)]="observabilityChartVersion"
-              (ngModelChange)="chartVersionChanged()"
-              placeholder="예: 87.19.1"
-              autocomplete="off"
-              required>
-            <datalist id="observability-chart-versions">
-              <option *ngFor="let version of item.availableChartVersions" [value]="version"></option>
-            </datalist>
-            <clr-control-helper *ngIf="chartVersionSupported(item)">서명된 release에 포함된 버전입니다.</clr-control-helper>
-            <clr-control-error *ngIf="!chartVersionSupported(item)">허용 버전: {{ (item.availableChartVersions || []).join(', ') }}</clr-control-error>
-          </clr-input-container>
           <clr-alert *ngIf="observabilityState()?.live?.accessIssues?.length" [clrAlertType]="'warning'" [clrAlertClosable]="false">
             <clr-alert-item><span class="alert-text">
               <strong>일부 운영 상태는 권한 승인 후 확인됩니다.</strong>
@@ -302,28 +309,28 @@ type ObservabilityConfigurationMode = 'install' | 'operate';
             <clr-select-container>
               <label>Prometheus StorageClass</label>
               <select clrSelect name="prometheusStorageClassSummary" [(ngModel)]="config.prometheus.storageClassName" (ngModelChange)="storageSelectionChanged()">
-                <option value="">Cluster default</option><option *ngFor="let sc of observabilityState()?.storageClasses" [value]="sc.name" [disabled]="!sc.isCsi">{{ sc.name }}{{ sc.isDefault ? ' (default)' : '' }} · {{ sc.isCsi ? 'CSI' : '비-CSI' }}</option>
+                <option value="">Cluster default</option><option *ngFor="let sc of observabilityState()?.storageClasses" [value]="sc.name">{{ sc.name }}{{ sc.isDefault ? ' (default)' : '' }} · {{ sc.isCsi ? 'CSI' : sc.provisioner }}</option>
               </select>
               <clr-control-helper>{{ config.prometheus.storageSize }} · retention {{ config.prometheus.retention }}</clr-control-helper>
             </clr-select-container>
             <clr-select-container>
               <label>Alertmanager StorageClass</label>
               <select clrSelect name="alertmanagerStorageClassSummary" [(ngModel)]="config.alertmanager.storageClassName" (ngModelChange)="storageSelectionChanged()">
-                <option value="">Cluster default</option><option *ngFor="let sc of observabilityState()?.storageClasses" [value]="sc.name" [disabled]="!sc.isCsi">{{ sc.name }}{{ sc.isDefault ? ' (default)' : '' }} · {{ sc.isCsi ? 'CSI' : '비-CSI' }}</option>
+                <option value="">Cluster default</option><option *ngFor="let sc of observabilityState()?.storageClasses" [value]="sc.name">{{ sc.name }}{{ sc.isDefault ? ' (default)' : '' }} · {{ sc.isCsi ? 'CSI' : sc.provisioner }}</option>
               </select>
               <clr-control-helper>{{ config.alertmanager.storageSize }} · retention {{ config.alertmanager.retention }}</clr-control-helper>
             </clr-select-container>
             <clr-select-container>
               <label>Grafana StorageClass</label>
               <select clrSelect name="grafanaStorageClassSummary" [(ngModel)]="config.grafana.storageClassName" (ngModelChange)="storageSelectionChanged()">
-                <option value="">Cluster default</option><option *ngFor="let sc of observabilityState()?.storageClasses" [value]="sc.name" [disabled]="!sc.isCsi">{{ sc.name }}{{ sc.isDefault ? ' (default)' : '' }} · {{ sc.isCsi ? 'CSI' : '비-CSI' }}</option>
+                <option value="">Cluster default</option><option *ngFor="let sc of observabilityState()?.storageClasses" [value]="sc.name">{{ sc.name }}{{ sc.isDefault ? ' (default)' : '' }} · {{ sc.isCsi ? 'CSI' : sc.provisioner }}</option>
               </select>
               <clr-control-helper>{{ config.grafana.storageSize }} · {{ config.grafana.exposureMode }}</clr-control-helper>
             </clr-select-container>
             <clr-select-container *ngIf="config.telemetry.enabled">
               <label>Loki·Tempo StorageClass</label>
               <select clrSelect name="telemetryStorageClassSummary" [(ngModel)]="config.telemetry.storageClassName" (ngModelChange)="storageSelectionChanged()">
-                <option value="">Cluster default</option><option *ngFor="let sc of observabilityState()?.storageClasses" [value]="sc.name" [disabled]="!sc.isCsi">{{ sc.name }}{{ sc.isDefault ? ' (default)' : '' }} · {{ sc.isCsi ? 'CSI' : '비-CSI' }}</option>
+                <option value="">Cluster default</option><option *ngFor="let sc of observabilityState()?.storageClasses" [value]="sc.name">{{ sc.name }}{{ sc.isDefault ? ' (default)' : '' }} · {{ sc.isCsi ? 'CSI' : sc.provisioner }}</option>
               </select>
               <clr-control-helper>Loki {{ config.telemetry.lokiStorageSize }} · Tempo {{ config.telemetry.tempoStorageSize }}</clr-control-helper>
             </clr-select-container>
@@ -541,28 +548,28 @@ type ObservabilityConfigurationMode = 'install' | 'operate';
 
                   <clr-dg-row>
                     <clr-dg-cell><strong>Prometheus</strong><div class="muted">메트릭 TSDB</div></clr-dg-cell>
-                    <clr-dg-cell><select clrSelect name="prometheusStorageClass" [(ngModel)]="config.prometheus.storageClassName"><option value="">Cluster default</option><option *ngFor="let sc of state.storageClasses" [value]="sc.name" [disabled]="!sc.isCsi">{{ sc.name }}{{ sc.isDefault ? ' (default)' : '' }} · {{ sc.isCsi ? 'CSI' : '비-CSI' }}</option></select><div class="storage-hint">{{ storageClassHint(state, config.prometheus.storageClassName) }}</div></clr-dg-cell>
+                    <clr-dg-cell><select clrSelect name="prometheusStorageClass" [(ngModel)]="config.prometheus.storageClassName"><option value="">Cluster default</option><option *ngFor="let sc of state.storageClasses" [value]="sc.name">{{ sc.name }}{{ sc.isDefault ? ' (default)' : '' }} · {{ sc.isCsi ? 'CSI' : sc.provisioner }}</option></select><div class="storage-hint">{{ storageClassHint(state, config.prometheus.storageClassName) }}</div></clr-dg-cell>
                     <clr-dg-cell><input clrInput name="prometheusStorageSize" [(ngModel)]="config.prometheus.storageSize" placeholder="20Gi"></clr-dg-cell>
                     <clr-dg-cell><input clrInput name="prometheusRetention" [(ngModel)]="config.prometheus.retention" placeholder="7d"></clr-dg-cell>
                     <clr-dg-cell>{{ livePvc(state, 'prometheus') }}</clr-dg-cell>
                   </clr-dg-row>
                   <clr-dg-row>
                     <clr-dg-cell><strong>Alertmanager</strong><div class="muted">알림 상태·silence</div></clr-dg-cell>
-                    <clr-dg-cell><select clrSelect name="alertmanagerStorageClass" [(ngModel)]="config.alertmanager.storageClassName"><option value="">Cluster default</option><option *ngFor="let sc of state.storageClasses" [value]="sc.name" [disabled]="!sc.isCsi">{{ sc.name }}{{ sc.isDefault ? ' (default)' : '' }} · {{ sc.isCsi ? 'CSI' : '비-CSI' }}</option></select><div class="storage-hint">{{ storageClassHint(state, config.alertmanager.storageClassName) }}</div></clr-dg-cell>
+                    <clr-dg-cell><select clrSelect name="alertmanagerStorageClass" [(ngModel)]="config.alertmanager.storageClassName"><option value="">Cluster default</option><option *ngFor="let sc of state.storageClasses" [value]="sc.name">{{ sc.name }}{{ sc.isDefault ? ' (default)' : '' }} · {{ sc.isCsi ? 'CSI' : sc.provisioner }}</option></select><div class="storage-hint">{{ storageClassHint(state, config.alertmanager.storageClassName) }}</div></clr-dg-cell>
                     <clr-dg-cell><input clrInput name="alertmanagerStorageSize" [(ngModel)]="config.alertmanager.storageSize" placeholder="2Gi"></clr-dg-cell>
                     <clr-dg-cell><input clrInput name="alertmanagerRetention" [(ngModel)]="config.alertmanager.retention" placeholder="120h"></clr-dg-cell>
                     <clr-dg-cell>{{ livePvc(state, 'alertmanager') }}</clr-dg-cell>
                   </clr-dg-row>
                   <clr-dg-row>
                     <clr-dg-cell><strong>Grafana</strong><div class="muted">대시보드·설정 DB</div></clr-dg-cell>
-                    <clr-dg-cell><select clrSelect name="grafanaStorageClass" [(ngModel)]="config.grafana.storageClassName"><option value="">Cluster default</option><option *ngFor="let sc of state.storageClasses" [value]="sc.name" [disabled]="!sc.isCsi">{{ sc.name }}{{ sc.isDefault ? ' (default)' : '' }} · {{ sc.isCsi ? 'CSI' : '비-CSI' }}</option></select><div class="storage-hint">{{ storageClassHint(state, config.grafana.storageClassName) }}</div></clr-dg-cell>
+                    <clr-dg-cell><select clrSelect name="grafanaStorageClass" [(ngModel)]="config.grafana.storageClassName"><option value="">Cluster default</option><option *ngFor="let sc of state.storageClasses" [value]="sc.name">{{ sc.name }}{{ sc.isDefault ? ' (default)' : '' }} · {{ sc.isCsi ? 'CSI' : sc.provisioner }}</option></select><div class="storage-hint">{{ storageClassHint(state, config.grafana.storageClassName) }}</div></clr-dg-cell>
                     <clr-dg-cell><input clrInput name="grafanaStorageSize" [(ngModel)]="config.grafana.storageSize" placeholder="5Gi"></clr-dg-cell>
                     <clr-dg-cell><span class="muted">해당 없음</span></clr-dg-cell>
                     <clr-dg-cell>{{ livePvc(state, 'grafana') }}</clr-dg-cell>
                   </clr-dg-row>
                   <clr-dg-row *ngIf="config.telemetry.enabled">
                     <clr-dg-cell><strong>Loki</strong><div class="muted">중앙 로그 저장·조회</div></clr-dg-cell>
-                    <clr-dg-cell><select clrSelect name="telemetryStorageClass" [(ngModel)]="config.telemetry.storageClassName"><option value="">Cluster default</option><option *ngFor="let sc of state.storageClasses" [value]="sc.name" [disabled]="!sc.isCsi">{{ sc.name }}{{ sc.isDefault ? ' (default)' : '' }} · {{ sc.isCsi ? 'CSI' : '비-CSI' }}</option></select><div class="storage-hint">{{ storageClassHint(state, config.telemetry.storageClassName) }}</div></clr-dg-cell>
+                    <clr-dg-cell><select clrSelect name="telemetryStorageClass" [(ngModel)]="config.telemetry.storageClassName"><option value="">Cluster default</option><option *ngFor="let sc of state.storageClasses" [value]="sc.name">{{ sc.name }}{{ sc.isDefault ? ' (default)' : '' }} · {{ sc.isCsi ? 'CSI' : sc.provisioner }}</option></select><div class="storage-hint">{{ storageClassHint(state, config.telemetry.storageClassName) }}</div></clr-dg-cell>
                     <clr-dg-cell><input clrInput name="lokiStorageSize" [(ngModel)]="config.telemetry.lokiStorageSize" placeholder="10Gi"></clr-dg-cell>
                     <clr-dg-cell><input clrInput name="telemetryRetention" [(ngModel)]="config.telemetry.retention" placeholder="168h"></clr-dg-cell>
                     <clr-dg-cell>{{ livePvc(state, 'loki') }}</clr-dg-cell>
@@ -844,6 +851,12 @@ type ObservabilityConfigurationMode = 'install' | 'operate';
     .quick-card-copy > p:last-of-type { max-width: 48rem; margin: var(--os-2) 0 0; color: var(--os-ink-muted); line-height: 1.45; }
     .quick-card-title { display: flex; align-items: center; gap: var(--os-4); min-width: 0; }
     .quick-card-title h4 { margin: 0; font-size: 1rem; }
+    .quick-install-options { display: grid; grid-template-columns: minmax(15rem, 1fr) minmax(10rem, 0.65fr) minmax(15rem, 1fr); gap: var(--os-4) var(--os-6); margin-top: var(--os-5); }
+    .quick-install-options clr-select-container { display: block; margin-top: 0; }
+    .quick-install-options select[clrSelect] { width: 100%; }
+    .quick-static-field { display: grid; align-content: start; gap: var(--os-2); padding-top: var(--os-3); }
+    .quick-static-field > span { font-weight: 600; }
+    .quick-static-field small { color: var(--os-ink-muted); font: var(--os-type-caption); }
     .quick-facts { display: flex; flex-wrap: wrap; gap: var(--os-3) var(--os-6); margin: var(--os-5) 0 0; }
     .quick-facts > div { display: grid; grid-template-columns: auto auto; gap: var(--os-2); align-items: baseline; }
     .quick-facts dt { color: var(--os-ink-muted); font: var(--os-type-caption); }
@@ -920,13 +933,14 @@ type ObservabilityConfigurationMode = 'install' | 'operate';
       .compact-fields, .ingress-fields { grid-template-columns: 1fr 1fr; }
       .compatibility-card { display: grid; }
       .observability-quick-card { grid-template-columns: 1fr; }
+      .quick-install-options { grid-template-columns: 1fr 1fr; }
       .quick-card-readiness { border-top: 1px solid var(--os-hairline); border-left: 0; }
     }
     @media (max-width: 720px) {
       .storage-form-grid, .operation-facts, .observability-advanced .alert-text ul, .quick-confirmation { grid-template-columns: 1fr; }
       .observability-modal-title-copy small { display: none; }
       .quick-card-title { display: grid; }
-      .quick-facts { display: grid; }
+      .quick-facts, .quick-install-options { display: grid; grid-template-columns: 1fr; }
       .lifecycle-workspace {
         max-height: calc(100vh - 9rem);
         padding-right: var(--os-2);
@@ -1143,6 +1157,40 @@ export class HisComponent implements OnInit, OnDestroy {
     this.validateConfiguration();
   }
 
+  sharedStorageClassName(): string {
+    const config = this.observabilityConfig();
+    if (!config) return '';
+    const selected = [
+      config.prometheus.storageClassName,
+      config.alertmanager.storageClassName,
+      config.grafana.storageClassName,
+      ...(config.telemetry.enabled ? [config.telemetry.storageClassName] : []),
+    ];
+    return selected.every((name) => name === selected[0]) ? selected[0] : '';
+  }
+
+  sharedStorageClassChanged(storageClassName: string): void {
+    const config = this.observabilityConfig();
+    if (!config) return;
+    config.prometheus.storageClassName = storageClassName;
+    config.alertmanager.storageClassName = storageClassName;
+    config.grafana.storageClassName = storageClassName;
+    if (config.telemetry.enabled) config.telemetry.storageClassName = storageClassName;
+    this.storageSelectionChanged();
+  }
+
+  sharedStorageClassHint(): string {
+    const state = this.observabilityState();
+    if (!state) return '클러스터 StorageClass를 불러오는 중입니다.';
+    const selected = this.sharedStorageClassName();
+    const storageClass = state.storageClasses.find((item) => item.name === selected)
+      || state.storageClasses.find((item) => item.isDefault);
+    if (!storageClass) return 'StorageClass를 선택하십시오.';
+    return storageClass.isCsi
+      ? `${storageClass.provisioner} · CSI 영구 저장소`
+      : `${storageClass.provisioner} · 설치 가능, snapshot·온라인 확장은 제한될 수 있음`;
+  }
+
   observabilityNextAction(item: HisItem): string {
     if (this.operationActive(item.operation)) return `${this.operationLabel(item.operation!)} 작업 진행 중`;
     const lifecycle = this.releaseLifecycle(item);
@@ -1152,11 +1200,6 @@ export class HisComponent implements OnInit, OnDestroy {
     if (item.check.state === 'Ready') return '운영 상태 정상 · 구성/실검증/롤백 가능';
     if (this.canValidate(item)) return '구성요소 준비 후 실제 metric·log·trace 경로 검증 필요';
     return '구성요소와 저장소 상태 복구 필요';
-  }
-
-  observabilityOwnerReady(item: HisItem): boolean {
-    const text = `${item.check.reason} ${item.check.message}`.toLowerCase();
-    return !text.includes('forbidden') && !text.includes('cannot list resource');
   }
 
   storageReadiness(): string {
@@ -1171,7 +1214,7 @@ export class HisComponent implements OnInit, OnDestroy {
       ...(config.telemetry.enabled ? [config.telemetry.storageClassName || defaultClass] : []),
     ];
     if (selected.some((name) => !name)) return 'Blocked';
-    return selected.every((name) => state.storageClasses.find((item) => item.name === name)?.isCsi) ? 'Ready' : 'Blocked';
+    return selected.every((name) => state.storageClasses.some((item) => item.name === name)) ? 'Ready' : 'Blocked';
   }
 
   storageReadinessMessage(): string {
@@ -1179,7 +1222,7 @@ export class HisComponent implements OnInit, OnDestroy {
     const config = this.observabilityConfig();
     if (!state || !config) {
       const storage = this.status()?.items.find((item) => item.id === 'storage');
-      return storage ? `${storage.check.message} 설치 옵션에서 CSI StorageClass를 명시적으로 선택할 수 있습니다.` : 'StorageClass 실측 결과가 없습니다.';
+      return storage ? `${storage.check.message} 설치 옵션에서 StorageClass를 명시적으로 선택할 수 있습니다.` : 'StorageClass 실측 결과가 없습니다.';
     }
     const defaultClass = state.storageClasses.find((item) => item.isDefault)?.name || '';
     const selections = [
@@ -1188,9 +1231,11 @@ export class HisComponent implements OnInit, OnDestroy {
       ['Grafana', config.grafana.storageClassName || defaultClass],
       ...(config.telemetry.enabled ? [['Loki·Tempo', config.telemetry.storageClassName || defaultClass]] : []),
     ];
-    const invalid = selections.filter(([, name]) => !name || !state.storageClasses.find((item) => item.name === name)?.isCsi);
-    if (invalid.length) return `CSI 선택 필요: ${invalid.map(([component, name]) => `${component}=${name || '미지정'}`).join(', ')}`;
-    return selections.map(([component, name]) => `${component}=${name}`).join(' · ');
+    const invalid = selections.filter(([, name]) => !name || !state.storageClasses.some((item) => item.name === name));
+    if (invalid.length) return `StorageClass 선택 필요: ${invalid.map(([component, name]) => `${component}=${name || '미지정'}`).join(', ')}`;
+    const nonCsi = selections.filter(([, name]) => !state.storageClasses.find((item) => item.name === name)?.isCsi);
+    const summary = selections.map(([component, name]) => `${component}=${name}`).join(' · ');
+    return nonCsi.length ? `${summary} · snapshot/온라인 확장 제한 가능` : summary;
   }
 
   selectedStorageClass(selected: string): string {
@@ -1201,7 +1246,6 @@ export class HisComponent implements OnInit, OnDestroy {
   observabilityInstallReady(item: HisItem): boolean {
     const plan = this.observabilityPlan();
     return this.canInstall(item)
-      && this.observabilityOwnerReady(item)
       && this.storageReadiness() === 'Ready'
       && this.chartVersionSupported(item)
       && Boolean(plan?.canApply)
@@ -1212,8 +1256,7 @@ export class HisComponent implements OnInit, OnDestroy {
   observabilityBlockingIssues(item: HisItem): string[] {
     if (item.release?.managed && item.check.state === 'Ready') return [];
     const issues: string[] = [];
-    if (!this.observabilityOwnerReady(item)) issues.push('HISS 실행 권한 승인');
-    if (this.storageReadiness() !== 'Ready') issues.push('CSI 영구 저장소 선택');
+    if (this.storageReadiness() !== 'Ready') issues.push('StorageClass 선택');
     if (!this.chartVersionSupported(item)) issues.push('지원 Chart 버전 선택');
     if (!item.release?.managed && this.observabilityPlan() && !this.observabilityPlan()?.canApply && !issues.length) {
       issues.push('클러스터 설치 조건 확인');
@@ -1382,7 +1425,7 @@ export class HisComponent implements OnInit, OnDestroy {
     const storageClass = state.storageClasses.find((item) => item.name === selected)
       || state.storageClasses.find((item) => item.isDefault);
     if (!storageClass) return '기본 StorageClass 없음';
-    return `${storageClass.provisioner} · ${storageClass.isCsi ? 'CSI' : '비-CSI(설치 불가)'} · ${storageClass.allowVolumeExpansion ? '온라인 확장 가능' : '온라인 확장 불가'} · reclaim ${storageClass.reclaimPolicy}`;
+    return `${storageClass.provisioner} · ${storageClass.isCsi ? 'CSI' : '동적 provisioner'} · ${storageClass.allowVolumeExpansion ? '온라인 확장 가능' : '온라인 확장 제한'} · reclaim ${storageClass.reclaimPolicy}`;
   }
 
   livePvc(state: ObservabilityConfigurationState, component: 'prometheus' | 'alertmanager' | 'grafana' | 'loki' | 'tempo'): string {
@@ -1472,9 +1515,11 @@ export class HisComponent implements OnInit, OnDestroy {
   private applyQuickInstallDefaults(state: ObservabilityConfigurationState, config: ObservabilityConfig): ObservabilityConfig {
     if (this.observabilityTarget()?.release?.managed) return config;
     const preferred = state.storageClasses.find((item) => item.isDefault && item.isCsi)
-      || state.storageClasses.find((item) => item.isCsi);
+      || state.storageClasses.find((item) => item.isCsi)
+      || state.storageClasses.find((item) => item.isDefault)
+      || state.storageClasses[0];
     if (!preferred) return config;
-    const choose = (current: string): string => state.storageClasses.find((item) => item.name === current)?.isCsi
+    const choose = (current: string): string => state.storageClasses.some((item) => item.name === current)
       ? current
       : preferred.name;
     config.prometheus.storageClassName = choose(config.prometheus.storageClassName);

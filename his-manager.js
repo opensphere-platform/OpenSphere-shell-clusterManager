@@ -1487,7 +1487,7 @@ async function observabilityConfigurationPlan(ctx, rawConfig) {
     const storageClass = classByName.get(desiredClassName);
     if (!desiredClassName) blockers.push(`${component}: 기본 StorageClass가 없으므로 명시적으로 선택해야 합니다.`);
     else if (!storageClass) blockers.push(`${component}: StorageClass '${desiredClassName}'이 존재하지 않습니다.`);
-    else if (!storageClass.isCsi) blockers.push(`${component}: '${desiredClassName}'의 provisioner '${storageClass.provisioner}'는 등록된 CSIDriver가 아닙니다.`);
+    else if (!storageClass.isCsi) warnings.push(`${component}: '${desiredClassName}'은 CSI가 아닌 '${storageClass.provisioner}'입니다. 설치는 허용하지만 snapshot과 온라인 확장 기능은 제한될 수 있습니다.`);
     const pvc = live.pvcs[component];
     if (!pvc) continue;
     const desiredSize = storageQuantity(desired[component].storageSize, component);
@@ -1505,7 +1505,7 @@ async function observabilityConfigurationPlan(ctx, rawConfig) {
     const storageClass = classByName.get(desiredClassName);
     if (!desiredClassName) blockers.push('telemetry: 기본 StorageClass가 없으므로 명시적으로 선택해야 합니다.');
     else if (!storageClass) blockers.push(`telemetry: StorageClass '${desiredClassName}'이 존재하지 않습니다.`);
-    else if (!storageClass.isCsi) blockers.push(`telemetry: '${desiredClassName}'의 provisioner '${storageClass.provisioner}'는 등록된 CSIDriver가 아닙니다.`);
+    else if (!storageClass.isCsi) warnings.push(`telemetry: '${desiredClassName}'은 CSI가 아닌 '${storageClass.provisioner}'입니다. 설치는 허용하지만 snapshot과 온라인 확장 기능은 제한될 수 있습니다.`);
     for (const [component, field] of [['loki', 'lokiStorageSize'], ['tempo', 'tempoStorageSize']]) {
       const pvc = live.pvcs[component];
       if (!pvc) continue;

@@ -88,3 +88,58 @@ final result: passed
 ## Final result
 
 Passed — no open P0, P1, or P2 visual or core-interaction issues.
+
+---
+
+# Design QA — Shared Observability lifecycle modal
+
+- Date: 2026-07-27
+- Deployed version: `cluster-manager 1.3.13` / `202607270730`
+- Source visual truth: `C:\Users\cmars\AppData\Local\Temp\codex-clipboard-3dbe7b15-751d-45ec-b54b-4c19b69a7b01.png`
+- Implementation screenshot: blocked before capture by Console MFA
+- Source pixels: `1173 × 1200`
+- Intended implementation viewport: same desktop viewport and lifecycle state
+- State: Shared Observability 관리 · 설치되지 않음 · readiness/plan blocked
+
+## Full-view comparison evidence
+
+The supplied source capture was opened at original resolution. It proves that the Clarity modal body creates a nested vertical scroller and that `kube-prometheus-stack` is presented without Prometheus or Grafana product imagery. The `1.3.13` implementation has been deployed, but the authenticated rendered state cannot yet be captured because the visible Chrome tab is waiting for the user's current six-digit MFA code.
+
+## Focused comparison evidence
+
+No post-fix focused crop is available yet. Source-focused inspection covers the modal title, chart summary, lifecycle timeline, readiness board, plan form, nested scrollbar, and footer. This evidence is sufficient to define the fixes, but not to pass visual QA without a rendered comparison.
+
+## Findings and comparison history
+
+1. **P1 — Nested desktop modal scrollbar**
+   - Earlier evidence: the source image shows a second scrollbar inside the modal even at `1173 × 1200`, and the footer is separated from content by that scroll region.
+   - Fix made: `.lifecycle-workspace` now uses `max-height: none` and `overflow: visible` on desktop. READINESS and PLAN are placed in a `0.96fr / 1.04fr` parallel grid to reduce content height instead of merely enlarging the dialog.
+   - Post-fix evidence: pending authenticated Chrome capture and measured `scrollHeight/clientHeight`.
+
+2. **P2 — Product identity is reduced to the chart name**
+   - Earlier evidence: the source title and summary use only text.
+   - Fix made: the supplied Prometheus and Grafana SVG assets are used in the modal title and chart lockup. Both asset URLs returned HTTP `200 image/svg+xml`.
+   - Post-fix evidence: pending authenticated Chrome capture and image-complete checks.
+
+## Required fidelity surfaces
+
+- Fonts and typography: OpenSphere/Clarity typography and title hierarchy are preserved; rendered wrapping remains to be checked.
+- Spacing and layout rhythm: the desktop content is reflowed into a parallel operational board; rendered modal/footer fit remains to be checked.
+- Colors and visual tokens: all new surfaces use existing `--os-*` tokens; no hard-coded component color was added.
+- Image quality and asset fidelity: real supplied SVG logos are used without handcrafted substitutes; rendered sharpness and loading remain to be checked.
+- Copy and content: lifecycle meaning, chart version, readiness, installation options, and action labels are preserved.
+- Accessibility: decorative title logos are hidden from assistive technology; summary logos have descriptive alternative text. Keyboard and 200% zoom checks remain pending.
+
+## Automated and deployment evidence
+
+- Tests: `104/104` passed.
+- Production build: passed.
+- Signature and manifest: verified with `opensphere-edge-local-v1`.
+- Runtime: `Activated / Ready`, `2/2` replicas.
+- Exact digest: `sha256:c697fab3ef631384bc7fa8f60e4654f1aada20ed057f4a402249fb03f740533a`.
+
+## Remaining blocker
+
+Enter the current six-digit MFA code in the visible Chrome tab. Then capture the deployed modal at the same state, compare it with the source, measure overflow, test keyboard/zoom behavior, and update this section with post-fix evidence.
+
+final result: blocked

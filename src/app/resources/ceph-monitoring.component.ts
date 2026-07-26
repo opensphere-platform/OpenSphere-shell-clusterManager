@@ -19,6 +19,7 @@ interface RefreshInterval {
 }
 
 const CERTIFICATE_HELP_DISMISSED_KEY = 'opensphere.ceph-monitoring.certificate-help-dismissed';
+const READ_ONLY_NOTICE_DISMISSED_KEY = 'opensphere.ceph-monitoring.read-only-notice-dismissed';
 
 @Component({
   selector: 'app-ceph-monitoring',
@@ -42,14 +43,20 @@ const CERTIFICATE_HELP_DISMISSED_KEY = 'opensphere.ceph-monitoring.certificate-h
         </a>
       </header>
 
-      <div class="monitoring-note" role="note">
+      <div *ngIf="readOnlyNoticeVisible()" class="monitoring-note" role="note">
         <div>
           <strong>읽기 전용 외부 화면</strong>
           <span>Grafana anonymous Viewer 권한으로 표시되며 Console 로그인·CephX key와 분리됩니다.</span>
         </div>
-        <div class="origin">
-          <span class="status-dot" aria-hidden="true"></span>
-          <code>{{ grafanaOriginLabel() }}</code>
+        <div class="monitoring-note-actions">
+          <div class="origin">
+            <span class="status-dot" aria-hidden="true"></span>
+            <code>{{ grafanaOriginLabel() }}</code>
+          </div>
+          <button class="btn btn-sm btn-link monitoring-note-close" type="button"
+            aria-label="읽기 전용 외부 화면 안내 닫기" (click)="dismissReadOnlyNotice()">
+            닫기
+          </button>
         </div>
       </div>
 
@@ -139,7 +146,9 @@ const CERTIFICATE_HELP_DISMISSED_KEY = 'opensphere.ceph-monitoring.certificate-h
       background: #f4faf5; color: #294833; font-size: .72rem;
     }
     .monitoring-note > div:first-child { display: flex; align-items: baseline; gap: .55rem; min-width: 0; }
+    .monitoring-note-actions { display: flex; align-items: center; gap: .45rem; flex: 0 0 auto; }
     .monitoring-note .origin { display: flex; align-items: center; gap: .4rem; white-space: nowrap; }
+    .monitoring-note-close { flex: 0 0 auto; margin: -.25rem 0; color: #294833; }
     .status-dot { width: .48rem; height: .48rem; border-radius: 50%; background: #2e7d32; }
     code { font-family: var(--os-font-mono, Consolas, monospace); font-size: .7rem; }
     .dashboard-workspace {
@@ -182,6 +191,7 @@ const CERTIFICATE_HELP_DISMISSED_KEY = 'opensphere.ceph-monitoring.certificate-h
     .dashboard-frame:not(.loading) .frame-loading { display: none; }
     @media (max-width: 900px) {
       .monitoring-head, .monitoring-note { align-items: flex-start; flex-direction: column; }
+      .monitoring-note-actions { width: 100%; justify-content: space-between; }
       .dashboard-toolbar { align-items: flex-start; flex-direction: column; }
       .dashboard-controls { width: 100%; flex-wrap: wrap; }
       .dashboard-title span { white-space: normal; }
@@ -203,6 +213,7 @@ export class CephMonitoringComponent implements OnInit {
   readonly frameNonce = signal(0);
   readonly frameLoaded = signal(false);
   readonly certificateHelpVisible = signal(this.readCertificateHelpVisibility());
+  readonly readOnlyNoticeVisible = signal(this.readReadOnlyNoticeVisibility());
 
   readonly timeRanges: readonly TimeRange[] = [
     { value: 'now-1h', label: '최근 1시간' },
@@ -266,9 +277,26 @@ export class CephMonitoringComponent implements OnInit {
     }
   }
 
+  dismissReadOnlyNotice(): void {
+    this.readOnlyNoticeVisible.set(false);
+    try {
+      globalThis.sessionStorage?.setItem(READ_ONLY_NOTICE_DISMISSED_KEY, '1');
+    } catch {
+      // Storage가 차단되어도 현재 화면에서는 안내를 닫을 수 있어야 한다.
+    }
+  }
+
   private readCertificateHelpVisibility(): boolean {
     try {
       return globalThis.sessionStorage?.getItem(CERTIFICATE_HELP_DISMISSED_KEY) !== '1';
+    } catch {
+      return true;
+    }
+  }
+
+  private readReadOnlyNoticeVisibility(): boolean {
+    try {
+      return globalThis.sessionStorage?.getItem(READ_ONLY_NOTICE_DISMISSED_KEY) !== '1';
     } catch {
       return true;
     }

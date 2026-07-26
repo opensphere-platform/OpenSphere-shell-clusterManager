@@ -893,6 +893,9 @@ test('Ceph Monitoring embeds read-only Grafana with explicit browser security bo
   assert.match(component, /aria-label="HTTPS 인증서 안내 닫기"/);
   assert.match(component, /\(click\)="dismissCertificateHelp\(\)"/);
   assert.match(component, /sessionStorage\?\.setItem\(CERTIFICATE_HELP_DISMISSED_KEY, '1'\)/);
+  assert.match(component, /aria-label="읽기 전용 외부 화면 안내 닫기"/);
+  assert.match(component, /\(click\)="dismissReadOnlyNotice\(\)"/);
+  assert.match(component, /sessionStorage\?\.setItem\(READ_ONLY_NOTICE_DISMISSED_KEY, '1'\)/);
   assert.match(component, /params\.append\('kiosk', ''\)/);
   assert.match(component, /refresh: this\.refresh\(\)/);
   assert.match(source, /pathname === '\/api\/ceph\/oaa\/monitoring'/);

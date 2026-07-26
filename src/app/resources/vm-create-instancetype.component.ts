@@ -14,13 +14,13 @@ const SERIES: Record<string, string> = {
   m1: 'Memory Intensive · M', n1: 'Network · N', rt1: 'Realtime · RT', gn1: 'GPU · GN',
 };
 const SERIES_ICON: Record<string, string> = {
-  u1: 'M4 13h6V4H4v9zm0 7h6v-5H4v5zm8 0h6V11h-6v9zm0-16v5h6V4h-6z',     // grid
-  o1: 'M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5',        // layers
-  cx1: 'M9 3H5a2 2 0 00-2 2v4m6-6h6m-6 0v18m6-18h4a2 2 0 012 2v4M3 9v6m18-6v6M3 15v4a2 2 0 002 2h4m6 0h4a2 2 0 002-2v-4', // chip
-  m1: 'M6 4h12v4H6zM6 10h12v4H6zM6 16h12v4H6z',                          // memory
-  n1: 'M5 12h14M5 12a2 2 0 100-4 2 2 0 000 4zm0 0a2 2 0 110 4 2 2 0 010-4zm14 0a2 2 0 100-4 2 2 0 000 4z', // network
-  rt1: 'M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z',                    // clock
-  gn1: 'M4 6h16v12H4zM8 18v2m8-2v2',                                     // gpu
+  u1: 'grid-view',
+  o1: 'layers',
+  cx1: 'cpu',
+  m1: 'memory',
+  n1: 'network-globe',
+  rt1: 'clock',
+  gn1: 'devices',
 };
 
 interface ITItem { name: string; cpu: number; mem: string; series: string; }
@@ -37,27 +37,31 @@ interface BootVol { name: string; kind: string; os: string; sc: string; size: st
   imports: [CommonModule, ClarityModule, CodeEditorComponent, OsLogoComponent],
   styles: [`
     .it-step { display: flex; align-items: center; gap: .5rem; margin: 1.25rem 0 .5rem; }
-    .it-num { width: 22px; height: 22px; border-radius: 50%; background: var(--os-brand-600,#2563eb); color:#fff; display:inline-flex; align-items:center; justify-content:center; font-size:.8rem; font-weight:700; }
+    .it-num { width: 22px; height: 22px; border-radius: 50%; background: var(--os-brand-500); color: var(--os-text-inverse); display:inline-flex; align-items:center; justify-content:center; font-size:.8rem; font-weight:700; }
     .it-step h3 { margin: 0; font-size: 1rem; }
     .it-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: .75rem; margin: .5rem 0; }
-    .it-card { border: 1px solid var(--clr-color-neutral-300,#cdcdcd); border-radius: 8px; padding: .9rem; }
-    .it-card.sel { border-color: var(--os-brand-600,#2563eb); box-shadow: 0 0 0 2px var(--os-brand-500,#4c6fff); }
-    .it-card .ic { color: var(--clr-color-neutral-700,#565656); }
+    .it-card { padding: .9rem; }
+    .it-card.sel { border-color: var(--os-brand-500); box-shadow: 0 0 0 2px var(--os-brand-500); }
+    .it-card .ic { color: var(--os-text-sec); }
     .it-card .nm { font-weight: 700; font-size: .92rem; margin: .35rem 0; }
     .it-card select { width: 100%; }
     .it-grid { display: grid; grid-template-columns: 150px 1fr; gap: .6rem 1rem; align-items: center; max-width: 620px; }
+    .it-grid input, .it-grid select { width: min(100%, 22.5rem); }
+    .it-node { max-width: 22.5rem; }
+    .it-actions { margin-top: var(--os-space-4); }
+    .it-yaml { margin-top: var(--os-space-2); max-width: 47.5rem; }
   `],
   template: `
-    <div *ngIf="msg()" class="alert" [ngClass]="ok() ? 'alert-success' : 'alert-danger'" role="alert">
-      <div class="alert-items"><div class="alert-item static"><span class="alert-text">{{ msg() }}</span></div></div>
-    </div>
+    <clr-alert *ngIf="msg()" [clrAlertType]="ok() ? 'success' : 'danger'" [clrAlertClosable]="false">
+      <clr-alert-item><span class="alert-text">{{ msg() }}</span></clr-alert-item>
+    </clr-alert>
 
     <!-- ── 1. 부팅할 볼륨 선택 ── -->
     <div class="it-step"><span class="it-num">1</span><h3>부팅할 볼륨 선택</h3></div>
     <clr-datagrid [clrDgLoading]="loading()">
       <clr-dg-column>선택</clr-dg-column><clr-dg-column>볼륨 이름</clr-dg-column><clr-dg-column>운영 체제</clr-dg-column><clr-dg-column>스토리지 클래스</clr-dg-column><clr-dg-column>크기</clr-dg-column>
       <clr-dg-row *clrDgItems="let v of bootVols()">
-        <clr-dg-cell><input type="radio" name="bootvol" [checked]="selVol()?.name === v.name" (change)="selVol.set(v)" /></clr-dg-cell>
+        <clr-dg-cell><input clrRadio type="radio" name="bootvol" [attr.aria-label]="'부팅 볼륨 ' + v.name" [checked]="selVol()?.name === v.name" (change)="selVol.set(v)" /></clr-dg-cell>
         <clr-dg-cell><app-os-logo [os]="v.os" [size]="20"></app-os-logo> {{ v.name }} <span class="label">{{ v.kind }}</span></clr-dg-cell>
         <clr-dg-cell>{{ v.os }}</clr-dg-cell><clr-dg-cell>{{ v.sc }}</clr-dg-cell><clr-dg-cell>{{ v.size }}</clr-dg-cell>
       </clr-dg-row>
@@ -67,10 +71,10 @@ interface BootVol { name: string; kind: string; os: string; sc: string; size: st
     <!-- ── 2. InstanceType 선택 ── -->
     <div class="it-step"><span class="it-num">2</span><h3>InstanceType 선택 <span class="os-muted">({{ instancetypes().length }}개 · {{ seriesList().length }} 시리즈)</span></h3></div>
     <div class="it-cards">
-      <div class="it-card" *ngFor="let s of seriesList()" [class.sel]="selSeries() === s.key">
-        <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.6" class="ic"><path [attr.d]="icon(s.key)"/></svg>
+      <div class="card it-card" *ngFor="let s of seriesList()" [class.sel]="selSeries() === s.key">
+        <cds-icon class="ic" [shape]="icon(s.key)" size="26"></cds-icon>
         <div class="nm">{{ s.label }}</div>
-        <select (change)="pickIt(s.key, $any($event.target).value)">
+        <select clrSelect [attr.aria-label]="s.label + ' 사이즈'" (change)="pickIt(s.key, $any($event.target).value)">
           <option value="">사이즈 선택…</option>
           <option *ngFor="let it of s.items" [value]="it.name" [selected]="selIt()===it.name">{{ it.name }} · {{ it.cpu }} vCPU · {{ it.mem }}</option>
         </select>
@@ -80,26 +84,25 @@ interface BootVol { name: string; kind: string; os: string; sc: string; size: st
 
     <!-- ── 3. VirtualMachine 세부 정보 ── -->
     <div class="it-step"><span class="it-num">3</span><h3>VirtualMachine 세부 정보</h3></div>
-    <div class="it-grid">
-      <label>이름</label><input type="text" class="os-search" [value]="name()" (input)="name.set($any($event.target).value)" placeholder="my-vm" />
-      <label>InstanceType</label><span>{{ selIt() || '—' }} <span class="os-muted" *ngIf="selItObj() as o">({{ o.cpu }} vCPU · {{ o.mem }})</span></span>
-      <label>부팅 볼륨</label><span>{{ selVol()?.name || '—' }}</span>
-      <label>디스크 크기 (Gi)</label><input type="number" min="10" class="os-num" [value]="disk()" (input)="disk.set(+$any($event.target).value)" />
-      <label>스토리지 클래스</label><input type="text" class="os-search" [value]="sc()" (input)="sc.set($any($event.target).value)" />
-      <label>노드 *</label>
-      <select class="os-search" style="max-width: 360px" (change)="selNode.set($any($event.target).value)">
+    <form clrForm clrLayout="horizontal" class="it-grid">
+      <clr-input-container><label>이름</label><input clrInput type="text" name="itVmName" [value]="name()" (input)="name.set($any($event.target).value)" placeholder="my-vm" /></clr-input-container>
+      <div><strong>InstanceType</strong> · {{ selIt() || '—' }} <span class="os-muted" *ngIf="selItObj() as o">({{ o.cpu }} vCPU · {{ o.mem }})</span></div>
+      <div><strong>부팅 볼륨</strong> · {{ selVol()?.name || '—' }}</div>
+      <clr-input-container><label>디스크 크기 (Gi)</label><input clrInput type="number" name="itVmDisk" min="10" [value]="disk()" (input)="disk.set(+$any($event.target).value)" /></clr-input-container>
+      <clr-input-container><label>스토리지 클래스</label><input clrInput type="text" name="itVmStorageClass" [value]="sc()" (input)="sc.set($any($event.target).value)" /></clr-input-container>
+      <clr-select-container class="it-node"><label>노드</label><select clrSelect name="itVmNode" (change)="selNode.set($any($event.target).value)">
         <option value="">— 배치할 노드 선택 (필수) —</option>
         <option *ngFor="let n of nodes()" [value]="n" [selected]="selNode() === n">{{ n }}</option>
-      </select>
-      <label>생성 후 시작</label><span><input type="checkbox" [checked]="start()" (change)="start.set($any($event.target).checked)" /></span>
-    </div>
+      </select></clr-select-container>
+      <clr-checkbox-container><clr-checkbox-wrapper><input clrCheckbox type="checkbox" name="itVmStart" [checked]="start()" (change)="start.set($any($event.target).checked)" /><label>생성 후 시작</label></clr-checkbox-wrapper></clr-checkbox-container>
+    </form>
 
-    <div class="os-actions" style="margin-top: 1rem">
+    <div class="os-actions it-actions">
       <button class="btn btn-sm btn-primary" [disabled]="busy() || !canCreate()" (click)="submit()">VirtualMachine 생성</button>
       <button class="btn btn-sm btn-outline" (click)="showYaml.set(!showYaml())">{{ showYaml() ? 'YAML 숨기기' : 'YAML 및 CLI 보기' }}</button>
       <button class="btn btn-sm btn-link" [disabled]="busy()" (click)="cancel.emit()">취소</button>
     </div>
-    <div *ngIf="showYaml()" style="margin-top: .5rem; max-width: 760px">
+    <div *ngIf="showYaml()" class="it-yaml">
       <app-code-editor [value]="yamlPreview()" language="yaml" [readOnly]="true" height="360px"></app-code-editor>
     </div>
   `,

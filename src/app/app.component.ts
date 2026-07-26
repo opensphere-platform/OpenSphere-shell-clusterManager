@@ -18,42 +18,42 @@ import { K8sService } from './core/k8s.service';
   styleUrls: ['./app.component.css'],
   styles: [`
     /* ── 표준 2단 보조 내비 — OpenSphere AI Hub(/p/ai) 방식: Clarity clr-vertical-nav, 흰 배경, 왼쪽 blue bar active ── */
-    .cm-nav { min-height: 100vh; background: #ffffff; }
+    .cm-nav { min-height: 100vh; background: var(--os-bg); }
     .cm-nav clr-vertical-nav-group,
     .cm-nav .nav-group,
     .cm-nav .nav-group-content,
     .cm-nav .nav-group-children { background: transparent; }
     .cm-nav a[clrVerticalNavLink],
     .cm-nav .nav-link,
-    .cm-nav .nav-trigger { color: var(--clr-vertical-nav-item-color, #1b2438); font-size: 0.72rem; }
+    .cm-nav .nav-trigger { color: var(--clr-vertical-nav-item-color, var(--os-ink)); font-size: 0.72rem; }
     .cm-nav a[clrVerticalNavLink]:hover,
     .cm-nav .nav-link:hover,
-    .cm-nav .nav-trigger:hover { color: #1b2438; background: rgba(0, 0, 0, 0.04); }
+    .cm-nav .nav-trigger:hover { color: var(--os-ink); background: var(--os-hover-bg); }
     /* active = 왼쪽 blue bar 하나만(중복/외곽 표시 제거) */
     .cm-nav a[clrVerticalNavLink]::before,
     .cm-nav .nav-link::before { display: none !important; content: none !important; }
     .cm-nav a[clrVerticalNavLink].active,
     .cm-nav .nav-link.active {
-      color: #1b2438; font-weight: 600;
-      background: rgba(76, 111, 255, 0.10);
-      box-shadow: inset 3px 0 0 #4c6fff;
+      color: var(--os-ink); font-weight: 600;
+      background: var(--os-active-bg);
+      box-shadow: inset 3px 0 0 var(--os-active-border);
     }
-    .cm-nav .cm-tree-root { margin-top: 0.12rem; border-top: 1px solid #eceef2; }
+    .cm-nav .cm-tree-root { margin-top: 0.12rem; border-top: 1px solid var(--os-border); }
     .cm-nav .cm-tree-root > .nav-group-trigger { font-weight: 600; }
     .cm-nav .cm-tree-section > .nav-group-trigger {
-      min-height: 1.9rem; padding-left: 1.35rem; color: #4a5568; font-size: 0.66rem; font-weight: 600;
+      min-height: 1.9rem; padding-left: 1.35rem; color: var(--os-text-sec); font-size: 0.66rem; font-weight: 600;
     }
     .cm-nav .cm-tree-section a[clrVerticalNavLink] {
       min-height: 1.9rem; padding-left: 2.15rem; font-size: 0.68rem;
     }
 
-    .cm-brand { display: flex; align-items: center; gap: 0.35rem; min-height: 3.05rem; padding: 0.55rem 0.9rem; color: #1b2438; border-bottom: 1px solid #e0e0e0; }
+    .cm-brand { display: flex; align-items: center; gap: 0.35rem; min-height: 3.05rem; padding: 0.55rem 0.9rem; color: var(--os-ink); border-bottom: 1px solid var(--os-border); }
     .cm-brand strong { font-size: 0.78rem; font-weight: 600; }
     .cm-brand .label { font-size: 0.58rem; }
 
     /* 관리 관점 = Clarity Select(clr-select-wrapper + clr-select). 항상 노출, 풀폭. */
     .cm-scope { padding: 0.5rem 0.9rem 0.45rem; }
-    .cm-scope-label { display: block; margin-bottom: 0.2rem; color: #666; font-size: 0.58rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+    .cm-scope-label { display: block; margin-bottom: 0.2rem; color: var(--os-text-dim); font-size: 0.58rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
     .cm-scope .clr-select-wrapper { width: 100%; }
     .cm-scope .clr-select { width: 100%; }
 
@@ -61,14 +61,14 @@ import { K8sService } from './core/k8s.service';
     .cc-crumbs {
       display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; min-height: 2rem;
       margin: -1.1rem -1.4rem 0.9rem; padding: 0.45rem 1.4rem;
-      background: #f4f4f4; border-top: 1px solid #d0d0d0; border-bottom: 1px solid #d0d0d0;
+      background: var(--os-surface); border-top: 1px solid var(--os-border); border-bottom: 1px solid var(--os-border);
       font-size: 0.8125rem; line-height: 1rem;
     }
-    .cc-crumb { color: #525252; }
-    .cc-crumb-link { color: #4c6fff; text-decoration: none; cursor: pointer; }
+    .cc-crumb { color: var(--os-text-sec); }
+    .cc-crumb-link { color: var(--os-brand-500); text-decoration: none; cursor: pointer; }
     .cc-crumb-link:hover { text-decoration: underline; }
-    .cc-crumb.is-cur { color: #525252; }
-    .cc-crumb-sep { color: #8c8c8c; }
+    .cc-crumb.is-cur { color: var(--os-text-sec); }
+    .cc-crumb-sep { color: var(--os-text-dim); }
   `],
   template: `
     <div class="os-shell">
@@ -81,7 +81,7 @@ import { K8sService } from './core/k8s.service';
         <div class="cm-scope">
           <label class="cm-scope-label" for="cm-management-view">Management view</label>
           <div class="clr-select-wrapper">
-            <select id="cm-management-view" class="clr-select" aria-label="관리 관점 선택" [value]="viewScope()" (change)="setScope($any($event.target).value)">
+            <select id="cm-management-view" clrSelect aria-label="관리 관점 선택" [value]="viewScope()" (change)="setScope($any($event.target).value)">
               <option value="k8s">Kubernetes</option>
               <option value="ceph">Ceph Storage</option>
               <option value="his">HISS</option>
@@ -99,7 +99,7 @@ import { K8sService } from './core/k8s.service';
         <clr-vertical-nav-group *ngFor="let g of filteredNav()"
             [clrVerticalNavGroupExpanded]="isOpen(g.group)"
             (clrVerticalNavGroupExpandedChange)="setOpen(g.group, $event)">
-          <svg viewBox="0 0 24 24" class="os-tree-ic" clrVerticalNavIcon><path [attr.d]="secIcon(g.group)"/></svg>
+          <cds-icon [shape]="secIcon(g.group)" class="os-tree-ic" clrVerticalNavIcon></cds-icon>
           {{ g.group }}
           <clr-vertical-nav-group-children>
             <ng-container *ngFor="let it of g.items">

@@ -10,13 +10,6 @@ import { OsLogoComponent, osIdFromImage } from '../shared/os-logo.component';
 import { VmConsoleComponent } from './vm-console.component';
 import { VmVncComponent } from './vm-vnc.component';
 
-const ICON: Record<string, string> = {
-  play: 'M8 5v14l11-7z',
-  stop: 'M6 6h12v12H6z',
-  refresh: 'M17.65 6.35A8 8 0 1019 13h-2a6 6 0 11-1.76-4.24L13 11h7V4l-2.35 2.35z',
-  pause: 'M6 5h4v14H6zM14 5h4v14h-4z',
-  trash: 'M6 19a2 2 0 002 2h8a2 2 0 002-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z',
-};
 const vmStatusClass = (s: string): string => {
   const v = s || '';
   if (v === 'Running') return 'label-success';
@@ -51,48 +44,49 @@ function memBytes(v?: string): number {
   imports: [CommonModule, ClarityModule, CodeEditorComponent, OsLogoComponent, VmConsoleComponent, VmVncComponent],
   styles: [`
     .vm-title-h { display: inline-flex; align-items: center; gap: .4rem; }
-    .vm-tabs { display: flex; gap: .25rem; border-bottom: 1px solid var(--clr-color-neutral-300, #ccc); margin: .25rem 0 1rem; flex-wrap: wrap; }
-    .vm-tab { padding: .4rem .9rem; cursor: pointer; border: none; background: none; font-size: .9rem; color: var(--clr-color-neutral-700, #565656); border-bottom: 2px solid transparent; }
-    .vm-tab.active { color: var(--os-brand-600, #2563eb); border-bottom-color: var(--os-brand-600, #2563eb); font-weight: 600; }
     .vm-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; align-items: start; }
     .vm-kv { display: grid; grid-template-columns: 150px 1fr; gap: .35rem .75rem; padding: .25rem 0; }
-    .vm-kv dt { color: var(--clr-color-neutral-600, #666); }
+    .vm-kv dt { color: var(--os-text-dim); }
     .vm-kv dd { margin: 0; word-break: break-all; }
     .vm-metric { display: flex; gap: 1.5rem; flex-wrap: wrap; padding: 1rem; }
     .vm-metric .m { min-width: 140px; }
     .vm-metric .mv { font-size: 1.6rem; font-weight: 200; }
+    .vm-console-body { padding: var(--os-space-1) 0; }
     @media (max-width: 900px) { .vm-grid2 { grid-template-columns: 1fr; } }
   `],
   template: `
-    <div class="os-title-row">
-      <h2 class="os-h2 vm-title-h">
+    <div class="os-page-header">
+      <div class="os-page-header-main">
+      <h2 class="os-page-title vm-title-h">
         <app-os-logo [os]="osId()" [size]="26"></app-os-logo>
-        <span class="label label-info">VM</span> {{ name }}
+        {{ name }}
         <span class="label" [ngClass]="statusClass()">{{ status() }}</span>
       </h2>
-      <span class="os-actions os-ml-auto">
-        <button class="os-iconbtn" *ngIf="!running()" title="Start" [disabled]="busy()" (click)="setRunning(true)"><svg viewBox="0 0 24 24" class="os-ic"><path [attr.d]="ic.play"/></svg></button>
-        <button class="os-iconbtn" *ngIf="running()" title="Stop" [disabled]="busy()" (click)="setRunning(false)"><svg viewBox="0 0 24 24" class="os-ic"><path [attr.d]="ic.stop"/></svg></button>
-        <button class="os-iconbtn" *ngIf="running()" title="Restart" [disabled]="busy()" (click)="restart()"><svg viewBox="0 0 24 24" class="os-ic"><path [attr.d]="ic.refresh"/></svg></button>
-        <button class="os-iconbtn" *ngIf="running() && !paused()" title="Pause" [disabled]="busy()" (click)="pause(true)"><svg viewBox="0 0 24 24" class="os-ic"><path [attr.d]="ic.pause"/></svg></button>
-        <button class="os-iconbtn" *ngIf="paused()" title="Unpause" [disabled]="busy()" (click)="pause(false)"><svg viewBox="0 0 24 24" class="os-ic"><path [attr.d]="ic.play"/></svg></button>
-        <button class="os-iconbtn os-iconbtn-danger" title="Delete" [disabled]="busy()" (click)="deleteOpen.set(true)"><svg viewBox="0 0 24 24" class="os-ic"><path [attr.d]="ic.trash"/></svg></button>
-      </span>
+      <p class="os-page-description">namespace: {{ namespace }} · VirtualMachine lifecycle</p>
+      </div>
+      <div class="os-page-header-actions">
+        <button class="btn btn-sm btn-link btn-icon" *ngIf="!running()" title="Start" aria-label="Start" [disabled]="busy()" (click)="setRunning(true)"><cds-icon shape="play"></cds-icon></button>
+        <button class="btn btn-sm btn-link btn-icon" *ngIf="running()" title="Stop" aria-label="Stop" [disabled]="busy()" (click)="setRunning(false)"><cds-icon shape="stop"></cds-icon></button>
+        <button class="btn btn-sm btn-link btn-icon" *ngIf="running()" title="Restart" aria-label="Restart" [disabled]="busy()" (click)="restart()"><cds-icon shape="refresh"></cds-icon></button>
+        <button class="btn btn-sm btn-link btn-icon" *ngIf="running() && !paused()" title="Pause" aria-label="Pause" [disabled]="busy()" (click)="pause(true)"><cds-icon shape="pause"></cds-icon></button>
+        <button class="btn btn-sm btn-link btn-icon" *ngIf="paused()" title="Unpause" aria-label="Unpause" [disabled]="busy()" (click)="pause(false)"><cds-icon shape="play"></cds-icon></button>
+        <button class="btn btn-sm btn-danger-outline btn-icon" title="Delete" aria-label="Delete" [disabled]="busy()" (click)="deleteOpen.set(true)"><cds-icon shape="trash"></cds-icon></button>
+      </div>
     </div>
 
-    <div *ngIf="msg()" class="alert" [ngClass]="ok() ? 'alert-success' : 'alert-danger'" role="alert">
-      <div class="alert-items"><div class="alert-item static"><span class="alert-text">{{ msg() }}</span></div></div>
-    </div>
+    <clr-alert *ngIf="msg()" [clrAlertType]="ok() ? 'success' : 'danger'" [clrAlertClosable]="false">
+      <clr-alert-item><span class="alert-text">{{ msg() }}</span></clr-alert-item>
+    </clr-alert>
 
-    <div class="vm-tabs">
-      <button class="vm-tab" [class.active]="tab() === 'overview'" (click)="tab.set('overview')">개요</button>
-      <button class="vm-tab" [class.active]="tab() === 'metrics'" (click)="tab.set('metrics')">메트릭</button>
-      <button class="vm-tab" [class.active]="tab() === 'yaml'" (click)="tab.set('yaml')">YAML</button>
-      <button class="vm-tab" [class.active]="tab() === 'settings'" (click)="tab.set('settings')">설정</button>
-      <button class="vm-tab" [class.active]="tab() === 'events'" (click)="tab.set('events')">이벤트</button>
-      <button class="vm-tab" [class.active]="tab() === 'console'" (click)="tab.set('console')">콘솔</button>
-      <button class="vm-tab" [class.active]="tab() === 'diagnostics'" (click)="tab.set('diagnostics')">진단</button>
-    </div>
+    <clr-tabs aria-label="VirtualMachine 상세 보기">
+      <clr-tab><button clrTabLink type="button" (click)="tab.set('overview')">개요</button><clr-tab-content *clrIfActive></clr-tab-content></clr-tab>
+      <clr-tab><button clrTabLink type="button" (click)="tab.set('metrics')">메트릭</button><clr-tab-content *clrIfActive></clr-tab-content></clr-tab>
+      <clr-tab><button clrTabLink type="button" (click)="tab.set('yaml')">YAML</button><clr-tab-content *clrIfActive></clr-tab-content></clr-tab>
+      <clr-tab><button clrTabLink type="button" (click)="tab.set('settings')">설정</button><clr-tab-content *clrIfActive></clr-tab-content></clr-tab>
+      <clr-tab><button clrTabLink type="button" (click)="tab.set('events')">이벤트</button><clr-tab-content *clrIfActive></clr-tab-content></clr-tab>
+      <clr-tab><button clrTabLink type="button" (click)="tab.set('console')">콘솔</button><clr-tab-content *clrIfActive></clr-tab-content></clr-tab>
+      <clr-tab><button clrTabLink type="button" (click)="tab.set('diagnostics')">진단</button><clr-tab-content *clrIfActive></clr-tab-content></clr-tab>
+    </clr-tabs>
 
     <!-- ===== 개요 ===== -->
     <div *ngIf="tab() === 'overview'" class="vm-grid2">
@@ -220,11 +214,11 @@ function memBytes(v?: string): number {
     <!-- ===== 콘솔 (VNC / serial) ===== -->
     <div *ngIf="tab() === 'console'" class="os-card">
       <div class="card-block os-muted" *ngIf="!vmi()">이 VirtualMachine이 중단되었습니다. 콘솔에 액세스하려면 VirtualMachine을 시작하십시오.</div>
-      <div *ngIf="vmi()" style="padding: .25rem 0">
-        <div class="vm-tabs" style="margin-top: 0">
-          <button class="vm-tab" [class.active]="consoleType() === 'vnc'" (click)="consoleType.set('vnc')">VNC 콘솔</button>
-          <button class="vm-tab" [class.active]="consoleType() === 'serial'" (click)="consoleType.set('serial')">Serial 콘솔</button>
-        </div>
+      <div *ngIf="vmi()" class="vm-console-body">
+        <clr-tabs aria-label="VirtualMachine 콘솔 유형">
+          <clr-tab><button clrTabLink type="button" (click)="consoleType.set('vnc')">VNC 콘솔</button><clr-tab-content *clrIfActive></clr-tab-content></clr-tab>
+          <clr-tab><button clrTabLink type="button" (click)="consoleType.set('serial')">Serial 콘솔</button><clr-tab-content *clrIfActive></clr-tab-content></clr-tab>
+        </clr-tabs>
         <app-vm-vnc *ngIf="consoleType() === 'vnc'" [ns]="namespace" [name]="name"></app-vm-vnc>
         <app-vm-console *ngIf="consoleType() === 'serial'" [ns]="namespace" [name]="name"></app-vm-console>
       </div>
@@ -277,7 +271,6 @@ export class VmDetailComponent implements OnInit {
   @Output() changed = new EventEmitter<void>();
 
   private k8s = inject(K8sService);
-  readonly ic = ICON;
   readonly tab = signal<'overview' | 'metrics' | 'yaml' | 'settings' | 'events' | 'console' | 'diagnostics'>('overview');
   readonly consoleType = signal<'vnc' | 'serial'>('vnc');
   readonly vm = signal<any>(null);

@@ -33,12 +33,15 @@ import { MutationPlan } from '../core/mutation.types';
           </div>
         </div>
 
-        <div class="mc-type" *ngIf="plan?.confirmTier === 'modal+type'">
-          <label>위험한 작업입니다. 계속하려면 리소스 이름 <strong>{{ targetName() }}</strong> 을(를) 입력하세요.</label>
-          <input class="clr-input mc-type-input" [value]="typed()" (input)="typed.set($any($event.target).value)" placeholder="{{ targetName() }}" />
-        </div>
+        <clr-input-container class="mc-type" *ngIf="plan?.confirmTier === 'modal+type'">
+          <label>위험한 작업입니다. 리소스 이름 {{ targetName() }} 입력</label>
+          <input clrInput class="mc-type-input" [value]="typed()" (input)="typed.set($any($event.target).value)" [placeholder]="targetName()" />
+          <clr-control-helper>계속하려면 리소스 이름을 정확히 입력하십시오.</clr-control-helper>
+        </clr-input-container>
 
-        <p class="mc-denied" *ngIf="plan && !plan.sarAllowed">이 작업을 수행할 권한이 없습니다(RBAC).</p>
+        <clr-alert *ngIf="plan && !plan.sarAllowed" [clrAlertType]="'danger'" [clrAlertClosable]="false">
+          <clr-alert-item><span class="alert-text">이 작업을 수행할 권한이 없습니다(RBAC).</span></clr-alert-item>
+        </clr-alert>
       </div>
       <div class="modal-footer">
         <button class="btn btn-outline" (click)="cancel()">취소</button>
@@ -51,18 +54,17 @@ import { MutationPlan } from '../core/mutation.types';
     </clr-modal>
   `,
   styles: [`
-    .mc-summary { font-size: 0.9rem; color: var(--os-ink, #161616); margin: 0 0 0.6rem; }
-    .mc-reasons { margin: 0 0 0.7rem; padding-left: 1.1rem; font-size: 0.8rem; color: #525252; }
-    .mc-reasons .mc-red { color: #da1e28; font-weight: 600; }
-    .mc-diff-h { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: #8c8c8c; margin: 0.4rem 0 0.3rem; }
-    .mc-row { display: flex; gap: 0.4rem; align-items: center; font-family: var(--os-font-mono, monospace); font-size: 0.72rem; padding: 0.15rem 0; border-bottom: 1px solid #f0f0f0; }
-    .mc-path { color: #525252; min-width: 11rem; word-break: break-all; }
-    .mc-before { color: #da1e28; text-decoration: line-through; }
-    .mc-after { color: #1c7d3a; }
-    .mc-arrow { color: #8c8c8c; }
+    .mc-summary { font-size: 0.9rem; color: var(--os-ink); margin: 0 0 0.6rem; }
+    .mc-reasons { margin: 0 0 0.7rem; padding-left: 1.1rem; font-size: 0.8rem; color: var(--os-text-sec); }
+    .mc-reasons .mc-red { color: var(--os-danger); font-weight: 600; }
+    .mc-diff-h { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--os-text-dim); margin: 0.4rem 0 0.3rem; }
+    .mc-row { display: flex; gap: 0.4rem; align-items: center; font-family: var(--os-font-mono, monospace); font-size: 0.72rem; padding: 0.15rem 0; border-bottom: 1px solid var(--os-border); }
+    .mc-path { color: var(--os-text-sec); min-width: 11rem; word-break: break-all; }
+    .mc-before { color: var(--os-danger); text-decoration: line-through; }
+    .mc-after { color: var(--os-success); }
+    .mc-arrow { color: var(--os-text-dim); }
     .mc-type { margin: 0.7rem 0 0; font-size: 0.8rem; }
     .mc-type-input { width: 100%; margin-top: 0.3rem; }
-    .mc-denied { color: #da1e28; font-size: 0.8rem; margin-top: 0.6rem; }
   `],
 })
 export class MutationConfirmComponent {

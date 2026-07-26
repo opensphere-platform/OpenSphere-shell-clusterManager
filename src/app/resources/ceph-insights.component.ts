@@ -1,5 +1,6 @@
 import { CommonModule } from '@angular/common';
-import { Component, EventEmitter, Input, Output, ViewEncapsulation, signal } from '@angular/core';
+import { Component, EventEmitter, Input, Output, signal } from '@angular/core';
+import { ClarityModule } from '@clr/angular';
 import {
   DonutChartComponent,
   HistogramChartComponent,
@@ -15,6 +16,7 @@ type InsightsView = 'overview' | 'capacity' | 'osd-pg' | 'hosts';
   standalone: true,
   imports: [
     CommonModule,
+    ClarityModule,
     MeterChartComponent,
     DonutChartComponent,
     StackedBarChartComponent,
@@ -33,21 +35,23 @@ type InsightsView = 'overview' | 'capacity' | 'osd-pg' | 'hosts';
             <p>연결에 사용한 제한된 CephX 계정으로 health·용량·OSD·PG와 배포 정보를 읽습니다. 이 화면은 Ceph 상태를 변경하지 않습니다.</p>
           </div>
         </div>
-        <button class="refresh-button" type="button" [disabled]="loading" (click)="refresh.emit()" aria-label="Ceph 현황 즉시 다시 읽기">
-          {{ loading ? '읽는 중…' : '지금 새로고침' }}
+        <button class="btn btn-outline" type="button" [disabled]="loading" (click)="refresh.emit()" aria-label="Ceph 현황 즉시 다시 읽기">
+          <cds-icon shape="refresh"></cds-icon> {{ loading ? '읽는 중…' : '지금 새로고침' }}
         </button>
       </div>
 
-      <div *ngIf="error" class="section-alert" [class.danger]="!insights" [class.warning]="!!insights" role="alert">
-        <strong>{{ insights ? '새 관측값 갱신이 지연되고 있습니다.' : 'Ceph 현황을 불러오지 못했습니다.' }}</strong>
-        <span>{{ error }}<ng-container *ngIf="insights"> 마지막으로 확인된 관측값을 계속 표시합니다.</ng-container></span>
-      </div>
+      <clr-alert *ngIf="error" [clrAlertType]="insights ? 'warning' : 'danger'" [clrAlertClosable]="false">
+        <clr-alert-item><span class="alert-text">
+          <strong>{{ insights ? '새 관측값 갱신이 지연되고 있습니다.' : 'Ceph 현황을 불러오지 못했습니다.' }}</strong> ·
+          {{ error }}<ng-container *ngIf="insights"> 마지막으로 확인된 관측값을 계속 표시합니다.</ng-container>
+        </span></clr-alert-item>
+      </clr-alert>
 
       <ng-container *ngIf="insights as data; else noData">
-        <div *ngIf="data.observerSecurity?.mode === 'LegacyUnauthenticated'" class="section-alert warning" role="status">
-          <strong>관측 보안 전환 대기</strong>
-          <span>{{ data.observerSecurity.message }}</span>
-        </div>
+        <clr-alert *ngIf="data.observerSecurity?.mode === 'LegacyUnauthenticated'"
+                   [clrAlertType]="'warning'" [clrAlertClosable]="false">
+          <clr-alert-item><span class="alert-text"><strong>관측 보안 전환 대기</strong> · {{ data.observerSecurity.message }}</span></clr-alert-item>
+        </clr-alert>
         <div class="observation-strip">
           <div>
             <span class="observation-label">클러스터 상태</span>
@@ -71,21 +75,21 @@ type InsightsView = 'overview' | 'capacity' | 'osd-pg' | 'hosts';
           </div>
         </div>
 
-        <div *ngIf="data.sectionErrors.length" class="section-alert warning" role="status">
-          <strong>일부 항목은 표시할 수 없습니다.</strong>
+        <clr-alert *ngIf="data.sectionErrors.length" [clrAlertType]="'warning'" [clrAlertClosable]="false">
+          <clr-alert-item><span class="alert-text"><strong>일부 항목은 표시할 수 없습니다.</strong>
           <ul>
             <li *ngFor="let item of data.sectionErrors">
               <b>{{ sectionLabel(item.section) }}</b> — {{ item.message }}
             </li>
-          </ul>
-        </div>
+          </ul></span></clr-alert-item>
+        </clr-alert>
 
-        <nav class="view-switcher" aria-label="Ceph 현황 보기">
-          <button type="button" [attr.aria-current]="view() === 'overview' ? 'page' : null" [class.active]="view() === 'overview'" (click)="view.set('overview')">전체 현황</button>
-          <button type="button" [attr.aria-current]="view() === 'capacity' ? 'page' : null" [class.active]="view() === 'capacity'" (click)="view.set('capacity')">용량·Pool</button>
-          <button type="button" [attr.aria-current]="view() === 'osd-pg' ? 'page' : null" [class.active]="view() === 'osd-pg'" (click)="view.set('osd-pg')">OSD·PG</button>
-          <button type="button" [attr.aria-current]="view() === 'hosts' ? 'page' : null" [class.active]="view() === 'hosts'" (click)="view.set('hosts')">호스트·서비스</button>
-        </nav>
+        <clr-tabs aria-label="Ceph 현황 보기">
+          <clr-tab><button clrTabLink type="button" (click)="view.set('overview')">전체 현황</button><clr-tab-content *clrIfActive></clr-tab-content></clr-tab>
+          <clr-tab><button clrTabLink type="button" (click)="view.set('capacity')">용량·Pool</button><clr-tab-content *clrIfActive></clr-tab-content></clr-tab>
+          <clr-tab><button clrTabLink type="button" (click)="view.set('osd-pg')">OSD·PG</button><clr-tab-content *clrIfActive></clr-tab-content></clr-tab>
+          <clr-tab><button clrTabLink type="button" (click)="view.set('hosts')">호스트·서비스</button><clr-tab-content *clrIfActive></clr-tab-content></clr-tab>
+        </clr-tabs>
 
         <ng-container *ngIf="view() === 'overview'">
           <div class="metric-grid">
@@ -114,29 +118,29 @@ type InsightsView = 'overview' | 'capacity' | 'osd-pg' | 'hosts';
 
           <div class="chart-grid">
             <article class="chart-card chart-card-wide">
-              <header><div><h3>클러스터 용량 사용률</h3><p>전체 raw capacity 중 현재 사용량</p></div><strong>{{ percent(data.capacity.percentUsed) }}</strong></header>
+              <div class="chart-card-header"><div><h3>클러스터 용량 사용률</h3><p>전체 raw capacity 중 현재 사용량</p></div><strong>{{ percent(data.capacity.percentUsed) }}</strong></div>
               <ibm-meter-chart [data]="capacityMeterData(data)" [options]="capacityMeterOptions" height="150px"></ibm-meter-chart>
               <details>
                 <summary>차트 데이터 표로 보기</summary>
-                <table><caption>Ceph 전체 용량</caption><thead><tr><th>구분</th><th>크기</th><th>비율</th></tr></thead>
-                  <tbody><tr><td>사용</td><td>{{ bytes(data.capacity.usedBytes) }}</td><td>{{ percent(data.capacity.percentUsed) }}</td></tr>
-                    <tr><td>여유</td><td>{{ bytes(data.capacity.availableBytes) }}</td><td>{{ percent(100 - data.capacity.percentUsed) }}</td></tr></tbody>
-                </table>
+                <clr-datagrid aria-label="Ceph 전체 용량"><clr-dg-column>구분</clr-dg-column><clr-dg-column>크기</clr-dg-column><clr-dg-column>비율</clr-dg-column>
+                  <clr-dg-row><clr-dg-cell>사용</clr-dg-cell><clr-dg-cell>{{ bytes(data.capacity.usedBytes) }}</clr-dg-cell><clr-dg-cell>{{ percent(data.capacity.percentUsed) }}</clr-dg-cell></clr-dg-row>
+                    <clr-dg-row><clr-dg-cell>여유</clr-dg-cell><clr-dg-cell>{{ bytes(data.capacity.availableBytes) }}</clr-dg-cell><clr-dg-cell>{{ percent(100 - data.capacity.percentUsed) }}</clr-dg-cell></clr-dg-row>
+                </clr-datagrid>
               </details>
             </article>
             <article class="chart-card">
-              <header><div><h3>OSD 실행 상태</h3><p>Up/Down은 데몬 응답 상태입니다.</p></div></header>
+              <div class="chart-card-header"><div><h3>OSD 실행 상태</h3><p>Up/Down은 데몬 응답 상태입니다.</p></div></div>
               <ibm-donut-chart [data]="osdStatusData(data)" [options]="osdDonutOptions" height="250px"></ibm-donut-chart>
-              <table class="compact-table"><caption>OSD 실행 상태</caption><tbody>
-                <tr><th>Up</th><td>{{ data.osds.up }}</td></tr><tr><th>Down</th><td>{{ data.osds.down }}</td></tr>
-              </tbody></table>
+              <clr-datagrid class="compact-table" aria-label="OSD 실행 상태">
+                <clr-dg-row><clr-dg-cell>Up</clr-dg-cell><clr-dg-cell>{{ data.osds.up }}</clr-dg-cell></clr-dg-row><clr-dg-row><clr-dg-cell>Down</clr-dg-cell><clr-dg-cell>{{ data.osds.down }}</clr-dg-cell></clr-dg-row>
+              </clr-datagrid>
             </article>
             <article class="chart-card">
-              <header><div><h3>PG 데이터 상태</h3><p>active+clean 계열과 확인 필요 상태</p></div></header>
+              <div class="chart-card-header"><div><h3>PG 데이터 상태</h3><p>active+clean 계열과 확인 필요 상태</p></div></div>
               <ibm-donut-chart [data]="pgHealthData(data)" [options]="pgDonutOptions" height="250px"></ibm-donut-chart>
-              <table class="compact-table"><caption>PG 데이터 상태</caption><tbody>
-                <tr><th>정상</th><td>{{ data.pgs.healthy }}</td></tr><tr><th>확인 필요</th><td>{{ data.pgs.unhealthy }}</td></tr>
-              </tbody></table>
+              <clr-datagrid class="compact-table" aria-label="PG 데이터 상태">
+                <clr-dg-row><clr-dg-cell>정상</clr-dg-cell><clr-dg-cell>{{ data.pgs.healthy }}</clr-dg-cell></clr-dg-row><clr-dg-row><clr-dg-cell>확인 필요</clr-dg-cell><clr-dg-cell>{{ data.pgs.unhealthy }}</clr-dg-cell></clr-dg-row>
+              </clr-datagrid>
             </article>
           </div>
         </ng-container>
@@ -144,7 +148,7 @@ type InsightsView = 'overview' | 'capacity' | 'osd-pg' | 'hosts';
         <ng-container *ngIf="view() === 'capacity'">
           <div class="chart-grid single">
             <article class="chart-card">
-              <header><div><h3>Pool별 사용량</h3><p>Pool이 실제로 사용 중인 byte를 비교합니다.</p></div></header>
+              <div class="chart-card-header"><div><h3>Pool별 사용량</h3><p>Pool이 실제로 사용 중인 byte를 비교합니다.</p></div></div>
               <ibm-stacked-bar-chart *ngIf="data.pools.length" [data]="poolChartData(data)" [options]="poolChartOptions" height="360px"></ibm-stacked-bar-chart>
               <p *ngIf="!data.pools.length" class="empty-section">조회 가능한 Pool 데이터가 없습니다.</p>
             </article>
@@ -152,9 +156,9 @@ type InsightsView = 'overview' | 'capacity' | 'osd-pg' | 'hosts';
           <div class="data-panel">
             <h3>Pool 상세</h3>
             <div class="table-scroll">
-              <table><caption>Ceph Pool 용량과 객체 수</caption><thead><tr><th>Pool</th><th>사용량</th><th>저장 데이터</th><th>가용 추정</th><th>사용률</th><th>객체</th></tr></thead>
-                <tbody><tr *ngFor="let pool of data.pools"><th>{{ pool.name }}</th><td>{{ bytes(pool.bytesUsed) }}</td><td>{{ bytes(pool.storedBytes) }}</td><td>{{ bytes(pool.maxAvailableBytes) }}</td><td>{{ percent(pool.percentUsed) }}</td><td>{{ integer(pool.objects) }}</td></tr></tbody>
-              </table>
+              <clr-datagrid aria-label="Ceph Pool 용량과 객체 수"><clr-dg-column>Pool</clr-dg-column><clr-dg-column>사용량</clr-dg-column><clr-dg-column>저장 데이터</clr-dg-column><clr-dg-column>가용 추정</clr-dg-column><clr-dg-column>사용률</clr-dg-column><clr-dg-column>객체</clr-dg-column>
+                <clr-dg-row *ngFor="let pool of data.pools"><clr-dg-cell>{{ pool.name }}</clr-dg-cell><clr-dg-cell>{{ bytes(pool.bytesUsed) }}</clr-dg-cell><clr-dg-cell>{{ bytes(pool.storedBytes) }}</clr-dg-cell><clr-dg-cell>{{ bytes(pool.maxAvailableBytes) }}</clr-dg-cell><clr-dg-cell>{{ percent(pool.percentUsed) }}</clr-dg-cell><clr-dg-cell>{{ integer(pool.objects) }}</clr-dg-cell></clr-dg-row>
+              </clr-datagrid>
             </div>
           </div>
         </ng-container>
@@ -168,12 +172,12 @@ type InsightsView = 'overview' | 'capacity' | 'osd-pg' | 'hosts';
           </div>
           <div class="chart-grid">
             <article class="chart-card">
-              <header><div><h3>OSD 사용률 분포</h3><p>OSD별 사용률을 구간별로 집계합니다.</p></div></header>
+              <div class="chart-card-header"><div><h3>OSD 사용률 분포</h3><p>OSD별 사용률을 구간별로 집계합니다.</p></div></div>
               <ibm-histogram-chart *ngIf="data.osds.items.length" [data]="osdHistogramData(data)" [options]="osdHistogramOptions" height="300px"></ibm-histogram-chart>
               <p *ngIf="!data.osds.items.length" class="empty-section">조회 가능한 OSD 데이터가 없습니다.</p>
             </article>
             <article class="chart-card">
-              <header><div><h3>PG 상태 구성</h3><p>Ceph이 보고한 상태 문자열을 그대로 분리합니다.</p></div></header>
+              <div class="chart-card-header"><div><h3>PG 상태 구성</h3><p>Ceph이 보고한 상태 문자열을 그대로 분리합니다.</p></div></div>
               <ibm-stacked-bar-chart *ngIf="data.pgs.states.length" [data]="pgStateData(data)" [options]="pgStateOptions" height="300px"></ibm-stacked-bar-chart>
               <p *ngIf="!data.pgs.states.length" class="empty-section">조회 가능한 PG 데이터가 없습니다.</p>
             </article>
@@ -181,18 +185,18 @@ type InsightsView = 'overview' | 'capacity' | 'osd-pg' | 'hosts';
           <div class="data-panel">
             <h3>OSD 상세</h3>
             <div class="table-scroll">
-              <table><caption>Ceph OSD 상태와 사용량</caption><thead><tr><th>OSD</th><th>Host</th><th>Class</th><th>실행</th><th>배치</th><th>사용률</th><th>사용 / 전체</th></tr></thead>
-                <tbody><tr *ngFor="let osd of data.osds.items"><th>{{ osd.name }}</th><td>{{ osd.host }}</td><td>{{ osd.deviceClass }}</td>
-                  <td><span class="status-dot" [class.bad]="osd.status !== 'up'"></span>{{ osd.status }}</td><td>{{ osd.in ? 'In' : 'Out' }}</td>
-                  <td>{{ percent(osd.utilization) }}</td><td>{{ bytes(osd.usedBytes) }} / {{ bytes(osd.totalBytes) }}</td></tr></tbody>
-              </table>
+              <clr-datagrid aria-label="Ceph OSD 상태와 사용량"><clr-dg-column>OSD</clr-dg-column><clr-dg-column>Host</clr-dg-column><clr-dg-column>Class</clr-dg-column><clr-dg-column>실행</clr-dg-column><clr-dg-column>배치</clr-dg-column><clr-dg-column>사용률</clr-dg-column><clr-dg-column>사용 / 전체</clr-dg-column>
+                <clr-dg-row *ngFor="let osd of data.osds.items"><clr-dg-cell>{{ osd.name }}</clr-dg-cell><clr-dg-cell>{{ osd.host }}</clr-dg-cell><clr-dg-cell>{{ osd.deviceClass }}</clr-dg-cell>
+                  <clr-dg-cell><span class="status-dot" [class.bad]="osd.status !== 'up'"></span>{{ osd.status }}</clr-dg-cell><clr-dg-cell>{{ osd.in ? 'In' : 'Out' }}</clr-dg-cell>
+                  <clr-dg-cell>{{ percent(osd.utilization) }}</clr-dg-cell><clr-dg-cell>{{ bytes(osd.usedBytes) }} / {{ bytes(osd.totalBytes) }}</clr-dg-cell></clr-dg-row>
+              </clr-datagrid>
             </div>
           </div>
           <div class="data-panel">
             <h3>PG 상태 상세</h3>
-            <table><caption>Placement Group 상태별 개수</caption><thead><tr><th>상태</th><th>개수</th><th>비율</th></tr></thead>
-              <tbody><tr *ngFor="let state of data.pgs.states"><th class="mono">{{ state.state }}</th><td>{{ state.count }}</td><td>{{ percent(data.pgs.total ? state.count / data.pgs.total * 100 : 0) }}</td></tr></tbody>
-            </table>
+            <clr-datagrid aria-label="Placement Group 상태별 개수"><clr-dg-column>상태</clr-dg-column><clr-dg-column>개수</clr-dg-column><clr-dg-column>비율</clr-dg-column>
+              <clr-dg-row *ngFor="let state of data.pgs.states"><clr-dg-cell class="mono">{{ state.state }}</clr-dg-cell><clr-dg-cell>{{ state.count }}</clr-dg-cell><clr-dg-cell>{{ percent(data.pgs.total ? state.count / data.pgs.total * 100 : 0) }}</clr-dg-cell></clr-dg-row>
+            </clr-datagrid>
           </div>
         </ng-container>
 
@@ -206,31 +210,31 @@ type InsightsView = 'overview' | 'capacity' | 'osd-pg' | 'hosts';
             <section class="data-panel">
               <h3>Ceph 호스트</h3>
               <div class="table-scroll">
-                <table><caption>Ceph Orchestrator 호스트 목록</caption><thead><tr><th>Hostname</th><th>주소</th><th>상태</th><th>Labels</th></tr></thead>
-                  <tbody><tr *ngFor="let host of data.hosts"><th>{{ host.hostname }}</th><td class="mono">{{ host.address }}</td>
-                    <td><span class="status-dot" [class.bad]="host.status && host.status !== 'online'"></span>{{ host.status || 'online' }}</td>
-                    <td><span *ngFor="let label of host.labels" class="tag">{{ label }}</span><span *ngIf="!host.labels.length">—</span></td></tr></tbody>
-                </table>
+                <clr-datagrid aria-label="Ceph Orchestrator 호스트 목록"><clr-dg-column>Hostname</clr-dg-column><clr-dg-column>주소</clr-dg-column><clr-dg-column>상태</clr-dg-column><clr-dg-column>Labels</clr-dg-column>
+                  <clr-dg-row *ngFor="let host of data.hosts"><clr-dg-cell>{{ host.hostname }}</clr-dg-cell><clr-dg-cell class="mono">{{ host.address }}</clr-dg-cell>
+                    <clr-dg-cell><span class="status-dot" [class.bad]="host.status && host.status !== 'online'"></span>{{ host.status || 'online' }}</clr-dg-cell>
+                    <clr-dg-cell><span *ngFor="let label of host.labels" class="tag">{{ label }}</span><span *ngIf="!host.labels.length">—</span></clr-dg-cell></clr-dg-row>
+                </clr-datagrid>
               </div>
               <p *ngIf="!data.hosts.length" class="empty-section">호스트 목록을 조회할 수 없거나 등록된 호스트가 없습니다.</p>
             </section>
             <section class="data-panel">
               <h3>호스트별 OSD</h3>
               <div class="table-scroll">
-                <table><caption>호스트별 OSD와 사용률</caption><thead><tr><th>Host</th><th>OSD</th><th>Up</th><th>In</th><th>사용률</th></tr></thead>
-                  <tbody><tr *ngFor="let host of data.osds.byHost"><th>{{ host.name }}</th><td>{{ host.osds }}</td><td>{{ host.up }}</td><td>{{ host.in }}</td><td>{{ percent(host.utilization) }}</td></tr></tbody>
-                </table>
+                <clr-datagrid aria-label="호스트별 OSD와 사용률"><clr-dg-column>Host</clr-dg-column><clr-dg-column>OSD</clr-dg-column><clr-dg-column>Up</clr-dg-column><clr-dg-column>In</clr-dg-column><clr-dg-column>사용률</clr-dg-column>
+                  <clr-dg-row *ngFor="let host of data.osds.byHost"><clr-dg-cell>{{ host.name }}</clr-dg-cell><clr-dg-cell>{{ host.osds }}</clr-dg-cell><clr-dg-cell>{{ host.up }}</clr-dg-cell><clr-dg-cell>{{ host.in }}</clr-dg-cell><clr-dg-cell>{{ percent(host.utilization) }}</clr-dg-cell></clr-dg-row>
+                </clr-datagrid>
               </div>
             </section>
           </div>
           <section class="data-panel">
             <h3>배포 서비스</h3>
             <div class="table-scroll">
-              <table><caption>Ceph daemon 배포 서비스</caption><thead><tr><th>유형</th><th>ID</th><th>Host</th><th>상태</th><th>Version</th><th>마지막 갱신</th></tr></thead>
-                <tbody><tr *ngFor="let service of data.services"><th>{{ service.type }}</th><td class="mono">{{ service.id }}</td><td>{{ service.hostname }}</td>
-                  <td><span class="status-dot" [class.bad]="service.status !== 1"></span>{{ service.statusDescription }}</td>
-                  <td class="version-cell">{{ service.version || '확인 불가' }}</td><td>{{ service.lastRefresh || '확인 불가' }}</td></tr></tbody>
-              </table>
+              <clr-datagrid aria-label="Ceph daemon 배포 서비스"><clr-dg-column>유형</clr-dg-column><clr-dg-column>ID</clr-dg-column><clr-dg-column>Host</clr-dg-column><clr-dg-column>상태</clr-dg-column><clr-dg-column>Version</clr-dg-column><clr-dg-column>마지막 갱신</clr-dg-column>
+                <clr-dg-row *ngFor="let service of data.services"><clr-dg-cell>{{ service.type }}</clr-dg-cell><clr-dg-cell class="mono">{{ service.id }}</clr-dg-cell><clr-dg-cell>{{ service.hostname }}</clr-dg-cell>
+                  <clr-dg-cell><span class="status-dot" [class.bad]="service.status !== 1"></span>{{ service.statusDescription }}</clr-dg-cell>
+                  <clr-dg-cell class="version-cell">{{ service.version || '확인 불가' }}</clr-dg-cell><clr-dg-cell>{{ service.lastRefresh || '확인 불가' }}</clr-dg-cell></clr-dg-row>
+              </clr-datagrid>
             </div>
             <p *ngIf="!data.services.length" class="empty-section">배포 서비스 정보를 조회할 수 없거나 보고된 서비스가 없습니다.</p>
           </section>
@@ -239,14 +243,13 @@ type InsightsView = 'overview' | 'capacity' | 'osd-pg' | 'hosts';
 
       <ng-template #noData>
         <div *ngIf="loading; else waiting" class="empty-state" role="status">
-          <span class="spinner" aria-hidden="true"></span><strong>Ceph 클러스터 현황을 읽고 있습니다.</strong>
+          <clr-spinner clrInline aria-label="Ceph 클러스터 현황을 읽는 중"></clr-spinner><strong>Ceph 클러스터 현황을 읽고 있습니다.</strong>
         </div>
         <ng-template #waiting><div *ngIf="!error" class="empty-state"><strong>외부 Ceph 연결이 완료되면 현황을 확인할 수 있습니다.</strong></div></ng-template>
       </ng-template>
     </section>
   `,
   styleUrls: ['./ceph-insights.component.css'],
-  encapsulation: ViewEncapsulation.None,
 })
 export class CephInsightsComponent {
   @Input() insights: CephInsights | null = null;
@@ -261,13 +264,13 @@ export class CephInsightsComponent {
   readonly capacityMeterOptions: any = {
     height: '150px',
     meter: { proportional: { total: 100, unit: '%' } },
-    color: { scale: { 사용: '#0f62fe' } },
+    color: { scale: { 사용: 'var(--os-brand-500)' } },
     legend: { enabled: false },
     toolbar: { enabled: false },
     animations: true,
   };
-  readonly osdDonutOptions: any = this.donutOptions('OSD', '#198038', '#da1e28');
-  readonly pgDonutOptions: any = this.donutOptions('PG', '#0f62fe', '#ff832b');
+  readonly osdDonutOptions: any = this.donutOptions('OSD', 'var(--os-success)', 'var(--os-danger)');
+  readonly pgDonutOptions: any = this.donutOptions('PG', 'var(--os-brand-500)', 'var(--os-warn)');
   readonly poolChartOptions: any = {
     height: '360px',
     axes: {
@@ -276,7 +279,7 @@ export class CephInsightsComponent {
     },
     legend: { enabled: false },
     toolbar: { enabled: false },
-    color: { scale: { 사용량: '#0f62fe' } },
+    color: { scale: { 사용량: 'var(--os-brand-500)' } },
   };
   readonly osdHistogramOptions: any = {
     height: '300px',
@@ -286,7 +289,7 @@ export class CephInsightsComponent {
     },
     legend: { enabled: false },
     toolbar: { enabled: false },
-    color: { scale: { OSD: '#8a3ffc' } },
+    color: { scale: { OSD: 'var(--os-gauge-mem)' } },
   };
   readonly pgStateOptions: any = {
     height: '300px',

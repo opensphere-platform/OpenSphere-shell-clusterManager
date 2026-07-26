@@ -34,43 +34,45 @@ const TEMPLATES: VmTemplate[] = [
   standalone: true,
   imports: [CommonModule, ClarityModule, CodeEditorComponent, OsLogoComponent, VmCreateInstancetypeComponent],
   styles: [`
-    .vm-mode { display: flex; gap: .25rem; border-bottom: 1px solid var(--clr-color-neutral-300,#ccc); margin: .5rem 0 1rem; }
-    .vm-mtab { padding: .4rem .9rem; cursor: pointer; border: none; background: none; border-bottom: 2px solid transparent; font-size: .9rem; }
-    .vm-mtab.active { color: var(--os-brand-600,#2563eb); border-bottom-color: var(--os-brand-600,#2563eb); font-weight: 600; }
     .vm-cat { display: grid; grid-template-columns: repeat(auto-fill, minmax(215px, 1fr)); gap: 1rem; margin: 1rem 0 1.25rem; }
-    .vm-card { position: relative; border: 1px solid var(--clr-color-neutral-300, #cdcdcd); border-radius: 8px; padding: 1rem; cursor: pointer; background: var(--clr-global-app-background, #fff); transition: box-shadow .12s, border-color .12s; }
-    .vm-card:hover { border-color: var(--os-brand-500, #4c6fff); box-shadow: 0 2px 10px rgba(0,0,0,.09); }
-    .vm-card.sel { border-color: var(--os-brand-600, #2563eb); box-shadow: 0 0 0 2px var(--os-brand-500, #4c6fff); }
+    .vm-card { position: relative; cursor: pointer; transition: box-shadow .12s, border-color .12s; }
+    .vm-card:hover { border-color: var(--os-brand-500); box-shadow: var(--os-shadow-sm); }
+    .vm-card.sel { border-color: var(--os-brand-500); box-shadow: 0 0 0 2px var(--os-brand-500); }
     .vm-card-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: .6rem; }
     .vm-card-name { font-weight: 700; font-size: .98rem; line-height: 1.2; }
-    .vm-card-desc { color: var(--clr-color-neutral-600, #6b6b6b); font-size: .78rem; margin: .1rem 0 .7rem; }
+    .vm-card-desc { color: var(--os-text-dim); font-size: .78rem; margin: .1rem 0 .7rem; }
     .vm-card-specs { display: grid; grid-template-columns: 1fr 1fr; gap: .25rem .5rem; margin: 0; font-size: .74rem; }
-    .vm-card-specs dt { color: var(--clr-color-neutral-500, #8a8a8a); }
+    .vm-card-specs dt { color: var(--os-text-dim); }
     .vm-card-specs dd { margin: 0; font-weight: 600; }
     .vm-form { max-width: 760px; margin-top: .5rem; }
     .vm-form-h { display: flex; align-items: center; gap: .5rem; }
-    .vm-grid { padding: 1rem; display: grid; grid-template-columns: 150px 1fr; gap: .7rem 1rem; align-items: center; }
-    .vm-grid input[type=text], .vm-grid input[type=number] { width: 100%; max-width: 360px; }
-    .vm-grid label { font-weight: 600; }
+    .vm-grid { padding: 0 var(--os-space-4); }
+    .vm-grid input, .vm-grid select { width: min(100%, 30rem); }
+    .vm-form-actions { padding: 0 var(--os-space-4) var(--os-space-3); }
+    .vm-yaml-preview { padding: 0 var(--os-space-4) var(--os-space-4); }
   `],
   template: `
-    <div class="os-title-row">
-      <h2 class="os-h2">새 VirtualMachine 생성</h2>
+    <div class="os-page-header">
+      <div class="os-page-header-main">
+        <p class="os-page-eyebrow">Kubernetes virtualization</p>
+        <h2 class="os-page-title">새 VirtualMachine 생성</h2>
+        <p class="os-page-description">검증된 InstanceType 또는 부팅 소스 카탈로그에서 가상 머신 구성을 선택합니다.</p>
+      </div>
     </div>
-    <div class="vm-mode">
-      <button class="vm-mtab" [class.active]="mode()==='instancetype'" (click)="mode.set('instancetype')">InstanceTypes</button>
-      <button class="vm-mtab" [class.active]="mode()==='catalog'" (click)="mode.set('catalog')">템플릿 카탈로그</button>
-    </div>
+    <clr-tabs aria-label="VirtualMachine 생성 방식">
+      <clr-tab><button clrTabLink type="button" (click)="mode.set('instancetype')">InstanceTypes</button><clr-tab-content *clrIfActive></clr-tab-content></clr-tab>
+      <clr-tab><button clrTabLink type="button" (click)="mode.set('catalog')">템플릿 카탈로그</button><clr-tab-content *clrIfActive></clr-tab-content></clr-tab>
+    </clr-tabs>
     <app-vm-create-instancetype *ngIf="mode()==='instancetype'" (created)="created.emit()" (cancel)="cancel.emit()"></app-vm-create-instancetype>
     <p class="os-sub" *ngIf="mode()==='catalog'">부팅 소스(운영체제)를 선택하면 세부 정보를 구성할 수 있습니다.</p>
 
-    <div *ngIf="msg()" class="alert" [ngClass]="ok() ? 'alert-success' : 'alert-danger'" role="alert">
-      <div class="alert-items"><div class="alert-item static"><span class="alert-text">{{ msg() }}</span></div></div>
-    </div>
+    <clr-alert *ngIf="msg()" [clrAlertType]="ok() ? 'success' : 'danger'" [clrAlertClosable]="false">
+      <clr-alert-item><span class="alert-text">{{ msg() }}</span></clr-alert-item>
+    </clr-alert>
 
     <!-- ===== OS 로고 카탈로그 ===== -->
     <div class="vm-cat" *ngIf="mode()==='catalog'">
-      <div class="vm-card" *ngFor="let t of templates" [class.sel]="sel()?.id === t.id"
+      <div class="card vm-card" *ngFor="let t of templates" [class.sel]="sel()?.id === t.id"
            role="button" tabindex="0" (click)="pick(t)" (keydown.enter)="pick(t)">
         <div class="vm-card-top">
           <app-os-logo [os]="t.logo" [size]="42"></app-os-logo>
@@ -90,31 +92,23 @@ const TEMPLATES: VmTemplate[] = [
     <!-- ===== 선택 시 세부 정보 폼 ===== -->
     <div class="card vm-form" *ngIf="catalogSel() as t">
       <div class="card-header vm-form-h"><app-os-logo [os]="t.logo" [size]="22"></app-os-logo> {{ t.name }} — VirtualMachine 세부 정보</div>
-      <div class="vm-grid">
-        <label>이름</label>
-        <input type="text" class="os-search" [value]="name()" (input)="name.set($any($event.target).value)" placeholder="my-vm" />
-        <label>Namespace</label>
-        <input type="text" class="os-search" [value]="ns()" (input)="ns.set($any($event.target).value)" />
-        <label>CPU (vCPU)</label>
-        <input type="number" min="1" class="os-num" [value]="cpu()" (input)="cpu.set(+$any($event.target).value)" />
-        <label>Memory (GiB)</label>
-        <input type="number" min="1" class="os-num" [value]="mem()" (input)="mem.set(+$any($event.target).value)" />
-        <label>부팅 이미지</label>
-        <input type="text" class="os-search" [value]="image()" (input)="image.set($any($event.target).value)" />
-        <label>노드 *</label>
-        <select class="os-search" (change)="selNode.set($any($event.target).value)">
-          <option value="">— 배치할 노드 선택 (필수) —</option>
-          <option *ngFor="let n of nodes()" [value]="n" [selected]="selNode() === n">{{ n }}</option>
-        </select>
-        <label>생성 후 시작</label>
-        <span><input type="checkbox" [checked]="start()" (change)="start.set($any($event.target).checked)" /></span>
-      </div>
-      <div class="os-actions" style="padding: 0 1rem 0.75rem">
+      <form clrForm clrLayout="horizontal" class="vm-grid">
+        <clr-input-container><label>이름</label><input clrInput type="text" name="vmName" [value]="name()" (input)="name.set($any($event.target).value)" placeholder="my-vm" /></clr-input-container>
+        <clr-input-container><label>Namespace</label><input clrInput type="text" name="vmNamespace" [value]="ns()" (input)="ns.set($any($event.target).value)" /></clr-input-container>
+        <clr-input-container><label>CPU (vCPU)</label><input clrInput type="number" name="vmCpu" min="1" [value]="cpu()" (input)="cpu.set(+$any($event.target).value)" /></clr-input-container>
+        <clr-input-container><label>Memory (GiB)</label><input clrInput type="number" name="vmMemory" min="1" [value]="mem()" (input)="mem.set(+$any($event.target).value)" /></clr-input-container>
+        <clr-input-container><label>부팅 이미지</label><input clrInput type="text" name="vmImage" [value]="image()" (input)="image.set($any($event.target).value)" /></clr-input-container>
+        <clr-select-container><label>노드</label><select clrSelect name="vmNode" (change)="selNode.set($any($event.target).value)">
+          <option value="">— 배치할 노드 선택 (필수) —</option><option *ngFor="let n of nodes()" [value]="n" [selected]="selNode() === n">{{ n }}</option>
+        </select></clr-select-container>
+        <clr-checkbox-container><clr-checkbox-wrapper><input clrCheckbox type="checkbox" name="vmStart" [checked]="start()" (change)="start.set($any($event.target).checked)" /><label>생성 후 시작</label></clr-checkbox-wrapper></clr-checkbox-container>
+      </form>
+      <div class="os-actions vm-form-actions">
         <button class="btn btn-sm btn-primary" [disabled]="busy() || !name().trim() || !selNode()" (click)="submit()">VirtualMachine 생성</button>
         <button class="btn btn-sm btn-outline" (click)="showYaml.set(!showYaml())">{{ showYaml() ? 'YAML 숨기기' : 'YAML 및 CLI 보기' }}</button>
         <button class="btn btn-sm btn-link" [disabled]="busy()" (click)="cancel.emit()">취소</button>
       </div>
-      <div *ngIf="showYaml()" style="padding: 0 1rem 1rem">
+      <div *ngIf="showYaml()" class="vm-yaml-preview">
         <app-code-editor [value]="yamlPreview()" language="yaml" [readOnly]="true" height="380px"></app-code-editor>
       </div>
     </div>

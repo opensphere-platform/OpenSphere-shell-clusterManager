@@ -1,5 +1,6 @@
 import { Component, ElementRef, Input, OnDestroy, OnInit, ViewChild, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { ClarityModule } from '@clr/angular';
 import RFB from '@novnc/novnc';
 import { K8sService } from '../core/k8s.service';
 
@@ -10,15 +11,15 @@ import { K8sService } from '../core/k8s.service';
 @Component({
   selector: 'app-vm-vnc',
   standalone: true,
-  imports: [CommonModule],
+  imports: [CommonModule, ClarityModule],
   styles: [`
     .vm-vnc-bar { display: flex; align-items: center; gap: .75rem; padding: .25rem 0 .5rem; }
-    .vm-vnc-screen { width: 100%; height: 540px; background: #000; border-radius: 4px; overflow: hidden; }
+    .vm-vnc-screen { width: 100%; height: 540px; background: var(--os-dark-bg3); border-radius: 4px; overflow: hidden; }
   `],
   template: `
-    <div *ngIf="error()" class="alert alert-danger" role="alert">
-      <div class="alert-items"><div class="alert-item static"><span class="alert-text">{{ error() }}</span></div></div>
-    </div>
+    <clr-alert *ngIf="error()" [clrAlertType]="'danger'" [clrAlertClosable]="false">
+      <clr-alert-item><span class="alert-text">{{ error() }}</span></clr-alert-item>
+    </clr-alert>
     <div class="vm-vnc-bar">
       <span class="label" [ngClass]="connected() ? 'label-success' : 'label-info'">{{ status() }}</span>
       <button class="btn btn-sm btn-outline" (click)="reconnect()">재연결</button>
@@ -59,7 +60,7 @@ export class VmVncComponent implements OnInit, OnDestroy {
       this.rfb = new RFB(this.screenEl.nativeElement, url, {});
       this.rfb.scaleViewport = true;
       this.rfb.clipViewport = false;
-      this.rfb.background = '#000';
+      this.rfb.background = 'var(--os-dark-bg3)';
       this.rfb.addEventListener('connect', () => { this.connected.set(true); this.status.set('연결됨'); });
       this.rfb.addEventListener('disconnect', (e: any) => { this.connected.set(false); this.status.set(e?.detail?.clean ? '연결 종료' : '연결 끊김(오류)'); });
       this.rfb.addEventListener('securityfailure', (e: any) => this.error.set('VNC 보안 실패: ' + (e?.detail?.reason || '')));

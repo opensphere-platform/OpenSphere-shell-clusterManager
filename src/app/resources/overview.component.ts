@@ -4,7 +4,6 @@ import { ClarityModule } from '@clr/angular';
 import { forkJoin, of } from 'rxjs';
 import { catchError } from 'rxjs/operators';
 import { K8sService } from '../core/k8s.service';
-import { NAV_ICON } from '../nav-icons';
 
 const isNodeReady = (o: any) => !!o.status?.conditions?.find((c: any) => c.type === 'Ready' && c.status === 'True');
 const nodeRoles = (o: any) => Object.keys(o.metadata?.labels || {}).filter(k => k.startsWith('node-role.kubernetes.io/')).map(k => k.split('/')[1]).filter(Boolean);
@@ -29,22 +28,22 @@ function memB(v?: string): number {
 // Chart/gauge 팔레트 — SVG attr 바인딩용. CSS var()는 SVG stroke attr에 미작동하므로
 // OS 토큰 팔레트에서 의미론적으로 선정된 고정값 사용(디자인 시스템 계약).
 const PHASE_COLOR: Record<string, string> = {
-  Running:   'var(--clr-color-success-600, #2ecc71)',
-  Succeeded: 'var(--clr-color-action-600, #3498db)',
-  Pending:   'var(--clr-color-warning-700, #f1c40f)',
-  Failed:    'var(--clr-color-danger-700,  #e74c3c)',
-  Unknown:   'var(--clr-color-neutral-500, #95a5a6)',
+  Running:   'var(--os-success)',
+  Succeeded: 'var(--os-brand-500)',
+  Pending:   'var(--os-warn)',
+  Failed:    'var(--os-danger)',
+  Unknown:   'var(--os-text-dim)',
 };
 // Namespace bar palette — 8색 시리즈 (OS 브랜드 팔레트 계열)
 const NS_PALETTE = [
-  'var(--os-brand-500, #4c6fff)',
-  'var(--clr-color-success-700, #1f7a4d)',
-  'var(--clr-color-danger-800,  #7b1d3a)',
-  'var(--clr-color-danger-700,  #e74c3c)',
-  'var(--clr-color-action-800,  #8e44ad)',
-  'var(--os-accent,             #00bfa5)',
-  'var(--clr-color-action-700,  #6b52ae)',
-  'var(--clr-color-warning-900, #b8860b)',
+  'var(--os-brand-500)',
+  'var(--os-success)',
+  'var(--os-danger)',
+  'var(--os-warn)',
+  'var(--os-gauge-mem)',
+  'var(--os-accent)',
+  'var(--os-brand-700)',
+  'var(--os-text-dim)',
 ];
 
 interface Seg { color: string; dash: string; offset: string; }
@@ -62,9 +61,9 @@ interface Bar { label: string; value: number; sub?: string; pct: number; color: 
       <button class="btn btn-sm btn-link os-ml-auto" (click)="loadAll()">새로고침</button>
     </div>
 
-    <div *ngIf="error()" class="alert alert-danger" role="alert">
-      <div class="alert-items"><div class="alert-item static"><span class="alert-text">{{ error() }}</span></div></div>
-    </div>
+    <clr-alert *ngIf="error()" [clrAlertType]="'danger'" [clrAlertClosable]="false">
+      <clr-alert-item><span class="alert-text">{{ error() }}</span></clr-alert-item>
+    </clr-alert>
 
     <!-- 게이지 카드 -->
     <div class="os-ov-cards">
@@ -275,7 +274,7 @@ export class OverviewComponent implements OnInit {
       { label: 'DaemonSets', ready: this.daemonsets().reduce((s, o) => s + (o.status?.numberReady ?? 0), 0), total: this.daemonsets().reduce((s, o) => s + (o.status?.desiredNumberScheduled ?? 0), 0) },
     ];
     const max = Math.max(1, ...items.map(i => i.total));
-    return items.map(i => ({ label: i.label, value: i.total, sub: `${i.ready}/${i.total}`, pct: (i.total / max) * 100, color: i.ready >= i.total && i.total > 0 ? 'var(--clr-color-success-600,#2ecc71)' : 'var(--clr-color-warning-700,#f1c40f)' }));
+    return items.map(i => ({ label: i.label, value: i.total, sub: `${i.ready}/${i.total}`, pct: (i.total / max) * 100, color: i.ready >= i.total && i.total > 0 ? 'var(--os-success)' : 'var(--os-warn)' }));
   });
   workloadSummary() { return this.workloadBars().map(b => `${b.label} ${b.sub}`).join(' · '); }
 
@@ -294,7 +293,7 @@ export class OverviewComponent implements OnInit {
   readonly restartBars = computed<Bar[]>(() => {
     const arr = this.pods().map(p => ({ k: p.metadata?.name as string, v: this.podRestarts(p) })).filter(a => a.v > 0).sort((a, b) => b.v - a.v).slice(0, 6);
     const max = Math.max(1, ...arr.map(a => a.v));
-    return arr.map(a => ({ label: a.k, value: a.v, pct: (a.v / max) * 100, color: 'var(--clr-color-warning-800,#e67e22)' }));
+    return arr.map(a => ({ label: a.k, value: a.v, pct: (a.v / max) * 100, color: 'var(--os-warn)' }));
   });
 
   // ── 경고 ──

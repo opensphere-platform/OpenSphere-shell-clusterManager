@@ -39,6 +39,10 @@ function vmMemBytes(v: any): number { const d = v.spec?.template?.spec?.domain; 
     .vm-summary { display: grid; grid-template-columns: 1fr 1.4fr 1.1fr; gap: 1rem; margin: .25rem 0 1rem; }
     .vm-sum-row { display: flex; gap: 1.5rem; flex-wrap: wrap; padding: .8rem 1rem; align-items: center; }
     .vm-sum-row .os-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: .35rem; }
+    .vm-dot-error { background: var(--os-danger); }
+    .vm-dot-running { background: var(--os-success); }
+    .vm-dot-stopped { background: var(--os-warn); }
+    .vm-dot-other { background: var(--os-text-dim); }
     .vm-sum-row strong { font-size: 1.05rem; }
     .vm-crumb { display: flex; align-items: center; gap: .4rem; margin: .25rem 0 .75rem; font-size: .9rem; }
     @media (max-width: 1000px) { .vm-summary { grid-template-columns: 1fr; } }
@@ -68,10 +72,10 @@ function vmMemBytes(v: any): number { const d = v.spec?.template?.spec?.domain; 
         <div class="card">
           <div class="card-header">가상 머신 ({{ vms().length }})</div>
           <div class="card-block vm-sum-row">
-            <span><span class="os-dot" style="background:#e74c3c"></span>오류 <strong>{{ bucketCount('Error') }}</strong></span>
-            <span><span class="os-dot" style="background:#2ecc71"></span>실행 중 <strong>{{ bucketCount('Running') }}</strong></span>
-            <span><span class="os-dot" style="background:#f1c40f"></span>Stopped <strong>{{ bucketCount('Stopped') }}</strong></span>
-            <span><span class="os-dot" style="background:#95a5a6"></span>기타 <strong>{{ bucketCount('Other') }}</strong></span>
+            <span><span class="os-dot vm-dot-error"></span>오류 <strong>{{ bucketCount('Error') }}</strong></span>
+            <span><span class="os-dot vm-dot-running"></span>실행 중 <strong>{{ bucketCount('Running') }}</strong></span>
+            <span><span class="os-dot vm-dot-stopped"></span>Stopped <strong>{{ bucketCount('Stopped') }}</strong></span>
+            <span><span class="os-dot vm-dot-other"></span>기타 <strong>{{ bucketCount('Other') }}</strong></span>
           </div>
         </div>
         <div class="card">

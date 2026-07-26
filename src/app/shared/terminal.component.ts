@@ -1,5 +1,6 @@
 import { Component, ElementRef, Input, OnDestroy, OnInit, ViewChild, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { ClarityModule } from '@clr/angular';
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import { K8sService } from '../core/k8s.service';
@@ -9,11 +10,11 @@ import { K8sService } from '../core/k8s.service';
 @Component({
   selector: 'app-terminal',
   standalone: true,
-  imports: [CommonModule],
+  imports: [CommonModule, ClarityModule],
   template: `
-    <div *ngIf="error()" class="alert alert-danger" role="alert">
-      <div class="alert-items"><div class="alert-item static"><span class="alert-text">{{ error() }}</span></div></div>
-    </div>
+    <clr-alert *ngIf="error()" [clrAlertType]="'danger'" [clrAlertClosable]="false">
+      <clr-alert-item><span class="alert-text">{{ error() }}</span></clr-alert-item>
+    </clr-alert>
     <div class="os-term" #term></div>
   `,
 })
@@ -49,7 +50,12 @@ export class TerminalComponent implements OnInit, OnDestroy {
     const url = `${proto}://${location.host}${base}/api/k8s-exec/${encodeURIComponent(this.ns)}/${encodeURIComponent(this.pod)}` +
       `?container=${encodeURIComponent(this.container)}&command=${encodeURIComponent(this.command)}`;
 
-    this.term = new Terminal({ convertEol: true, fontSize: 12, cursorBlink: true, theme: { background: '#1b2b34', foreground: '#d6e2e8' } });
+    this.term = new Terminal({
+      convertEol: true,
+      fontSize: 12,
+      cursorBlink: true,
+      theme: { background: this.token('--os-dark-bg'), foreground: this.token('--os-dark-text') },
+    });
     this.fit = new FitAddon();
     this.term.loadAddon(this.fit);
     this.term.open(this.termEl.nativeElement);
@@ -90,6 +96,9 @@ export class TerminalComponent implements OnInit, OnDestroy {
     this.sendChannel(4, this.enc.encode(JSON.stringify({ Width: this.term.cols, Height: this.term.rows })));
   }
   private doFit(): void { try { this.fit?.fit(); } catch { /* noop */ } }
+  private token(name: string): string {
+    return getComputedStyle(this.termEl.nativeElement).getPropertyValue(name).trim();
+  }
 
   ngOnDestroy(): void {
     window.removeEventListener('resize', this.onWinResize);

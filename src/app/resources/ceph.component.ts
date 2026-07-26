@@ -10,51 +10,59 @@ import { CephInsightsComponent } from './ceph-insights.component';
   standalone: true,
   imports: [CommonModule, FormsModule, ClarityModule, CephInsightsComponent],
   template: `
-    <header class="cm-ceph-page-head">
-      <div class="cm-ceph-page-head__copy">
-        <p class="cm-ceph-eyebrow">Kubernetes child storage</p>
+    <div class="os-page-header cm-ceph-page-head">
+      <div class="os-page-header-main cm-ceph-page-head__copy">
+        <p class="os-page-eyebrow">Kubernetes child storage</p>
         <div class="cm-ceph-title">
           <span class="cm-ceph-title__logo"><img [src]="cephLogo" alt="Ceph" width="46" height="46" /></span>
-          <h1>Ceph External Storage</h1>
+          <h1 class="os-page-title">Ceph External Storage</h1>
         </div>
-        <p class="cm-ceph-summary">Ceph은 Console에 직접 마운트하지 않습니다. 선택한 Kubernetes 클러스터에 Rook External Mode와 Ceph CSI를 구성하고, Console은 연결 상태와 참조 정보만 관리합니다.</p>
+        <p class="os-page-description cm-ceph-summary">Ceph은 Console에 직접 마운트하지 않습니다. 선택한 Kubernetes 클러스터에 Rook External Mode와 Ceph CSI를 구성하고, Console은 연결 상태와 참조 정보만 관리합니다.</p>
       </div>
-      <div class="cm-ceph-page-head__actions">
-        <button class="btn btn-outline" type="button" [disabled]="loading() || busy()" (click)="load()">다시 검사</button>
+      <div class="os-page-header-actions cm-ceph-page-head__actions">
+        <button class="btn btn-outline" type="button" [disabled]="loading() || busy()" (click)="load()"><cds-icon shape="refresh"></cds-icon> 다시 검사</button>
         <button class="btn btn-primary" type="button" [disabled]="busy() || status()?.kubernetes?.ready !== true || status()?.ownerPrerequisites?.ready !== true || !!status()?.connection" (click)="openConnect()">외부 Ceph 연결</button>
       </div>
-    </header>
-
-    <nav class="cm-ceph-tabs" aria-label="Ceph 관리 화면">
-      <button type="button" [class.active]="activeTab() === 'connection'" [attr.aria-current]="activeTab() === 'connection' ? 'page' : null" (click)="selectTab('connection')">
-        연결 및 설정
-      </button>
-      <button type="button" [class.active]="activeTab() === 'insights'" [attr.aria-current]="activeTab() === 'insights' ? 'page' : null" (click)="selectTab('insights')">
-        클러스터 현황
-        <span *ngIf="status()?.connection" class="tab-status" [class.warn]="status()?.rook?.cephCluster?.health !== 'HEALTH_OK'">{{ status()?.rook?.cephCluster?.health || '연결됨' }}</span>
-      </button>
-      <button type="button" [class.active]="activeTab() === 'services'" [attr.aria-current]="activeTab() === 'services' ? 'page' : null" (click)="selectTab('services')">
-        스토리지 서비스
-        <span *ngIf="status()?.csi?.serviceCoverage as coverage" class="tab-status" [class.warn]="coverage.needsConfiguration > 0 || coverage.verified < coverage.configured">{{ coverage.configured }}/{{ coverage.installed }} 구성 · {{ coverage.verified ? coverage.verified + ' 검증' : '실제 검증 없음' }}</span>
-      </button>
-    </nav>
-    <div *ngIf="statusPollWarning()" class="alert alert-warning" role="status">
-      <div class="alert-items"><div class="alert-item static"><span class="alert-text">{{ statusPollWarning() }}</span></div></div>
     </div>
+
+    <clr-tabs aria-label="Ceph 관리 화면">
+      <clr-tab>
+        <button clrTabLink type="button" (click)="selectTab('connection')">연결 및 설정</button>
+        <clr-tab-content *clrIfActive></clr-tab-content>
+      </clr-tab>
+      <clr-tab>
+        <button clrTabLink type="button" (click)="selectTab('insights')">클러스터 현황
+          <span *ngIf="status()?.connection" class="label"
+                [class.label-warning]="status()?.rook?.cephCluster?.health !== 'HEALTH_OK'">{{ status()?.rook?.cephCluster?.health || '연결됨' }}</span>
+        </button>
+        <clr-tab-content *clrIfActive></clr-tab-content>
+      </clr-tab>
+      <clr-tab>
+        <button clrTabLink type="button" (click)="selectTab('services')">스토리지 서비스
+          <span *ngIf="status()?.csi?.serviceCoverage as coverage" class="label"
+                [class.label-warning]="coverage.needsConfiguration > 0 || coverage.verified < coverage.configured">{{ coverage.configured }}/{{ coverage.installed }} 구성 · {{ coverage.verified ? coverage.verified + ' 검증' : '실제 검증 없음' }}</span>
+        </button>
+        <clr-tab-content *clrIfActive></clr-tab-content>
+      </clr-tab>
+    </clr-tabs>
+    <clr-alert *ngIf="statusPollWarning()" [clrAlertType]="'warning'" [clrAlertClosable]="false">
+      <clr-alert-item><span class="alert-text">{{ statusPollWarning() }}</span></clr-alert-item>
+    </clr-alert>
 
     <ng-container *ngIf="activeTab() === 'connection' || activeTab() === 'services'">
     <ng-container *ngIf="activeTab() === 'connection'">
-    <div *ngIf="error()" class="alert alert-danger" role="alert">
-      <div class="alert-items"><div class="alert-item static"><span class="alert-text">{{ error() }}</span></div></div>
-    </div>
-    <div *ngIf="notice()" class="alert alert-success" role="status">
-      <div class="alert-items"><div class="alert-item static"><span class="alert-text">{{ notice() }}</span></div></div>
-    </div>
-    <div *ngIf="status()?.ownerPrerequisites?.ready === false" class="alert alert-warning" role="status">
-      <div class="alert-items"><div class="alert-item static"><span class="alert-text">
+    <clr-alert *ngIf="error()" [clrAlertType]="'danger'" [clrAlertClosable]="false">
+      <clr-alert-item><span class="alert-text">{{ error() }}</span></clr-alert-item>
+    </clr-alert>
+    <clr-alert *ngIf="notice()" [clrAlertType]="'success'" [clrAlertClosable]="false">
+      <clr-alert-item><span class="alert-text">{{ notice() }}</span></clr-alert-item>
+    </clr-alert>
+    <clr-alert *ngIf="status()?.ownerPrerequisites?.ready === false"
+               [clrAlertType]="'warning'" [clrAlertClosable]="false">
+      <clr-alert-item><span class="alert-text">
         <strong>Ceph 제어 준비 미완료:</strong> {{ status()?.ownerPrerequisites?.blockers?.join(' · ') }}
-      </span></div></div>
-    </div>
+      </span></clr-alert-item>
+    </clr-alert>
 
     <section class="dependency" *ngIf="status() as s">
       <div class="dependency-title">
@@ -78,11 +86,11 @@ import { CephInsightsComponent } from './ceph-insights.component';
       <p class="status-message">{{ s.message }}</p>
     </section>
 
-    <div class="alert alert-info" role="note">
-      <div class="alert-items"><div class="alert-item static"><span class="alert-text">
+    <clr-alert [clrAlertType]="'info'" [clrAlertClosable]="false">
+      <clr-alert-item><span class="alert-text">
         <strong>보안 경계:</strong> 입력한 CephX key는 계획·감사 응답에 표시하지 않고 대상 Kubernetes Secret에만 기록합니다. 이 기능은 기존 Ceph pool에 연결할 뿐 외부 Ceph의 상태를 변경하거나 data를 생성·삭제하지 않습니다.
-      </span></div></div>
-    </div>
+      </span></clr-alert-item>
+    </clr-alert>
 
     <section class="readiness-board" *ngIf="status() as s">
       <div class="card-head">
@@ -222,7 +230,7 @@ import { CephInsightsComponent } from './ceph-insights.component';
 
       <div class="service-grid">
         <article *ngFor="let service of coverage.services" class="service-card" [class.service-ready]="service.verified" [class.service-gap]="service.driverInstalled && !service.configured">
-          <header class="storage-service-header">
+          <div class="storage-service-header">
             <div class="service-identity">
               <img [src]="cephLogo" alt="" width="30" height="30" />
               <div><h3>{{ service.name }}</h3><p>{{ service.description }}</p></div>
@@ -230,7 +238,7 @@ import { CephInsightsComponent } from './ceph-insights.component';
             <span class="service-state" [class.ready]="service.verified" [class.gap]="service.driverInstalled && !service.configured">
               {{ serviceStateLabel(service) }}
             </span>
-          </header>
+          </div>
 
           <ol class="service-checkpoints" aria-label="서비스 준비 단계">
             <li [class.complete]="service.driverInstalled"><span>1</span><strong>CSI 드라이버</strong><small>{{ service.driverInstalled ? '설치됨' : '미설치' }}</small></li>
@@ -358,12 +366,12 @@ import { CephInsightsComponent } from './ceph-insights.component';
     <clr-modal [(clrModalOpen)]="prerequisiteOpen" [clrModalClosable]="!busy()" [clrModalSize]="'xl'">
       <h3 class="modal-title">Rook 선행요소 설치 요청</h3>
       <div class="modal-body">
-        <div class="alert alert-info" role="note">
-          <div class="alert-items"><div class="alert-item static"><span class="alert-text">
+        <clr-alert [clrAlertType]="'info'" [clrAlertClosable]="false">
+          <clr-alert-item><span class="alert-text">
             이 버튼은 브라우저에서 임의 Helm 명령을 실행하지 않습니다. 서명된 <strong>Rook v1.20.2</strong> 설치 PR을 생성하고,
             다른 운영자의 MFA 승인 후 자동 설치·Ready 검증을 수행합니다.
-          </span></div></div>
-        </div>
+          </span></clr-alert-item>
+        </clr-alert>
         <h4>한 번에 설치되는 Consumer 구성</h4>
         <ul class="install-scope">
           <li><code>rook-ceph</code>·<code>opensphere-ceph-imports</code> namespace</li>
@@ -378,15 +386,17 @@ import { CephInsightsComponent } from './ceph-insights.component';
           </li>
         </ul>
         <p class="scope-note"><strong>설치하지 않는 것:</strong> 외부 Ceph cluster, pool, CephFS, MDS, CephX 사용자는 변경하지 않습니다.</p>
-        <label class="scope-consent">
-          <input type="checkbox" [(ngModel)]="elevatedScopeAcknowledged" name="elevatedScopeAcknowledged" />
-          <span>위 <strong>호스트 권한 DaemonSet</strong>이 모든 워커 노드에 배치된다는 점을 확인했습니다.</span>
-        </label>
-        <div *ngIf="prerequisiteError()" class="alert alert-danger" role="alert">
-          <div class="alert-items"><div class="alert-item static"><span class="alert-text">
+        <clr-checkbox-container>
+          <clr-checkbox-wrapper>
+            <input type="checkbox" clrCheckbox [(ngModel)]="elevatedScopeAcknowledged" name="elevatedScopeAcknowledged" />
+            <label>위 <strong>호스트 권한 DaemonSet</strong>이 모든 워커 노드에 배치된다는 점을 확인했습니다.</label>
+          </clr-checkbox-wrapper>
+        </clr-checkbox-container>
+        <clr-alert *ngIf="prerequisiteError()" [clrAlertType]="'danger'" [clrAlertClosable]="false">
+          <clr-alert-item><span class="alert-text">
             <strong>설치 요청 실패:</strong> {{ prerequisiteError() }}
-          </span></div></div>
-        </div>
+          </span></clr-alert-item>
+        </clr-alert>
         <form *ngIf="!prerequisiteRequest()" class="prerequisite-form" clrForm clrLayout="vertical">
           <clr-textarea-container>
             <label>설치 사유</label>
@@ -415,11 +425,11 @@ import { CephInsightsComponent } from './ceph-insights.component';
           </dl>
           <p *ngIf="request.lastError" class="request-error"><strong>최근 오류:</strong> {{ request.lastError }}</p>
         </div>
-        <div *ngIf="prerequisiteRequest() as request" class="alert alert-info" role="status">
-          <div class="alert-items"><div class="alert-item static"><span class="alert-text">
+        <clr-alert *ngIf="prerequisiteRequest() as request" [clrAlertType]="'info'" [clrAlertClosable]="false">
+          <clr-alert-item><span class="alert-text">
             이 화면은 10초마다 변경 체인의 실제 상태를 다시 조회합니다. 준비상태는 설치 완료 후 Kubernetes 실측 결과로만 Ready가 됩니다.
-          </span></div></div>
-        </div>
+          </span></clr-alert-item>
+        </clr-alert>
       </div>
       <div class="modal-footer">
         <button class="btn btn-outline" type="button" [disabled]="busy()" (click)="prerequisiteOpen = false">닫기</button>
@@ -439,16 +449,16 @@ import { CephInsightsComponent } from './ceph-insights.component';
           <li [class.active]="step() >= 2">Ceph 연결 값</li>
           <li [class.active]="step() >= 3">연결 계획</li>
         </ol>
-        <div *ngIf="connectError()" class="alert alert-danger wizard-feedback" role="alert" aria-live="assertive">
-          <div class="alert-items"><div class="alert-item static"><span class="alert-text">
+        <clr-alert *ngIf="connectError()" aria-live="assertive" class="wizard-feedback" [clrAlertType]="'danger'" [clrAlertClosable]="false">
+          <clr-alert-item><span class="alert-text">
             <strong>{{ connectErrorTitle() }}</strong><br>{{ connectError() }}
-          </span></div></div>
-        </div>
-        <div *ngIf="connectNotice()" class="alert alert-success wizard-feedback" role="status" aria-live="polite">
-          <div class="alert-items"><div class="alert-item static"><span class="alert-text">
+          </span></clr-alert-item>
+        </clr-alert>
+        <clr-alert *ngIf="connectNotice()" aria-live="polite" class="wizard-feedback" [clrAlertType]="'success'" [clrAlertClosable]="false">
+          <clr-alert-item><span class="alert-text">
             <strong>{{ connectNoticeTitle() }}</strong><br>{{ connectNotice() }}
-          </span></div></div>
-        </div>
+          </span></clr-alert-item>
+        </clr-alert>
 
         <section *ngIf="step() === 1 && !connectCompleted()" class="wizard-step">
           <h4>1. Kubernetes 연결 준비</h4>
@@ -458,12 +468,12 @@ import { CephInsightsComponent } from './ceph-insights.component';
             <dt>Version</dt><dd>{{ s.kubernetes.version }}</dd>
             <dt>Nodes</dt><dd>{{ s.kubernetes.readyNodes }}/{{ s.kubernetes.nodes }} Ready</dd>
           </dl>
-          <div class="alert alert-danger" *ngIf="status()?.kubernetes?.ready !== true">
-            <div class="alert-items"><div class="alert-item static"><span class="alert-text">Kubernetes가 Ready가 아니므로 Ceph 연결을 진행할 수 없습니다.</span></div></div>
-          </div>
-          <div class="alert alert-danger" *ngIf="status()?.ownerPrerequisites?.ready !== true">
-            <div class="alert-items"><div class="alert-item static"><span class="alert-text">Rook namespace·CRD·operator·runtime RBAC가 준비되지 않아 연결을 진행할 수 없습니다.</span></div></div>
-          </div>
+          <clr-alert  *ngIf="status()?.kubernetes?.ready !== true" [clrAlertType]="'danger'" [clrAlertClosable]="false">
+          <clr-alert-item><span class="alert-text">Kubernetes가 Ready가 아니므로 Ceph 연결을 진행할 수 없습니다.</span></clr-alert-item>
+        </clr-alert>
+          <clr-alert  *ngIf="status()?.ownerPrerequisites?.ready !== true" [clrAlertType]="'danger'" [clrAlertClosable]="false">
+          <clr-alert-item><span class="alert-text">Rook namespace·CRD·operator·runtime RBAC가 준비되지 않아 연결을 진행할 수 없습니다.</span></clr-alert-item>
+        </clr-alert>
           <div class="automatic-check">
             <strong>자동 점검 범위</strong>
             <span>이 클러스터가 외부 Ceph 연결 리소스를 안전하게 설치할 수 있는지만 확인합니다. 준비 완료 시 별도의 운영자 체크 없이 다음 단계로 이동할 수 있습니다.</span>
@@ -505,9 +515,9 @@ import { CephInsightsComponent } from './ceph-insights.component';
                   </clr-password-container>
                 </div>
               </ng-container>
-              <div *ngIf="duplicateRoleCredential() as duplicate" class="alert alert-warning" role="alert">
-                <div class="alert-items"><div class="alert-item static"><span class="alert-text">{{ duplicate }}</span></div></div>
-              </div>
+              <clr-alert *ngIf="duplicateRoleCredential() as duplicate" [clrAlertType]="'warning'" [clrAlertClosable]="false">
+          <clr-alert-item><span class="alert-text">{{ duplicate }}</span></clr-alert-item>
+        </clr-alert>
             </div>
             <clr-input-container>
               <label>RBD pool</label>
@@ -524,7 +534,7 @@ import { CephInsightsComponent } from './ceph-insights.component';
               <clr-control-helper>Ceph Grafana의 HTTPS 기본 주소입니다. 현재 Console 보안 정책에서 승인된 주소는 <code>{{ defaultMonitoringUrl }}</code>입니다.</clr-control-helper>
             </clr-input-container>
           </form>
-          <div *ngIf="planLoading()" class="progress loop"><progress></progress></div>
+          <clr-spinner *ngIf="planLoading()" clrInline aria-label="Ceph 연결 계획을 생성하는 중"></clr-spinner>
         </section>
 
         <section *ngIf="step() === 3 && !connectCompleted() && plan() as p" class="wizard-step">
@@ -547,9 +557,9 @@ import { CephInsightsComponent } from './ceph-insights.component';
               <span>{{ resource.secretRefOnly ? 'Secret 값 비노출' : (resource.reclaimPolicy || resource.deletionPolicy || resource.namespace || 'cluster-scoped') }}</span>
             </div>
           </div>
-          <div class="alert alert-warning">
-            <div class="alert-items"><div class="alert-item static"><span class="alert-text">StorageClass와 snapshot은 <strong>Retain</strong> 정책입니다. 연결 해제는 사용 중인 PV/PVC가 있으면 차단되며, 원격 Ceph data는 삭제하지 않습니다.</span></div></div>
-          </div>
+          <clr-alert  [clrAlertType]="'warning'" [clrAlertClosable]="false">
+          <clr-alert-item><span class="alert-text">StorageClass와 snapshot은 <strong>Retain</strong> 정책입니다. 연결 해제는 사용 중인 PV/PVC가 있으면 차단되며, 원격 Ceph data는 삭제하지 않습니다.</span></clr-alert-item>
+        </clr-alert>
           <form clrForm clrLayout="vertical">
             <clr-textarea-container>
               <label>변경 사유</label>
@@ -582,17 +592,17 @@ import { CephInsightsComponent } from './ceph-insights.component';
     <clr-modal [(clrModalOpen)]="cephFsOpen" [clrModalClosable]="!busy()" [clrModalSize]="'lg'">
       <h3 class="modal-title">CephFS 공유 파일 스토리지 구성</h3>
       <div class="modal-body">
-        <div class="alert alert-info" role="note">
-          <div class="alert-items"><div class="alert-item static"><span class="alert-text">
+        <clr-alert [clrAlertType]="'info'" [clrAlertClosable]="false">
+          <clr-alert-item><span class="alert-text">
             외부 Ceph에서 전달받은 filesystem·data pool과 제한된 CephX 계정을 입력합니다. Secret 값은 Kubernetes Secret에만 저장되며 화면·감사 기록에 남기지 않습니다.
-          </span></div></div>
-        </div>
-        <div *ngIf="cephFsError()" class="alert alert-danger wizard-feedback" role="alert">
-          <div class="alert-items"><div class="alert-item static"><span class="alert-text"><strong>CephFS 구성 실패:</strong> {{ cephFsError() }}</span></div></div>
-        </div>
-        <div *ngIf="cephFsNotice()" class="alert alert-success wizard-feedback" role="status">
-          <div class="alert-items"><div class="alert-item static"><span class="alert-text"><strong>CephFS 구성 완료:</strong> {{ cephFsNotice() }}</span></div></div>
-        </div>
+          </span></clr-alert-item>
+        </clr-alert>
+        <clr-alert *ngIf="cephFsError()" class="wizard-feedback" [clrAlertType]="'danger'" [clrAlertClosable]="false">
+          <clr-alert-item><span class="alert-text"><strong>CephFS 구성 실패:</strong> {{ cephFsError() }}</span></clr-alert-item>
+        </clr-alert>
+        <clr-alert *ngIf="cephFsNotice()" class="wizard-feedback" [clrAlertType]="'success'" [clrAlertClosable]="false">
+          <clr-alert-item><span class="alert-text"><strong>CephFS 구성 완료:</strong> {{ cephFsNotice() }}</span></clr-alert-item>
+        </clr-alert>
         <form *ngIf="!cephFsCompleted()" clrForm clrLayout="vertical" class="connection-form cephfs-form">
           <clr-input-container>
             <label>CephFS filesystem 이름</label>
@@ -653,12 +663,12 @@ import { CephInsightsComponent } from './ceph-insights.component';
     <clr-modal [(clrModalOpen)]="monitoringOpen" [clrModalClosable]="!busy()">
       <h3 class="modal-title">Ceph 모니터링 주소 설정</h3>
       <div class="modal-body">
-        <div *ngIf="monitoringError()" class="alert alert-danger wizard-feedback" role="alert" aria-live="assertive">
-          <div class="alert-items"><div class="alert-item static"><span class="alert-text"><strong>모니터 주소 저장 실패</strong><br>{{ monitoringError() }}</span></div></div>
-        </div>
-        <div *ngIf="monitoringNotice()" class="alert alert-success wizard-feedback" role="status" aria-live="polite">
-          <div class="alert-items"><div class="alert-item static"><span class="alert-text"><strong>모니터 주소 저장 완료</strong><br>{{ monitoringNotice() }}</span></div></div>
-        </div>
+        <clr-alert *ngIf="monitoringError()" aria-live="assertive" class="wizard-feedback" [clrAlertType]="'danger'" [clrAlertClosable]="false">
+          <clr-alert-item><span class="alert-text"><strong>모니터 주소 저장 실패</strong><br>{{ monitoringError() }}</span></clr-alert-item>
+        </clr-alert>
+        <clr-alert *ngIf="monitoringNotice()" aria-live="polite" class="wizard-feedback" [clrAlertType]="'success'" [clrAlertClosable]="false">
+          <clr-alert-item><span class="alert-text"><strong>모니터 주소 저장 완료</strong><br>{{ monitoringNotice() }}</span></clr-alert-item>
+        </clr-alert>
         <p>Ceph Monitoring 메뉴가 dashboard를 구성할 때 사용하는 Grafana 기본 주소입니다. CephX 자격 증명과는 별도로 관리됩니다.</p>
         <form *ngIf="!monitoringCompleted()" clrForm clrLayout="vertical" class="monitoring-configuration-form">
           <clr-input-container class="monitoring-url-field">
@@ -684,9 +694,9 @@ import { CephInsightsComponent } from './ceph-insights.component';
     <clr-modal [(clrModalOpen)]="disconnectOpen" [clrModalClosable]="!busy()">
       <h3 class="modal-title">외부 Ceph 연결 해제</h3>
       <div class="modal-body">
-        <div class="alert alert-warning">
-          <div class="alert-items"><div class="alert-item static"><span class="alert-text">사용 중인 PV/PVC가 있으면 작업은 차단됩니다. Consumer 측 Rook·CSI 연결 리소스만 제거하며 원격 Ceph pool/filesystem/data는 보존합니다.</span></div></div>
-        </div>
+        <clr-alert  [clrAlertType]="'warning'" [clrAlertClosable]="false">
+          <clr-alert-item><span class="alert-text">사용 중인 PV/PVC가 있으면 작업은 차단됩니다. Consumer 측 Rook·CSI 연결 리소스만 제거하며 원격 Ceph pool/filesystem/data는 보존합니다.</span></clr-alert-item>
+        </clr-alert>
         <form clrForm clrLayout="vertical">
           <clr-textarea-container>
             <label>변경 사유</label>
@@ -728,23 +738,23 @@ import { CephInsightsComponent } from './ceph-insights.component';
     }
     .cm-ceph-page-head__copy { min-width: 0; }
     .cm-ceph-title { display: flex; align-items: center; gap: 0.7rem; }
-    .cm-ceph-title__logo { display: grid; width: 3rem; height: 3rem; flex: 0 0 3rem; place-items: center; border: 1px solid #d7e1e7; border-radius: 50%; background: #fff; box-shadow: 0 0.2rem 0.7rem rgb(31 95 141 / 12%); }
+    .cm-ceph-title__logo { display: grid; width: 3rem; height: 3rem; flex: 0 0 3rem; place-items: center; border: 1px solid var(--os-border); border-radius: 50%; background: var(--os-bg); box-shadow: var(--os-shadow-sm); }
     .cm-ceph-title__logo img { display: block; max-width: 2.25rem; max-height: 2.25rem; object-fit: contain; }
-    .cm-ceph-page-head h1 { margin: 0.15rem 0 0.35rem; color: #2d4048; font-size: 1.45rem; font-weight: 400; line-height: 1.25; }
-    .cm-ceph-summary { margin: 0; max-width: 63rem; color: #565656; font-size: var(--ceph-body-font-size); line-height: 1.5; }
-    .cm-ceph-eyebrow { margin: 0; color: #4c6fff; font-size: 0.65rem; font-weight: 600; line-height: 1.5; letter-spacing: 0.06em; text-transform: uppercase; }
+    .cm-ceph-page-head h1 { margin: 0.15rem 0 0.35rem; color: var(--os-text); font-size: 1.45rem; font-weight: 400; line-height: 1.25; }
+    .cm-ceph-summary { margin: 0; max-width: 63rem; color: var(--os-text-sec); font-size: var(--ceph-body-font-size); line-height: 1.5; }
+    .cm-ceph-eyebrow { margin: 0; color: var(--os-brand-500); font-size: 0.65rem; font-weight: 600; line-height: 1.5; letter-spacing: 0.06em; text-transform: uppercase; }
     .cm-ceph-page-head__actions { display: flex; gap: 0.35rem; flex: 0 0 auto; }
-    .cm-ceph-tabs { display: flex; gap: 0; margin: 0 0 0.9rem; border-bottom: 1px solid #b8c4ca; }
-    .cm-ceph-tabs button { display: inline-flex; min-height: 2.45rem; align-items: center; gap: 0.45rem; padding: 0 0.85rem; border: 0; border-bottom: 3px solid transparent; background: transparent; color: #51636d; font: inherit; font-size: 0.78rem; font-weight: 600; cursor: pointer; }
-    .cm-ceph-tabs button:hover { background: #edf3f6; color: #17242b; }
-    .cm-ceph-tabs button.active { border-bottom-color: #2f62ff; background: #f3f7ff; color: #1642b8; }
-    .cm-ceph-tabs button:focus-visible { outline: 3px solid #2f62ff; outline-offset: 2px; }
-    .tab-status { padding: 0.08rem 0.4rem; border-radius: 0.8rem; background: #dff0d4; color: #266900; font-size: 0.58rem; }
-    .tab-status.warn { background: #fff0c2; color: #6b4d00; }
-    .insights-placeholder { display: grid; min-height: 16rem; place-items: center; border: 1px dashed #9babb4; background: #f4f7f8; color: #51636d; }
+    .cm-ceph-tabs { display: flex; gap: 0; margin: 0 0 0.9rem; border-bottom: 1px solid var(--os-border); }
+    .cm-ceph-tabs button { display: inline-flex; min-height: 2.45rem; align-items: center; gap: 0.45rem; padding: 0 0.85rem; border: 0; border-bottom: 3px solid transparent; background: transparent; color: var(--os-text-dim); font: inherit; font-size: 0.78rem; font-weight: 600; cursor: pointer; }
+    .cm-ceph-tabs button:hover { background: var(--os-bg-subtle); color: var(--os-ink); }
+    .cm-ceph-tabs button.active { border-bottom-color: var(--os-brand-500); background: var(--os-active-bg); color: var(--os-brand-700); }
+    .cm-ceph-tabs button:focus-visible { outline: 3px solid var(--os-brand-500); outline-offset: 2px; }
+    .tab-status { padding: 0.08rem 0.4rem; border-radius: 0.8rem; background: var(--os-success-bg); color: var(--os-success); font-size: 0.58rem; }
+    .tab-status.warn { background: var(--os-warn-bg); color: var(--os-warn); }
+    .insights-placeholder { display: grid; min-height: 16rem; place-items: center; border: 1px dashed var(--os-border); background: var(--os-bg-subtle); color: var(--os-text-dim); }
     .dependency, .connection-card, .empty-state, .readiness-board, .service-coverage {
-      border: 1px solid #d8d8d8;
-      background: #fff;
+      border: 1px solid var(--os-border);
+      background: var(--os-bg);
       padding: 0.85rem 1rem;
       margin-bottom: 0.8rem;
       font-size: var(--ceph-body-font-size);
@@ -752,133 +762,133 @@ import { CephInsightsComponent } from './ceph-insights.component';
     .dependency-title { display: grid; grid-template-columns: 1.6rem 2.1rem minmax(0, 1fr) auto; gap: 0.6rem; align-items: center; }
     .dependency-logo { display: block; width: 1.8rem; height: 1.8rem; object-fit: contain; }
     .dependency-title > div { display: flex; flex-direction: column; gap: 0.12rem; }
-    .dependency-title span:not(.label):not(.sequence) { color: #6f6f6f; font-size: 0.66rem; }
-    .sequence { display: inline-grid; place-items: center; width: 1.35rem; height: 1.35rem; border-radius: 50%; background: #4c6fff; color: #fff; font-weight: 600; }
+    .dependency-title span:not(.label):not(.sequence) { color: var(--os-text-dim); font-size: 0.66rem; }
+    .sequence { display: inline-grid; place-items: center; width: 1.35rem; height: 1.35rem; border-radius: 50%; background: var(--os-brand-500); color: var(--os-bg); font-weight: 600; }
     .dependency dl, .connection-meta { display: grid; grid-template-columns: 10rem minmax(0, 1fr); gap: 0.35rem 0.8rem; margin: 0.7rem 0; }
-    dt { font-weight: 600; color: #3a4d55; }
+    dt { font-weight: 600; color: var(--os-text-sec); }
     dd { margin: 0; min-width: 0; word-break: break-word; }
-    .field-purpose { margin-left: 0.35rem; color: #5f6b72; font-size: 0.64rem; }
-    .connector { width: 2px; height: 1.1rem; margin: 0.15rem 0 0.15rem 0.68rem; background: #9a9a9a; }
-    .status-message { margin: 0.55rem 0 0 2.2rem; color: #565656; }
+    .field-purpose { margin-left: 0.35rem; color: var(--os-text-dim); font-size: 0.64rem; }
+    .connector { width: 2px; height: 1.1rem; margin: 0.15rem 0 0.15rem 0.68rem; background: var(--os-text-dim); }
+    .status-message { margin: 0.55rem 0 0 2.2rem; color: var(--os-text-sec); }
     .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
     .card-actions { display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap; }
     .card-head h2, .empty-state h2 { margin: 0; font-size: 1rem; }
-    .card-head p { margin: 0.15rem 0 0; color: #6f6f6f; }
+    .card-head p { margin: 0.15rem 0 0; color: var(--os-text-dim); }
     .empty-state { text-align: center; padding: 2rem; }
-    .empty-state p { color: #6f6f6f; }
+    .empty-state p { color: var(--os-text-dim); }
     .readiness-board h2 { margin: 0; font-size: 1rem; }
-    .readiness-board h3 { margin: 0 0 0.65rem; font-size: 0.8rem; color: #2d4048; }
+    .readiness-board h3 { margin: 0 0 0.65rem; font-size: 0.8rem; color: var(--os-text); }
     .readiness-grid { display: grid; grid-template-columns: minmax(18rem, 0.9fr) minmax(24rem, 1.1fr); gap: 0.8rem; margin-top: 0.85rem; }
-    .readiness-panel, .provider-preparation { border: 1px solid #e3e6e8; padding: 0.8rem; background: #fafbfc; }
+    .readiness-panel, .provider-preparation { border: 1px solid var(--os-border); padding: 0.8rem; background: var(--os-bg-subtle); }
     .status-checks { display: grid; gap: 0.45rem; margin: 0; padding: 0; list-style: none; }
     .status-checks li { display: grid; grid-template-columns: 0.7rem minmax(0, 1fr) auto; gap: 0.5rem; align-items: start; }
     .status-checks li > span:nth-child(2) { display: flex; flex-direction: column; gap: 0.08rem; }
-    .status-checks small { color: #6f6f6f; }
-    .status-dot { width: 0.55rem; height: 0.55rem; margin-top: 0.25rem; border-radius: 50%; background: #c92100; box-shadow: 0 0 0 2px #fff, 0 0 0 3px #c92100; }
-    .status-dot.ready { background: #318700; box-shadow: 0 0 0 2px #fff, 0 0 0 3px #318700; }
-    .status-dot.optional:not(.ready) { background: #f0a228; box-shadow: 0 0 0 2px #fff, 0 0 0 3px #f0a228; }
-    .prereq-action { padding: 0; border: 0; background: transparent; color: #0065ab; cursor: pointer; font: inherit; font-size: 0.62rem; font-weight: 600; text-decoration: none; white-space: nowrap; }
+    .status-checks small { color: var(--os-text-dim); }
+    .status-dot { width: 0.55rem; height: 0.55rem; margin-top: 0.25rem; border-radius: 50%; background: var(--os-danger); box-shadow: 0 0 0 2px var(--os-bg), 0 0 0 3px var(--os-danger); }
+    .status-dot.ready { background: var(--os-success); box-shadow: 0 0 0 2px var(--os-bg), 0 0 0 3px var(--os-success); }
+    .status-dot.optional:not(.ready) { background: var(--os-warn); box-shadow: 0 0 0 2px var(--os-bg), 0 0 0 3px var(--os-warn); }
+    .prereq-action { padding: 0; border: 0; background: transparent; color: var(--os-brand-500); cursor: pointer; font: inherit; font-size: 0.62rem; font-weight: 600; text-decoration: none; white-space: nowrap; }
     .prereq-action:hover { text-decoration: underline; }
-    .prereq-action.optional { color: #805a00; }
-    .prereq-next { margin-top: 0.75rem; padding: 0.65rem; border: 1px solid #b8d8f0; background: #eef7fc; }
-    .prereq-next p { margin: 0 0 0.55rem; color: #3a4d55; line-height: 1.45; }
+    .prereq-action.optional { color: var(--os-warn); }
+    .prereq-next { margin-top: 0.75rem; padding: 0.65rem; border: 1px solid var(--os-info-border); background: var(--os-info-bg); }
+    .prereq-next p { margin: 0 0 0.55rem; color: var(--os-text-sec); line-height: 1.45; }
     .prereq-next > div { display: flex; flex-wrap: wrap; gap: 0.35rem; }
     .prereq-next .btn { margin: 0; }
-    .request-tracker, .modal-request-status { margin-top: 0.75rem; padding: 0.7rem; border: 1px solid #8ab4f8; border-left: 4px solid #0f62fe; background: #edf5ff; }
-    .request-tracker-complete { border-color: #69a03a; border-left-color: #318700; background: #f1f8e9; }
-    .request-tracker-failed { border-color: #e09b8e; border-left-color: #c92100; background: #fff3f0; }
+    .request-tracker, .modal-request-status { margin-top: 0.75rem; padding: 0.7rem; border: 1px solid var(--os-info-border); border-left: 4px solid var(--os-brand-500); background: var(--os-info-bg); }
+    .request-tracker-complete { border-color: var(--os-success); border-left-color: var(--os-success); background: var(--os-success-bg); }
+    .request-tracker-failed { border-color: var(--os-danger); border-left-color: var(--os-danger); background: var(--os-danger-bg); }
     .request-tracker-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 0.75rem; }
     .request-tracker-head > div { display: flex; min-width: 0; flex-direction: column; gap: 0.12rem; }
-    .request-tracker-head small { color: #565656; }
+    .request-tracker-head small { color: var(--os-text-sec); }
     .request-tracker-head strong { word-break: break-all; }
     .request-tracker p, .modal-request-status p { margin: 0.5rem 0; line-height: 1.45; }
     .request-tracker dl, .modal-request-status dl { display: grid; grid-template-columns: 5rem minmax(0, 1fr); gap: 0.25rem 0.6rem; margin: 0.5rem 0; }
     .request-tracker-actions { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.55rem; }
     .request-tracker-actions .btn { margin: 0; }
-    .request-error { color: #8a1f11; }
+    .request-error { color: var(--os-danger); }
     .provider-info { display: grid; grid-template-columns: 10rem minmax(0, 1fr); gap: 0.4rem 0.7rem; margin: 0; }
     .provider-info dt { font-size: 0.68rem; }
-    .provider-info dd { color: #565656; }
+    .provider-info dd { color: var(--os-text-sec); }
     .provider-info .label { margin-left: 0.25rem; vertical-align: middle; }
-    .connection-values code { color: #1b2a32; font-family: Consolas, "SFMono-Regular", monospace; font-size: 0.68rem; }
+    .connection-values code { color: var(--os-ink); font-family: Consolas, "SFMono-Regular", monospace; font-size: 0.68rem; }
     .monitor-values { display: grid; gap: 0.22rem; margin: 0; padding: 0; list-style: none; }
-    .secret-boundary-note { margin: 0.75rem 0 0; padding: 0.55rem 0.65rem; border-left: 3px solid #0f62fe; background: #edf5ff; color: #37474f; line-height: 1.45; }
-    .scope-note { margin: 0.75rem 0 0; padding-top: 0.6rem; border-top: 1px solid #e3e6e8; color: #565656; }
-    .blocker-list { margin-top: 0.75rem; padding: 0.55rem; background: #fff3f0; color: #8a1f11; }
+    .secret-boundary-note { margin: 0.75rem 0 0; padding: 0.55rem 0.65rem; border-left: 3px solid var(--os-brand-500); background: var(--os-info-bg); color: var(--os-text-sec); line-height: 1.45; }
+    .scope-note { margin: 0.75rem 0 0; padding-top: 0.6rem; border-top: 1px solid var(--os-border); color: var(--os-text-sec); }
+    .blocker-list { margin-top: 0.75rem; padding: 0.55rem; background: var(--os-danger-bg); color: var(--os-danger); }
     .blocker-list ul { margin: 0.3rem 0 0 1rem; padding: 0; }
     .provider-preparation { margin-top: 0.8rem; }
     .preparation-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.55rem; }
-    .preparation-grid > div { display: flex; flex-direction: column; gap: 0.12rem; padding-left: 0.65rem; border-left: 3px solid #4c6fff; }
-    .preparation-grid span { color: #565656; }
-    .network-contract { display: flex; flex-wrap: wrap; gap: 0.35rem 0.7rem; margin-top: 0.75rem; padding: 0.55rem 0.65rem; background: #eaf4ff; }
+    .preparation-grid > div { display: flex; flex-direction: column; gap: 0.12rem; padding-left: 0.65rem; border-left: 3px solid var(--os-brand-500); }
+    .preparation-grid span { color: var(--os-text-sec); }
+    .network-contract { display: flex; flex-wrap: wrap; gap: 0.35rem 0.7rem; margin-top: 0.75rem; padding: 0.55rem 0.65rem; background: var(--os-info-bg); }
     .service-coverage-head { align-items: center; }
-    .service-coverage-head h2 { margin: 0; color: #1b2a32; font-size: 1.05rem; }
-    .service-coverage-head p:not(.section-kicker) { margin: 0.18rem 0 0; max-width: 55rem; color: #565656; line-height: 1.45; }
-    .section-kicker { margin: 0 0 0.15rem; color: #0f62fe; font-size: 0.6rem; font-weight: 700; letter-spacing: 0.08em; }
-    .service-warning { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.65rem; margin-top: 0.8rem; padding: 0.6rem 0.7rem; border-left: 3px solid #f1c21b; background: #fffdf5; color: #4f3b00; }
-    .service-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; gap: 0; margin-top: 0.8rem; border: 1px solid #c9d2d8; }
-    .service-card { min-width: 0; padding: 0.9rem; border: 0; background: #fff; }
-    .service-card + .service-card { border-left: 1px solid #c9d2d8; }
-    .storage-service-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.75rem; padding: 0; background: #fff; color: #1b2a32; }
+    .service-coverage-head h2 { margin: 0; color: var(--os-ink); font-size: 1.05rem; }
+    .service-coverage-head p:not(.section-kicker) { margin: 0.18rem 0 0; max-width: 55rem; color: var(--os-text-sec); line-height: 1.45; }
+    .section-kicker { margin: 0 0 0.15rem; color: var(--os-brand-500); font-size: 0.6rem; font-weight: 700; letter-spacing: 0.08em; }
+    .service-warning { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.65rem; margin-top: 0.8rem; padding: 0.6rem 0.7rem; border-left: 3px solid var(--os-warn-border); background: var(--os-warn-bg); color: var(--os-warn); }
+    .service-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; gap: 0; margin-top: 0.8rem; border: 1px solid var(--os-border); }
+    .service-card { min-width: 0; padding: 0.9rem; border: 0; background: var(--os-bg); }
+    .service-card + .service-card { border-left: 1px solid var(--os-border); }
+    .storage-service-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.75rem; padding: 0; background: var(--os-bg); color: var(--os-ink); }
     .service-identity { display: grid; min-width: 0; grid-template-columns: 2rem minmax(0, 1fr); gap: 0.55rem; align-items: center; }
     .service-identity img { display: block; width: 1.75rem; height: 1.75rem; object-fit: contain; }
-    .service-identity h3 { margin: 0; color: #1b2a32; font-size: 0.86rem; }
-    .service-identity p { margin: 0.16rem 0 0; color: #565656; line-height: 1.4; }
-    .service-state { flex: 0 0 auto; padding: 0.15rem 0.45rem; border-radius: 0.8rem; background: #e5e8ea; color: #3a4d55; font-size: 0.68rem; font-weight: 700; }
-    .service-state.ready { background: #dff0d4; color: #266900; }
-    .service-state.gap { background: #fff0c2; color: #6b4d00; }
-    .service-checkpoints { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0.8rem 0 0; padding: 0.45rem 0; border-top: 1px solid #e3e6e8; border-bottom: 1px solid #e3e6e8; list-style: none; }
+    .service-identity h3 { margin: 0; color: var(--os-ink); font-size: 0.86rem; }
+    .service-identity p { margin: 0.16rem 0 0; color: var(--os-text-sec); line-height: 1.4; }
+    .service-state { flex: 0 0 auto; padding: 0.15rem 0.45rem; border-radius: 0.8rem; background: var(--os-surface); color: var(--os-text-sec); font-size: 0.68rem; font-weight: 700; }
+    .service-state.ready { background: var(--os-success-bg); color: var(--os-success); }
+    .service-state.gap { background: var(--os-warn-bg); color: var(--os-warn); }
+    .service-checkpoints { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0.8rem 0 0; padding: 0.45rem 0; border-top: 1px solid var(--os-border); border-bottom: 1px solid var(--os-border); list-style: none; }
     .service-checkpoints li { display: grid; grid-template-columns: 1.2rem minmax(0, 1fr); gap: 0.04rem 0.35rem; padding: 0.18rem 0.55rem; background: transparent; }
-    .service-checkpoints li + li { border-left: 1px solid #e3e6e8; }
-    .service-checkpoints li > span { display: grid; grid-row: 1 / 3; width: 1.15rem; height: 1.15rem; place-items: center; border-radius: 50%; background: #8d9ba3; color: #fff; font-size: 0.68rem; }
-    .service-checkpoints li.complete > span { background: #318700; }
+    .service-checkpoints li + li { border-left: 1px solid var(--os-border); }
+    .service-checkpoints li > span { display: grid; grid-row: 1 / 3; width: 1.15rem; height: 1.15rem; place-items: center; border-radius: 50%; background: var(--os-text-dim); color: var(--os-bg); font-size: 0.68rem; }
+    .service-checkpoints li.complete > span { background: var(--os-success); }
     .service-checkpoints strong { font-size: 0.7rem; line-height: 1.2; }
-    .service-checkpoints small { color: #6f6f6f; font-size: 0.68rem; }
+    .service-checkpoints small { color: var(--os-text-dim); font-size: 0.68rem; }
     .service-class-list { display: grid; gap: 0.35rem; margin-top: 0.7rem; }
-    .service-class-list > div { display: flex; flex-direction: column; gap: 0.12rem; padding: 0.45rem 0; border-bottom: 1px solid #e3e6e8; background: transparent; }
-    .service-class-list span { color: #565656; }
-    .service-blockers { margin-top: 0.7rem; padding: 0.5rem 0.6rem; border-left: 3px solid #f1c21b; background: #fffdf5; color: #4f3b00; }
+    .service-class-list > div { display: flex; flex-direction: column; gap: 0.12rem; padding: 0.45rem 0; border-bottom: 1px solid var(--os-border); background: transparent; }
+    .service-class-list span { color: var(--os-text-sec); }
+    .service-blockers { margin-top: 0.7rem; padding: 0.5rem 0.6rem; border-left: 3px solid var(--os-warn-border); background: var(--os-warn-bg); color: var(--os-warn); }
     .service-blockers ul { margin: 0.3rem 0 0 1rem; padding: 0; }
-    .provider-request { margin-top: 0.7rem; padding-top: 0.7rem; border-top: 1px solid #d8d8d8; background: transparent; }
+    .provider-request { margin-top: 0.7rem; padding-top: 0.7rem; border-top: 1px solid var(--os-border); background: transparent; }
     .provider-request-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.6rem; }
     .provider-request-head > div { display: flex; flex-direction: column; gap: 0.08rem; }
-    .provider-request-head span:not(.requirement-count) { color: #565656; }
+    .provider-request-head span:not(.requirement-count) { color: var(--os-text-sec); }
     .provider-request-head .btn { flex: 0 0 auto; margin: 0; }
-    .requirement-count { margin-left: 0.25rem; color: #565656; font-size: 0.68rem; font-weight: 500; }
-    .provider-request-details { margin-top: 0.55rem; border-top: 1px solid #e3e6e8; }
-    .provider-request-details summary { padding: 0.5rem 0; color: #0065ab; cursor: pointer; font-weight: 600; }
-    .provider-request-details summary:focus-visible { outline: 2px solid #0f62fe; outline-offset: 2px; }
-    .provider-request dl { display: grid; grid-template-columns: minmax(9rem, 0.7fr) minmax(0, 1.3fr); gap: 0.35rem 0.65rem; margin: 0.2rem 0 0; padding-top: 0.55rem; border-top: 1px solid #e3e6e8; }
-    .provider-request dd { color: #3a4d55; }
-    .sensitive { display: inline-block; margin-left: 0.2rem; padding: 0.04rem 0.28rem; border-radius: 0.5rem; background: #e5e8ea; color: #3a4d55; font-size: 0.68rem; }
-    .provider-contract { display: grid; gap: 0.2rem; margin-top: 0.65rem; padding-top: 0.55rem; border-top: 1px solid #e3e6e8; background: transparent; color: #3a4d55; }
+    .requirement-count { margin-left: 0.25rem; color: var(--os-text-sec); font-size: 0.68rem; font-weight: 500; }
+    .provider-request-details { margin-top: 0.55rem; border-top: 1px solid var(--os-border); }
+    .provider-request-details summary { padding: 0.5rem 0; color: var(--os-brand-500); cursor: pointer; font-weight: 600; }
+    .provider-request-details summary:focus-visible { outline: 2px solid var(--os-brand-500); outline-offset: 2px; }
+    .provider-request dl { display: grid; grid-template-columns: minmax(9rem, 0.7fr) minmax(0, 1.3fr); gap: 0.35rem 0.65rem; margin: 0.2rem 0 0; padding-top: 0.55rem; border-top: 1px solid var(--os-border); }
+    .provider-request dd { color: var(--os-text-sec); }
+    .sensitive { display: inline-block; margin-left: 0.2rem; padding: 0.04rem 0.28rem; border-radius: 0.5rem; background: var(--os-surface); color: var(--os-text-sec); font-size: 0.68rem; }
+    .provider-contract { display: grid; gap: 0.2rem; margin-top: 0.65rem; padding-top: 0.55rem; border-top: 1px solid var(--os-border); background: transparent; color: var(--os-text-sec); }
     .service-actions { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.65rem; }
     .service-actions .btn { margin: 0; }
-    .service-next { margin: 0.7rem 0 0; color: #3a4d55; }
-    .verification-note { margin: 0.8rem 0 0; padding-top: 0.7rem; border-top: 1px solid #d8d8d8; color: #565656; line-height: 1.45; }
+    .service-next { margin: 0.7rem 0 0; color: var(--os-text-sec); }
+    .verification-note { margin: 0.8rem 0 0; padding-top: 0.7rem; border-top: 1px solid var(--os-border); color: var(--os-text-sec); line-height: 1.45; }
     .cephfs-form clr-textarea-container { grid-column: 1 / -1; }
     .command-block { display: grid; gap: 0.35rem; margin-top: 0.75rem; }
-    .command-block span { color: #565656; }
-    .command-block code { display: block; padding: 0.65rem; overflow-x: auto; background: #1b2a32; color: #eef5f7; white-space: nowrap; }
+    .command-block span { color: var(--os-text-sec); }
+    .command-block code { display: block; padding: 0.65rem; overflow-x: auto; background: var(--os-ink); color: var(--os-dark-text); white-space: nowrap; }
     .install-scope { display: grid; gap: 0.35rem; margin: 0.55rem 0 0.75rem; padding-left: 1.1rem; }
     .install-scope .scope-elevated {
       margin: 0.35rem 0 0.15rem; padding: 0.5rem 0.65rem; list-style-position: outside;
-      background: #fdf3e6; border: 1px solid #e8bd7a; border-left: 3px solid #c47500; border-radius: 3px; color: #52401f;
+      background: var(--os-warn-bg); border: 1px solid var(--os-warn-border); border-left: 3px solid var(--os-warn); border-radius: 3px; color: var(--os-text-sec);
     }
-    .scope-consent { display: flex; align-items: flex-start; gap: 0.45rem; margin: 0.6rem 0 0; color: #313131; }
+    .scope-consent { display: flex; align-items: flex-start; gap: 0.45rem; margin: 0.6rem 0 0; color: var(--os-ink); }
     .scope-consent input { margin-top: 0.2rem; }
-    .value-note { display: block; margin-top: 0.15rem; color: #6b6b6b; font-size: 0.6875rem; line-height: 1rem; }
-    .role-credentials { margin: 0.35rem 0 0; padding: 0.7rem 0.85rem; background: #fafafa; border: 1px solid #e3e6e8; border-radius: 3px; }
-    .role-credentials h5 { margin: 0 0 0.25rem; font-size: 0.8125rem; font-weight: 600; color: #21313c; }
-    .role-note { margin: 0 0 0.5rem; color: #565656; font-size: 0.6875rem; line-height: 1.05rem; }
+    .value-note { display: block; margin-top: 0.15rem; color: var(--os-text-dim); font-size: 0.6875rem; line-height: 1rem; }
+    .role-credentials { margin: 0.35rem 0 0; padding: 0.7rem 0.85rem; background: var(--os-bg-subtle); border: 1px solid var(--os-border); border-radius: 3px; }
+    .role-credentials h5 { margin: 0 0 0.25rem; font-size: 0.8125rem; font-weight: 600; color: var(--os-ink); }
+    .role-note { margin: 0 0 0.5rem; color: var(--os-text-sec); font-size: 0.6875rem; line-height: 1.05rem; }
     .role-row { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 0 0.9rem; align-items: start; }
     @media (max-width: 900px) { .role-row { grid-template-columns: minmax(0, 1fr); } }
     .prerequisite-form, .prerequisite-form clr-textarea-container, textarea[name='prerequisiteReason'] { display: block; width: 100%; }
     textarea[name='prerequisiteReason'] { min-height: 6rem; resize: vertical; }
-    .automatic-check { display: grid; gap: 0.25rem; margin-top: 0.8rem; padding: 0.7rem 0.8rem; border-left: 4px solid #318700; background: #f1f8e9; color: #25421c; }
+    .automatic-check { display: grid; gap: 0.25rem; margin-top: 0.8rem; padding: 0.7rem 0.8rem; border-left: 4px solid var(--os-success); background: var(--os-success-bg); color: var(--os-success); }
     .wizard-progress { display: grid; grid-template-columns: repeat(3, 1fr); padding: 0; margin: 0 0 1rem; list-style: none; counter-reset: step; }
-    .wizard-progress li { padding: 0.45rem 0.5rem; border-bottom: 3px solid #d8d8d8; color: #6f6f6f; font-size: 0.68rem; }
-    .wizard-progress li.active { border-color: #4c6fff; color: #1b2a32; font-weight: 600; }
+    .wizard-progress li { padding: 0.45rem 0.5rem; border-bottom: 3px solid var(--os-border); color: var(--os-text-dim); font-size: 0.68rem; }
+    .wizard-progress li.active { border-color: var(--os-brand-500); color: var(--os-ink); font-weight: 600; }
     .wizard-feedback { margin: 0 0 0.8rem; }
     .wizard-step { font-size: var(--ceph-body-font-size); }
     .wizard-step h4 { margin-top: 0; }
@@ -887,36 +897,31 @@ import { CephInsightsComponent } from './ceph-insights.component';
     .connection-form > * { min-width: 0; width: 100%; }
     .connection-form .wide-field { grid-column: 1 / -1; }
     .connection-form input[clrInput], .connection-form input[clrPassword], .connection-form textarea[clrTextarea] { width: 100%; max-width: none; }
-    :host ::ng-deep .connection-form .clr-form-control,
-    :host ::ng-deep .connection-form .clr-control-container,
-    :host ::ng-deep .connection-form .clr-input-wrapper,
-    :host ::ng-deep .connection-form .clr-input-group,
-    :host ::ng-deep .connection-form .clr-textarea-wrapper { width: 100%; max-width: none; }
+    .connection-form clr-input-container,
+    .connection-form clr-password-container,
+    .connection-form clr-textarea-container { display: block; width: 100%; max-width: none; }
     .monitoring-configuration-form,
     .monitoring-configuration-form > *,
     .monitoring-configuration-form input[clrInput],
     .monitoring-configuration-form textarea[clrTextarea] { width: 100%; max-width: none; }
-    :host ::ng-deep .monitoring-configuration-form .clr-form-control,
-    :host ::ng-deep .monitoring-configuration-form .clr-control-container,
-    :host ::ng-deep .monitoring-configuration-form .clr-input-wrapper,
-    :host ::ng-deep .monitoring-configuration-form .clr-input-group,
-    :host ::ng-deep .monitoring-configuration-form .clr-textarea-wrapper { width: 100%; max-width: none; }
+    .monitoring-configuration-form clr-input-container,
+    .monitoring-configuration-form clr-textarea-container { display: block; width: 100%; max-width: none; }
     .monitoring-url-field input { min-width: 0; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
     .monitor-input textarea { min-height: 6.5rem; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
     textarea { min-height: 4.5rem; }
-    .resource-list { max-height: 14rem; overflow: auto; border: 1px solid #d8d8d8; margin: 0.65rem 0; }
-    .resource-list > div { display: grid; grid-template-columns: minmax(14rem, 1fr) minmax(8rem, 0.7fr); gap: 0.6rem; padding: 0.3rem 0.5rem; border-bottom: 1px solid #eee; }
+    .resource-list { max-height: 14rem; overflow: auto; border: 1px solid var(--os-border); margin: 0.65rem 0; }
+    .resource-list > div { display: grid; grid-template-columns: minmax(14rem, 1fr) minmax(8rem, 0.7fr); gap: 0.6rem; padding: 0.3rem 0.5rem; border-bottom: 1px solid var(--os-border); }
     code { font-size: 0.63rem; }
     @media (max-width: 62rem) {
       .cm-ceph-page-head, .card-head { flex-direction: column; }
       .readiness-grid, .preparation-grid, .connection-form, .service-grid { grid-template-columns: 1fr; }
-      .service-card + .service-card { border-top: 1px solid #c9d2d8; border-left: 0; }
+      .service-card + .service-card { border-top: 1px solid var(--os-border); border-left: 0; }
       .dependency dl, .connection-meta { grid-template-columns: 1fr; }
       .resource-list > div { grid-template-columns: 1fr; }
       .status-checks li { grid-template-columns: 0.7rem minmax(0, 1fr); }
       .prereq-action { grid-column: 2; justify-self: start; }
       .service-checkpoints { grid-template-columns: 1fr; }
-      .service-checkpoints li + li { border-top: 1px solid #e3e6e8; border-left: 0; }
+      .service-checkpoints li + li { border-top: 1px solid var(--os-border); border-left: 0; }
       .provider-request-head { flex-direction: column; }
       .provider-request dl { grid-template-columns: 1fr; }
       .service-warning { grid-template-columns: 1fr; }

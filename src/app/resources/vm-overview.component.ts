@@ -28,12 +28,12 @@ function vmMemBytes(v: any): number {
 }
 
 const VM_STATUS_COLOR: Record<string, string> = {
-  Running: 'var(--clr-color-success-600, #2ecc71)',
-  Stopped: 'var(--clr-color-warning-700, #f1c40f)',
-  Error:   'var(--clr-color-danger-700,  #e74c3c)',
-  Other:   'var(--clr-color-neutral-500, #95a5a6)',
+  Running: 'var(--os-success)',
+  Stopped: 'var(--os-warn)',
+  Error:   'var(--os-danger)',
+  Other:   'var(--os-text-dim)',
 };
-const NS_PALETTE = ['var(--os-brand-500,#4c6fff)', 'var(--clr-color-success-700,#1f7a4d)', 'var(--clr-color-action-800,#8e44ad)', 'var(--os-accent,#00bfa5)', 'var(--clr-color-warning-900,#b8860b)'];
+const NS_PALETTE = ['var(--os-brand-500)', 'var(--os-success)', 'var(--os-gauge-mem)', 'var(--os-accent)', 'var(--os-warn)'];
 
 interface Seg { color: string; dash: string; offset: string; }
 interface Bar { label: string; value: number; pct: number; color: string; }
@@ -51,15 +51,18 @@ interface Bar { label: string; value: number; pct: number; color: string; }
     .vm-ov-gnum { font-size: 2.1rem; font-weight: 200; line-height: 1.1; margin: 0.2rem 0; }
   `],
   template: `
-    <div class="os-title-row">
-      <h2 class="os-h2">가상화 개요 <span class="label label-info">Virtualization</span></h2>
-      <span class="os-sub" *ngIf="!loaded()">불러오는 중…</span>
-      <button class="btn btn-sm btn-link os-ml-auto" (click)="loadAll()">새로고침</button>
+    <div class="os-page-header">
+      <div class="os-page-header-main">
+        <p class="os-page-eyebrow">Kubernetes virtualization</p>
+        <h2 class="os-page-title">가상화 개요</h2>
+        <p class="os-page-description">{{ loaded() ? 'VirtualMachine 실행·용량 현황' : '불러오는 중…' }}</p>
+      </div>
+      <div class="os-page-header-actions"><button class="btn btn-outline" (click)="loadAll()"><cds-icon shape="refresh"></cds-icon> 새로고침</button></div>
     </div>
 
-    <div *ngIf="error()" class="alert alert-warning" role="alert">
-      <div class="alert-items"><div class="alert-item static"><span class="alert-text">{{ error() }}</span></div></div>
-    </div>
+    <clr-alert *ngIf="error()" [clrAlertType]="'warning'" [clrAlertClosable]="false">
+      <clr-alert-item><span class="alert-text">{{ error() }}</span></clr-alert-item>
+    </clr-alert>
 
     <!-- 합계 카드 -->
     <div class="os-ov-cards">

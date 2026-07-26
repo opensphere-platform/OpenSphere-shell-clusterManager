@@ -1,4 +1,5 @@
 import { CommonModule } from '@angular/common';
+import { ClarityModule } from '@clr/angular';
 import {
   AfterViewInit, Component, ElementRef, EventEmitter, Input, OnChanges,
   OnDestroy, Output, SimpleChanges, ViewChild, signal,
@@ -24,15 +25,15 @@ import { oneDark } from '@codemirror/theme-one-dark';
 @Component({
   selector: 'app-code-editor',
   standalone: true,
-  imports: [CommonModule],
+  imports: [CommonModule, ClarityModule],
   template: `
     <div class="cm-shell" [class.cm-dark]="dark">
       <div class="cm-toolbar">
-        <button type="button" class="os-iconbtn" title="검색 (Ctrl/⌘+F)" aria-label="검색" (click)="find()">
-          <svg viewBox="0 0 24 24" class="os-ic"><path d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 10-.7.7l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0A4.5 4.5 0 1114 9.5 4.5 4.5 0 019.5 14z"/></svg>
+        <button type="button" class="btn btn-sm btn-link btn-icon" title="검색 (Ctrl/⌘+F)" aria-label="검색" (click)="find()">
+          <cds-icon shape="search"></cds-icon>
         </button>
         <label class="os-wrap-toggle" *ngIf="showWrap">
-          <input type="checkbox" [checked]="wrapOn()" (change)="setWrap($any($event.target).checked)" /> 줄바꿈
+          <input type="checkbox" clrCheckbox [checked]="wrapOn()" (change)="setWrap($any($event.target).checked)" /> 줄바꿈
         </label>
         <span class="cm-spacer"></span>
         <ng-content></ng-content>

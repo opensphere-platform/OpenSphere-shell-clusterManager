@@ -1,5 +1,5 @@
 import { CommonModule } from '@angular/common';
-import { Component, EventEmitter, HostListener, Input, OnInit, Output, Signal, computed, inject, signal } from '@angular/core';
+import { Component, EventEmitter, Input, OnInit, Output, Signal, computed, inject, signal } from '@angular/core';
 import { ClarityModule } from '@clr/angular';
 import { K8sService } from '../core/k8s.service';
 import { ResourceDetailComponent } from './resource-detail.component';
@@ -30,84 +30,76 @@ export interface ColumnDef {
   standalone: true,
   imports: [CommonModule, ClarityModule, ResourceDetailComponent, VmDetailComponent, OsLogoComponent],
   styles: [`
-    .os-kebab { font-size: 1.15rem; line-height: 1; font-weight: 700; }
-    .os-row-actions { position: fixed; z-index: 1100; background: var(--clr-global-app-background, #fff); border: 1px solid var(--clr-color-neutral-300, #ccc); border-radius: 4px; box-shadow: 0 3px 12px rgba(0,0,0,.18); min-width: 150px; padding: .25rem 0; }
-    .os-row-action { display: block; width: 100%; text-align: left; padding: .42rem 1rem; border: none; background: none; cursor: pointer; font-size: .85rem; color: var(--clr-color-neutral-800, #333); }
-    .os-row-action:hover { background: var(--clr-color-neutral-100, #f3f3f3); }
-    .os-row-action.danger { color: var(--clr-color-danger-700, #e74c3c); }
+    .os-kebab cds-icon { pointer-events: none; }
+    .os-row-action-danger { color: var(--clr-color-danger-700); }
   `],
   template: `
     <!-- 목록은 항상 좌측에 유지. 상세는 우측 슬라이드 오버 드로어로 표시. -->
-    <div class="os-title-row">
-      <h2 class="os-h2">{{ title }}
-        <span class="label label-info">Angular · Clarity</span>
-        <span *ngIf="dummy" class="label label-warning">DUMMY · 예시</span>
-      </h2>
-      <span class="os-sub">{{ filtered().length }}<span *ngIf="filtersActive()"> / {{ rows().length }}</span> {{ title.toLowerCase() }}</span>
-      <input class="os-search" type="text" placeholder="검색 (이름·네임스페이스·값)" [value]="search()" (input)="search.set($any($event.target).value)" />
-      <button *ngIf="createLabel" class="btn btn-sm btn-primary os-create" type="button" (click)="create.emit()">{{ createLabel }}</button>
+    <div class="os-page-header">
+      <div class="os-page-header-main">
+        <p class="os-page-eyebrow">Kubernetes resources</p>
+        <h2 class="os-page-title">{{ title }}</h2>
+        <p class="os-page-description">
+          {{ filtered().length }}<span *ngIf="filtersActive()"> / {{ rows().length }}</span>개 리소스
+          <span *ngIf="dummy" class="label label-warning">DUMMY · 예시</span>
+        </p>
+      </div>
+      <div class="os-page-header-actions">
+        <input clrInput class="os-search" type="search" aria-label="리소스 검색"
+               placeholder="검색 (이름·네임스페이스·값)" [value]="search()"
+               (input)="search.set($any($event.target).value)" />
+        <button *ngIf="createLabel" class="btn btn-sm btn-primary" type="button" (click)="create.emit()">{{ createLabel }}</button>
+      </div>
     </div>
 
-    <!-- 다중선택 패싯 필터 (자체완결 *ngIf 팝오버 — clr-dropdown/CDK Overlay 미사용 → 섀도우 밖 body 포털 탈출 없음) -->
+    <!-- 다중선택 패싯 필터 — OpenSphere 표준 Clarity dropdown으로 키보드·포커스·닫힘 동작을 통일한다. -->
     <div class="os-facets" *ngIf="(namespaced && nsOptions().length) || facetCols().length">
-      <!-- Namespace 다중선택 (Headlamp 'All namespaces' 패리티) -->
-      <div class="os-facet" *ngIf="namespaced && nsOptions().length">
-        <span class="os-facet-trigger" role="button" tabindex="0" [class.is-open]="openFacet() === NS"
-              (click)="togglePopover(NS)" (keydown.enter)="togglePopover(NS)">
+      <clr-dropdown *ngIf="namespaced && nsOptions().length">
+        <button type="button" class="btn btn-sm btn-outline" clrDropdownTrigger>
           Namespace
           <span class="badge badge-info" *ngIf="countFor(NS)">{{ countFor(NS) }}</span>
-          <span class="os-facet-caret" aria-hidden="true">▾</span>
-        </span>
-        <div class="os-filter-popover" *ngIf="openFacet() === NS" role="group" aria-label="Namespace filter">
-          <div class="os-filter-head">
-            <span>{{ countFor(NS) ? countFor(NS) + ' selected' : 'All namespaces' }}</span>
-            <span class="os-link" role="button" tabindex="0" *ngIf="countFor(NS)" (click)="clearFacet(NS)" (keydown.enter)="clearFacet(NS)">Clear</span>
-          </div>
-          <label *ngFor="let ns of nsOptions()">
-            <input type="checkbox" [checked]="isPicked(NS, ns)" (change)="toggle(NS, ns, $any($event.target).checked)" />
+          <cds-icon shape="angle" direction="down" aria-hidden="true"></cds-icon>
+        </button>
+        <div clrDropdownMenu aria-label="Namespace filter">
+          <button type="button" clrDropdownItem *ngIf="countFor(NS)" (click)="clearFacet(NS)">모든 namespace</button>
+          <label class="dropdown-item os-filter-check" *ngFor="let ns of nsOptions()">
+            <input type="checkbox" clrCheckbox [checked]="isPicked(NS, ns)"
+                   (change)="toggle(NS, ns, $any($event.target).checked)" />
             <span>{{ ns }}</span>
           </label>
         </div>
-      </div>
+      </clr-dropdown>
 
-      <!-- 컬럼 패싯 (kind:'status' 자동 + facet:true). 옵션 0개(또는 cap 초과)면 숨김. -->
       <ng-container *ngFor="let c of facetCols()">
-        <div class="os-facet" *ngIf="optionsFor(c).length">
-          <span class="os-facet-trigger" role="button" tabindex="0" [class.is-open]="openFacet() === c.id"
-                (click)="togglePopover(c.id)" (keydown.enter)="togglePopover(c.id)">
+        <clr-dropdown *ngIf="optionsFor(c).length">
+          <button type="button" class="btn btn-sm btn-outline" clrDropdownTrigger>
             {{ c.label }}
             <span class="badge badge-info" *ngIf="countFor(c.id)">{{ countFor(c.id) }}</span>
-            <span class="os-facet-caret" aria-hidden="true">▾</span>
-          </span>
-          <div class="os-filter-popover" *ngIf="openFacet() === c.id" role="group" [attr.aria-label]="c.label + ' filter'">
-            <div class="os-filter-head">
-              <span>{{ countFor(c.id) ? countFor(c.id) + ' selected' : 'All' }}</span>
-              <span class="os-link" role="button" tabindex="0" *ngIf="countFor(c.id)" (click)="clearFacet(c.id)" (keydown.enter)="clearFacet(c.id)">Clear</span>
-            </div>
-            <label *ngFor="let v of optionsFor(c)">
-              <input type="checkbox" [checked]="isPicked(c.id, v)" (change)="toggle(c.id, v, $any($event.target).checked)" />
+            <cds-icon shape="angle" direction="down" aria-hidden="true"></cds-icon>
+          </button>
+          <div clrDropdownMenu [attr.aria-label]="c.label + ' filter'">
+            <button type="button" clrDropdownItem *ngIf="countFor(c.id)" (click)="clearFacet(c.id)">모두 보기</button>
+            <label class="dropdown-item os-filter-check" *ngFor="let v of optionsFor(c)">
+              <input type="checkbox" clrCheckbox [checked]="isPicked(c.id, v)"
+                     (change)="toggle(c.id, v, $any($event.target).checked)" />
               <span class="label" *ngIf="c.kind === 'status'" [ngClass]="statusClass(statusSwatch(c, v))">{{ v }}</span>
               <span *ngIf="c.kind !== 'status'">{{ v }}</span>
             </label>
           </div>
-        </div>
+        </clr-dropdown>
       </ng-container>
 
       <button type="button" class="btn btn-sm btn-link os-facet-clearall" *ngIf="filtersActive()" (click)="clearAll()">Clear all</button>
     </div>
 
-    <div *ngIf="error()" class="alert alert-danger" role="alert">
-      <div class="alert-items"><div class="alert-item static">
-        <span class="alert-text">{{ error() }}</span>
-      </div></div>
-    </div>
+    <clr-alert *ngIf="error()" [clrAlertType]="'danger'" [clrAlertClosable]="false">
+      <clr-alert-item><span class="alert-text">{{ error() }}</span></clr-alert-item>
+    </clr-alert>
 
     <!-- 404 = 해당 API/CRD 미설치(또는 비활성). 빨간 에러 대신 안내(Headlamp 동작과 동등). -->
-    <div *ngIf="unavailable()" class="alert alert-info" role="alert">
-      <div class="alert-items"><div class="alert-item static">
-        <span class="alert-text">이 리소스 종류는 이 클러스터에 없습니다 — CRD 미설치이거나 API가 비활성화됨. 설치되면 자동으로 표시됩니다.</span>
-      </div></div>
-    </div>
+    <clr-alert *ngIf="unavailable()" [clrAlertType]="'info'" [clrAlertClosable]="false">
+      <clr-alert-item><span class="alert-text">이 리소스 종류는 이 클러스터에 없습니다 — CRD 미설치이거나 API가 비활성화됨. 설치되면 자동으로 표시됩니다.</span></clr-alert-item>
+    </clr-alert>
 
     <clr-datagrid [clrDgLoading]="loading()">
       <clr-dg-column *ngIf="namespaced" [clrDgSortBy]="nsComparator">Namespace</clr-dg-column>
@@ -134,7 +126,18 @@ export interface ColumnDef {
           <ng-container *ngSwitchCase="'logo'"><app-os-logo [os]="c.get(item)" [size]="22"></app-os-logo></ng-container>
           <ng-container *ngSwitchDefault>{{ display(c.get(item)) }}</ng-container>
         </clr-dg-cell>
-        <clr-dg-cell *ngIf="rowActions"><button class="os-iconbtn os-kebab" type="button" title="작업" (click)="toggleActions(item, $event)">⋮</button></clr-dg-cell>
+        <clr-dg-cell *ngIf="rowActions">
+          <clr-dropdown>
+            <button type="button" class="btn btn-sm btn-link btn-icon os-kebab" clrDropdownTrigger
+                    aria-label="리소스 작업">
+              <cds-icon shape="ellipsis-vertical"></cds-icon>
+            </button>
+            <clr-dropdown-menu clrPosition="bottom-right" *clrIfOpen>
+              <button *ngFor="let a of rowActions!(item)" type="button" clrDropdownItem
+                      [class.os-row-action-danger]="a.danger" (click)="a.run()">{{ a.label }}</button>
+            </clr-dropdown-menu>
+          </clr-dropdown>
+        </clr-dg-cell>
       </clr-dg-row>
 
       <clr-dg-footer>
@@ -145,49 +148,20 @@ export interface ColumnDef {
       </clr-dg-footer>
     </clr-datagrid>
 
-    <!-- 행 작업 메뉴 (자체완결 fixed 팝오버 — clr-dropdown 미사용, 섀도우 포털 탈출 없음) -->
-    <div class="os-row-actions" *ngIf="openActions() as item" [style.top.px]="actionsPos().top" [style.left.px]="actionsPos().left">
-      <button *ngFor="let a of rowActions!(item)" type="button" class="os-row-action" [class.danger]="a.danger" (click)="runAction(a)">{{ a.label }}</button>
-    </div>
-
-    <!-- 우측 슬라이드 오버 상세 드로어 (좌측 끝 드래그로 리사이즈). 그레이 백드롭 없음(불투명·고z로 겹침 방지), 닫기는 헤더 X -->
-
-    <div class="os-drawer" *ngIf="selected() as sel" [ngStyle]="{ width: full() ? '100%' : drawerW() + 'px' }">
-      <div class="os-drawer-handle" *ngIf="!full()" (pointerdown)="startResize($event)"></div>
-      <div class="os-drawer-main">
-        <div class="os-drawer-head">
-          <span class="os-drawer-title">{{ kind }} · {{ sel.metadata?.name }}</span>
-          <span class="os-drawer-ctrls">
-            <button class="os-iconbtn" type="button" [title]="full() ? '복원' : '전체 보기'" [attr.aria-label]="full() ? 'Restore' : 'Maximize'" (click)="full.set(!full())">
-              <svg viewBox="0 0 24 24" class="os-ic"><path [attr.d]="full() ? icRestore : icMax"/></svg>
-            </button>
-            <button class="os-iconbtn" type="button" title="닫기" aria-label="Close" (click)="closeDrawer()">
-              <svg viewBox="0 0 24 24" class="os-ic"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-            </button>
-          </span>
-        </div>
-        <div class="os-drawer-body">
-          <app-vm-detail *ngIf="vm"
-            [item]="sel"
-            [listPath]="path"
-            [namespaced]="namespaced"
-            (back)="closeDrawer()"
-            (changed)="load()"
-          />
-          <app-resource-detail *ngIf="!vm"
-            [kind]="kind!"
-            [listPath]="path"
-            [namespaced]="namespaced"
-            [item]="sel"
-            [scalable]="scalable"
-            [restartable]="restartable"
-            [cordonable]="cordonable"
-            (back)="selected.set(null)"
-            (changed)="load()"
-          />
-        </div>
+    <!-- 상세는 Clarity side panel로 통일한다. 포커스 트랩·Esc·스크린리더 제목을 프레임워크가 관리한다. -->
+    <clr-side-panel [clrSidePanelOpen]="!!selected()" (clrSidePanelOpenChange)="sidePanelOpenChanged($event)"
+                    [clrSidePanelSize]="'xl'" [clrSidePanelPosition]="'right'">
+      <h3 class="side-panel-title" *ngIf="selected() as sel">{{ kind }} · {{ sel.metadata?.name }}</h3>
+      <div class="side-panel-body" *ngIf="selected() as sel">
+        <app-vm-detail *ngIf="vm"
+          [item]="sel" [listPath]="path" [namespaced]="namespaced"
+          (back)="closeDrawer()" (changed)="load()" />
+        <app-resource-detail *ngIf="!vm"
+          [kind]="kind!" [listPath]="path" [namespaced]="namespaced" [item]="sel"
+          [scalable]="scalable" [restartable]="restartable" [cordonable]="cordonable"
+          (back)="closeDrawer()" (changed)="load()" />
       </div>
-    </div>
+    </clr-side-panel>
   `,
 })
 export class ResourceListComponent implements OnInit {
@@ -232,12 +206,6 @@ export class ResourceListComponent implements OnInit {
   readonly search = signal('');
   /** facetId → 선택값들. 빈 배열/미존재 = 제약 없음(=전체, Headlamp empty=all). */
   readonly selections = signal<Record<string, string[]>>({});
-  /** 한 번에 하나의 팝오버만 열림 */
-  readonly openFacet = signal<string | null>(null);
-  /** 열린 행-작업 메뉴 대상 item + fixed 위치 */
-  readonly openActions = signal<any | null>(null);
-  readonly actionsPos = signal<{ top: number; left: number }>({ top: 0, left: 0 });
-
   /** 패싯 컬럼(상태 컬럼 자동 + facet:true 명시) */
   readonly facetCols = computed<ColumnDef[]>(() => this.columns.filter(c => c.facet || c.kind === 'status'));
 
@@ -294,64 +262,16 @@ export class ResourceListComponent implements OnInit {
   countFor(facetId: string): number { return (this.selections()[facetId] ?? []).length; }
   clearFacet(facetId: string): void { this.selections.update(s => ({ ...s, [facetId]: [] })); }
   clearAll(): void { this.selections.set({}); this.search.set(''); }
-  togglePopover(facetId: string): void { this.openFacet.set(this.openFacet() === facetId ? null : facetId); }
-
-  toggleActions(item: any, ev: Event): void {
-    ev.stopPropagation();
-    if (this.openActions() === item) { this.openActions.set(null); return; }
-    const btn = (ev.target as HTMLElement).closest('button');
-    const r = btn ? btn.getBoundingClientRect() : ({ bottom: 0, right: 0 } as DOMRect);
-    this.actionsPos.set({ top: r.bottom + 2, left: Math.max(8, r.right - 160) });
-    this.openActions.set(item);
-  }
-  runAction(a: { run: () => void }): void { this.openActions.set(null); a.run(); }
-
   /** 상태 옵션 배지 색(값에 해당하는 첫 행의 statusOf) */
   statusSwatch(c: ColumnDef, value: string): 'success' | 'danger' | 'warning' | 'info' | 'unknown' {
     const o = this.rows().find(r => this.facetVal(c, r).includes(value));
     return o && c.statusOf ? c.statusOf(o) : 'unknown';
   }
 
-  // 바깥 클릭/Esc 시 팝오버 닫기. 섀도우 이벤트 retarget 때문에 composedPath 사용(CSP-safe, 인라인 핸들러 없음).
-  @HostListener('document:click', ['$event'])
-  onDocClick(e: MouseEvent): void {
-    const path = (e as any).composedPath?.() ?? [];
-    if (this.openActions() && !path.some((el: any) => el?.classList?.contains?.('os-row-actions') || el?.classList?.contains?.('os-kebab'))) this.openActions.set(null);
-    if (!this.openFacet()) return;
-    const inside = path.some((el: any) => el?.classList?.contains?.('os-facet') || el?.classList?.contains?.('os-filter-popover'));
-    if (!inside) this.openFacet.set(null);
-  }
-  @HostListener('document:keydown.escape')
-  onEsc(): void { this.openFacet.set(null); this.openActions.set(null); }
-
   /** 선택된 항목 → 우측 슬라이드 드로어 상세 표시 */
   readonly selected = signal<any | null>(null);
-  /** 드로어 폭(px) — 좌측 핸들 드래그로 조정 */
-  readonly drawerW = signal(760);
-  /** 전체 보기(최대화) 토글 */
-  readonly full = signal(false);
-  readonly icMax = 'M3 3h7v2H5v5H3V3zm11 0h7v7h-2V5h-5V3zM3 14h2v5h5v2H3v-7zm16 0h2v7h-7v-2h5v-5z';
-  readonly icRestore = 'M5 5h6v6H5V5zm9-2h7v7h-2V5h-5V3zM3 13h2v6h6v2H3v-8zm14 1h2v5h-5v-2h3v-3z';
-
-  closeDrawer() { this.selected.set(null); this.full.set(false); }
-
-  startResize(e: PointerEvent) {
-    e.preventDefault();
-    const drawer = (e.target as HTMLElement).closest('.os-drawer') as HTMLElement;
-    const ctx = (drawer?.offsetParent as HTMLElement) || document.documentElement;
-    const rect = ctx.getBoundingClientRect();
-    const onMove = (ev: PointerEvent) => {
-      let w = rect.right - ev.clientX;
-      w = Math.max(320, Math.min(w, rect.width - 60));
-      this.drawerW.set(w);
-    };
-    const onUp = () => {
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
-    };
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
-  }
+  closeDrawer(): void { this.selected.set(null); }
+  sidePanelOpenChanged(open: boolean): void { if (!open) this.closeDrawer(); }
 
   private k8s = inject(K8sService);
   readonly rows = signal<any[]>([]);

@@ -1,5 +1,6 @@
 import { CommonModule } from '@angular/common';
 import { Component, ElementRef, Input, ViewChild, computed, effect, signal } from '@angular/core';
+import { ClarityModule } from '@clr/angular';
 
 /** 로그 한 줄을 렌더 세그먼트로: text + ANSI 색 클래스 + 전역 매치 인덱스(gi, 없으면 -1). */
 interface Seg { text: string; cls: string; gi: number; }
@@ -65,17 +66,17 @@ function buildSegs(p: { plain: string; runs: Run[] }, lineMatches: { s: number; 
 @Component({
   selector: 'app-log-viewer',
   standalone: true,
-  imports: [CommonModule],
+  imports: [CommonModule, ClarityModule],
   template: `
     <div class="lv-shell">
       <div class="lv-toolbar">
-        <svg viewBox="0 0 24 24" class="os-ic" aria-hidden="true"><path d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 10-.7.7l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0A4.5 4.5 0 1114 9.5 4.5 4.5 0 019.5 14z"/></svg>
-        <input class="lv-search" type="text" [value]="query()" (input)="onInput($any($event.target).value)" (keydown.enter)="next()" placeholder="로그 검색" />
+        <cds-icon shape="search" aria-hidden="true"></cds-icon>
+        <input clrInput class="lv-search" type="search" aria-label="로그 검색" [value]="query()" (input)="onInput($any($event.target).value)" (keydown.enter)="next()" placeholder="로그 검색" />
         <span class="lv-count" *ngIf="query()">{{ matchCount() ? (currentIdx() + 1) + ' / ' + matchCount() : '0' }}</span>
-        <button type="button" class="os-iconbtn" title="이전 매치" [disabled]="!matchCount()" (click)="prev()"><svg viewBox="0 0 24 24" class="os-ic"><path d="M7 14l5-5 5 5z"/></svg></button>
-        <button type="button" class="os-iconbtn" title="다음 매치" [disabled]="!matchCount()" (click)="next()"><svg viewBox="0 0 24 24" class="os-ic"><path d="M7 10l5 5 5-5z"/></svg></button>
+        <button type="button" class="btn btn-sm btn-link btn-icon" title="이전 매치" aria-label="이전 매치" [disabled]="!matchCount()" (click)="prev()"><cds-icon shape="angle" direction="up"></cds-icon></button>
+        <button type="button" class="btn btn-sm btn-link btn-icon" title="다음 매치" aria-label="다음 매치" [disabled]="!matchCount()" (click)="next()"><cds-icon shape="angle" direction="down"></cds-icon></button>
         <span class="cm-spacer"></span>
-        <label class="os-wrap-toggle"><input type="checkbox" [checked]="wrapOn()" (change)="wrapOn.set($any($event.target).checked)" /> 줄바꿈</label>
+        <label class="os-wrap-toggle"><input type="checkbox" clrCheckbox [checked]="wrapOn()" (change)="wrapOn.set($any($event.target).checked)" /> 줄바꿈</label>
       </div>
       <div class="lv-body" [class.wrap]="wrapOn()" [style.height]="height" #body>
         <div class="lv-line" *ngFor="let segs of view()"><span *ngFor="let s of segs" [ngClass]="s.cls"

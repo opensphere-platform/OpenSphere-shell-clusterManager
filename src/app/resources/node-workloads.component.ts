@@ -27,13 +27,13 @@ function memB(v?: string): number {
   styles: [`
     .nw-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 1rem; margin-top: 1rem; }
     .nw-kv { display: grid; grid-template-columns: 90px 1fr; gap: .25rem .6rem; padding: .2rem 0; }
-    .nw-kv dt { color: var(--clr-color-neutral-600, #666); }
+    .nw-kv dt { color: var(--os-text-dim); }
     .nw-kv dd { margin: 0; }
     .nw-bar { display: flex; align-items: center; gap: .5rem; margin: .3rem 0; }
-    .nw-bar-lbl { width: 56px; font-size: .78rem; color: var(--clr-color-neutral-600, #666); }
-    .nw-bar-track { flex: 1; height: 9px; background: var(--clr-color-neutral-200, #e8e8e8); border-radius: 5px; overflow: hidden; }
+    .nw-bar-lbl { width: 56px; font-size: .78rem; color: var(--os-text-dim); }
+    .nw-bar-track { flex: 1; height: 9px; background: var(--os-track); border-radius: 5px; overflow: hidden; }
     .nw-bar-track i { display: block; height: 100%; }
-    .nw-bar-val { width: 110px; text-align: right; font-size: .76rem; color: var(--clr-color-neutral-700, #565656); }
+    .nw-bar-val { width: 110px; text-align: right; font-size: .76rem; color: var(--os-text-sec); }
     .nw-vms { margin-top: .6rem; display: flex; flex-wrap: wrap; gap: .3rem; }
   `],
   template: `
@@ -98,9 +98,9 @@ export class NodeWorkloadsComponent implements OnInit {
   }
 
   barColor(pct: number): string {
-    if (pct >= 90) return 'var(--clr-color-danger-700, #e74c3c)';
-    if (pct >= 70) return 'var(--clr-color-warning-700, #f1c40f)';
-    return 'var(--clr-color-success-600, #2ecc71)';
+    if (pct >= 90) return 'var(--os-danger)';
+    if (pct >= 70) return 'var(--os-warn)';
+    return 'var(--os-success)';
   }
 
   readonly nodeView = computed(() => this.nodes().map(n => {

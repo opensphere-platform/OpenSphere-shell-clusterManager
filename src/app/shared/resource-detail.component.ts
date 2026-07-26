@@ -13,23 +13,6 @@ import { CodeEditorComponent } from './code-editor.component';
 import { LogViewerComponent } from './log-viewer.component';
 import { TerminalComponent } from './terminal.component';
 
-// 인라인 SVG 아이콘(material 계열 path) — 웹컴포넌트 의존 없이 안전한 아이콘 액션.
-const ICON: Record<string, string> = {
-  eye: 'M12 4.5C7 4.5 2.7 7.6 1 12c1.7 4.4 6 7.5 11 7.5s9.3-3.1 11-7.5c-1.7-4.4-6-7.5-11-7.5zm0 12.5a5 5 0 110-10 5 5 0 010 10zm0-2a3 3 0 100-6 3 3 0 000 6z',
-  download: 'M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z',
-  pencil: 'M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 000-1.41l-2.34-2.34a1 1 0 00-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z',
-  resize: 'M22 3h-7v2h3.59L3 20.59V17H1v7h7v-2H4.41L20 6.41V10h2V3z',
-  refresh: 'M17.65 6.35A8 8 0 1019 13h-2a6 6 0 11-1.76-4.24L13 11h7V4l-2.35 2.35z',
-  trash: 'M6 19a2 2 0 002 2h8a2 2 0 002-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z',
-  logs: 'M3 5h18v2H3V5zm0 6h18v2H3v-2zm0 6h12v2H3v-2z',
-  terminal: 'M20 4H4a2 2 0 00-2 2v12a2 2 0 002 2h16a2 2 0 002-2V6a2 2 0 00-2-2zm0 14H4V8h16v10zM6.5 9.5L10 13l-3.5 3.5L5.5 15 7.5 13l-2-2 1-1.5zM12 15h5v1.5h-5V15z',
-  cordon: 'M12 2a10 10 0 100 20 10 10 0 000-20zm0 2c1.85 0 3.55.63 4.9 1.69L5.69 16.9A7.95 7.95 0 014 12a8 8 0 018-8zm0 16c-1.85 0-3.55-.63-4.9-1.69L18.31 7.1A7.95 7.95 0 0120 12a8 8 0 01-8 8z',
-  uncordon: 'M12 2a10 10 0 100 20 10 10 0 000-20zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z',
-  drain: 'M20 3h-9v2h9v14h-9v2h9a2 2 0 002-2V5a2 2 0 00-2-2zM7 8l-1.41 1.41L8.17 12H1v2h7.17l-2.58 2.59L7 18l5-5-5-5z',
-  play: 'M8 5v14l11-7z',
-  stop: 'M6 6h12v12H6z',
-};
-
 /** 단일 리소스 상세 + 액션(View/Download/Edit YAML, Delete, Scale, Restart).
  *  제네릭 — 모든 리소스 재사용. 쓰기는 K8sService(셸 토큰 주입 → 백엔드 JWKS 검증 → 임퍼소네이션). */
 @Component({
@@ -39,26 +22,26 @@ const ICON: Record<string, string> = {
   template: `
     <div *ngIf="namespaced" class="os-sub os-sub-mb">namespace: {{ namespace }}</div>
 
-    <div *ngIf="msg()" class="alert" [ngClass]="ok() ? 'alert-success' : 'alert-danger'" role="alert">
-      <div class="alert-items"><div class="alert-item static"><span class="alert-text">{{ msg() }}</span></div></div>
-    </div>
+    <clr-alert *ngIf="msg()" [clrAlertType]="ok() ? 'success' : 'danger'" [clrAlertClosable]="false">
+      <clr-alert-item><span class="alert-text">{{ msg() }}</span></clr-alert-item>
+    </clr-alert>
 
-    <!-- 액션 바 (인라인 SVG 아이콘 + 툴팁) -->
+    <!-- 액션 바 — Clarity icon library로 의미·크기·접근성을 통일한다. -->
     <div class="os-actions" *ngIf="obj()">
-      <button class="os-iconbtn" title="View YAML" aria-label="View YAML" (click)="setMode('view')"><svg viewBox="0 0 24 24" class="os-ic"><path [attr.d]="ic.eye"/></svg></button>
-      <button class="os-iconbtn" title="Download" aria-label="Download" (click)="download()"><svg viewBox="0 0 24 24" class="os-ic"><path [attr.d]="ic.download"/></svg></button>
-      <button class="os-iconbtn" title="Edit YAML" aria-label="Edit YAML" (click)="startEdit()"><svg viewBox="0 0 24 24" class="os-ic"><path [attr.d]="ic.pencil"/></svg></button>
-      <button class="os-iconbtn" *ngIf="scalable" title="Scale" aria-label="Scale" (click)="scaleOpen.set(true)"><svg viewBox="0 0 24 24" class="os-ic"><path [attr.d]="ic.resize"/></svg></button>
-      <button class="os-iconbtn" *ngIf="restartable" title="Restart" aria-label="Restart" (click)="restart()"><svg viewBox="0 0 24 24" class="os-ic"><path [attr.d]="ic.refresh"/></svg></button>
-      <button class="os-iconbtn" *ngIf="vm && !vmRunning()" title="Start VM" aria-label="Start VM" [disabled]="busy()" (click)="vmStart()"><svg viewBox="0 0 24 24" class="os-ic"><path [attr.d]="ic.play"/></svg></button>
-      <button class="os-iconbtn" *ngIf="vm && vmRunning()" title="Stop VM" aria-label="Stop VM" [disabled]="busy()" (click)="vmStop()"><svg viewBox="0 0 24 24" class="os-ic"><path [attr.d]="ic.stop"/></svg></button>
-      <button class="os-iconbtn" *ngIf="vm" title="Restart VM" aria-label="Restart VM" [disabled]="busy()" (click)="vmRestart()"><svg viewBox="0 0 24 24" class="os-ic"><path [attr.d]="ic.refresh"/></svg></button>
-      <button class="os-iconbtn" *ngIf="cordonable && !unschedulable()" title="Cordon (스케줄 차단)" aria-label="Cordon" (click)="cordon(true)"><svg viewBox="0 0 24 24" class="os-ic"><path [attr.d]="ic.cordon"/></svg></button>
-      <button class="os-iconbtn" *ngIf="cordonable && unschedulable()" title="Uncordon (스케줄 허용)" aria-label="Uncordon" (click)="cordon(false)"><svg viewBox="0 0 24 24" class="os-ic"><path [attr.d]="ic.uncordon"/></svg></button>
-      <button class="os-iconbtn os-iconbtn-danger" *ngIf="cordonable" title="Drain (파드 축출)" aria-label="Drain" (click)="drainOpen.set(true)"><svg viewBox="0 0 24 24" class="os-ic"><path [attr.d]="ic.drain"/></svg></button>
-      <button class="os-iconbtn" *ngIf="kind === 'Pod'" title="Logs" aria-label="Logs" (click)="openLogs()"><svg viewBox="0 0 24 24" class="os-ic"><path [attr.d]="ic.logs"/></svg></button>
-      <button class="os-iconbtn" *ngIf="kind === 'Pod'" title="Terminal (exec)" aria-label="Terminal" (click)="openExec()"><svg viewBox="0 0 24 24" class="os-ic"><path [attr.d]="ic.terminal"/></svg></button>
-      <button class="os-iconbtn os-iconbtn-danger" title="Delete" aria-label="Delete" (click)="deleteOpen.set(true)"><svg viewBox="0 0 24 24" class="os-ic"><path [attr.d]="ic.trash"/></svg></button>
+      <button class="btn btn-sm btn-link btn-icon" title="View YAML" aria-label="View YAML" (click)="setMode('view')"><cds-icon shape="eye"></cds-icon></button>
+      <button class="btn btn-sm btn-link btn-icon" title="Download" aria-label="Download" (click)="download()"><cds-icon shape="download"></cds-icon></button>
+      <button class="btn btn-sm btn-link btn-icon" title="Edit YAML" aria-label="Edit YAML" (click)="startEdit()"><cds-icon shape="pencil"></cds-icon></button>
+      <button class="btn btn-sm btn-link btn-icon" *ngIf="scalable" title="Scale" aria-label="Scale" (click)="scaleOpen.set(true)"><cds-icon shape="resize"></cds-icon></button>
+      <button class="btn btn-sm btn-link btn-icon" *ngIf="restartable" title="Restart" aria-label="Restart" (click)="restart()"><cds-icon shape="refresh"></cds-icon></button>
+      <button class="btn btn-sm btn-link btn-icon" *ngIf="vm && !vmRunning()" title="Start VM" aria-label="Start VM" [disabled]="busy()" (click)="vmStart()"><cds-icon shape="play"></cds-icon></button>
+      <button class="btn btn-sm btn-link btn-icon" *ngIf="vm && vmRunning()" title="Stop VM" aria-label="Stop VM" [disabled]="busy()" (click)="vmStop()"><cds-icon shape="stop"></cds-icon></button>
+      <button class="btn btn-sm btn-link btn-icon" *ngIf="vm" title="Restart VM" aria-label="Restart VM" [disabled]="busy()" (click)="vmRestart()"><cds-icon shape="refresh"></cds-icon></button>
+      <button class="btn btn-sm btn-link btn-icon" *ngIf="cordonable && !unschedulable()" title="Cordon (스케줄 차단)" aria-label="Cordon" (click)="cordon(true)"><cds-icon shape="block"></cds-icon></button>
+      <button class="btn btn-sm btn-link btn-icon" *ngIf="cordonable && unschedulable()" title="Uncordon (스케줄 허용)" aria-label="Uncordon" (click)="cordon(false)"><cds-icon shape="success-standard"></cds-icon></button>
+      <button class="btn btn-sm btn-link btn-icon btn-danger-outline" *ngIf="cordonable" title="Drain (파드 축출)" aria-label="Drain" (click)="drainOpen.set(true)"><cds-icon shape="pop-out"></cds-icon></button>
+      <button class="btn btn-sm btn-link btn-icon" *ngIf="kind === 'Pod'" title="Logs" aria-label="Logs" (click)="openLogs()"><cds-icon shape="file-group"></cds-icon></button>
+      <button class="btn btn-sm btn-link btn-icon" *ngIf="kind === 'Pod'" title="Terminal (exec)" aria-label="Terminal" (click)="openExec()"><cds-icon shape="terminal"></cds-icon></button>
+      <button class="btn btn-sm btn-link btn-icon btn-danger-outline" title="Delete" aria-label="Delete" (click)="deleteOpen.set(true)"><cds-icon shape="trash"></cds-icon></button>
     </div>
 
     <!-- C3 Diagnose — 문제 있을 때만 상세 최상단에 평문 진단+추천 액션(읽기). -->
@@ -101,16 +84,16 @@ const ICON: Record<string, string> = {
       <div class="os-card-h os-logs-h">
         <span>Logs</span>
         <span class="os-logs-ctrls">
-          <select [value]="container()" (change)="container.set($any($event.target).value); loadLogs()">
+          <select clrSelect aria-label="로그 컨테이너" [value]="container()" (change)="container.set($any($event.target).value); loadLogs()">
             <option *ngFor="let c of containers()" [value]="c">{{ c }}</option>
           </select>
-          <select [value]="tail()" (change)="tail.set(+$any($event.target).value); loadLogs()">
+          <select clrSelect aria-label="로그 줄 수" [value]="tail()" (change)="tail.set(+$any($event.target).value); loadLogs()">
             <option [value]="100">100 lines</option>
             <option [value]="500">500 lines</option>
             <option [value]="2000">2000 lines</option>
           </select>
-          <button class="os-iconbtn" title="Refresh" (click)="loadLogs()"><svg viewBox="0 0 24 24" class="os-ic"><path [attr.d]="ic.refresh"/></svg></button>
-          <button class="os-iconbtn" title="Close logs" (click)="setMode('view')"><svg viewBox="0 0 24 24" class="os-ic"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>
+          <button class="btn btn-sm btn-link btn-icon" title="Refresh" aria-label="Refresh logs" (click)="loadLogs()"><cds-icon shape="refresh"></cds-icon></button>
+          <button class="btn btn-sm btn-link btn-icon" title="Close logs" aria-label="Close logs" (click)="setMode('view')"><cds-icon shape="close"></cds-icon></button>
         </span>
       </div>
       <!-- 로그: ANSI 색상 렌더 + 검색(노란 하이라이트·이전/다음) + 줄바꿈 토글 -->
@@ -122,10 +105,10 @@ const ICON: Record<string, string> = {
       <div class="os-card-h os-logs-h">
         <span>Terminal</span>
         <span class="os-logs-ctrls">
-          <select [value]="execContainer()" (change)="reExec($any($event.target).value)">
+          <select clrSelect aria-label="터미널 컨테이너" [value]="execContainer()" (change)="reExec($any($event.target).value)">
             <option *ngFor="let c of containers()" [value]="c">{{ c }}</option>
           </select>
-          <button class="os-iconbtn" title="Close terminal" (click)="setMode('view')"><svg viewBox="0 0 24 24" class="os-ic"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>
+          <button class="btn btn-sm btn-link btn-icon" title="Close terminal" aria-label="Close terminal" (click)="setMode('view')"><cds-icon shape="close"></cds-icon></button>
         </span>
       </div>
       <app-terminal *ngIf="execShown()" [ns]="namespace" [pod]="name" [container]="execContainer()"></app-terminal>
@@ -163,8 +146,10 @@ const ICON: Record<string, string> = {
     <clr-modal [(clrModalOpen)]="scaleOpenModel" [clrModalSize]="'sm'">
       <h3 class="modal-title">Scale {{ kind }}</h3>
       <div class="modal-body">
-        Replicas:
-        <input type="number" min="0" class="os-num" [value]="replicas()" (input)="replicas.set(+$any($event.target).value)" />
+        <clr-input-container>
+          <label>Replicas</label>
+          <input clrInput type="number" min="0" [value]="replicas()" (input)="replicas.set(+$any($event.target).value)" />
+        </clr-input-container>
       </div>
       <div class="modal-footer">
         <button class="btn btn-outline" (click)="scaleOpen.set(false)">Cancel</button>
@@ -201,7 +186,6 @@ export class ResourceDetailComponent implements OnInit {
   @Output() changed = new EventEmitter<void>();
 
   private k8s = inject(K8sService);
-  readonly ic = ICON;
   readonly obj = signal<any>(null);
   readonly loading = signal(true);
   readonly mode = signal<'view' | 'edit' | 'logs' | 'exec'>('view');

@@ -143,7 +143,7 @@ test('Ceph UI automatically reports Kubernetes readiness and collects only conne
   assert.match(component, /clr-input-container class="wide-field"[^]*name="clusterID"/);
   assert.match(component, /monitor-input wide-field/);
   assert.match(component, /\.connection-form input\[clrInput\][^}]*width: 100%/);
-  assert.match(component, /\.connection-form \.clr-input-group/);
+  assert.match(component, /<clr-input-container class="wide-field">/);
   assert.doesNotMatch(component, /Provider Ceph 확인/);
   assert.doesNotMatch(component, /providerStorageConfirmed|providerNetworkConfirmed|providerExportConfirmed/);
   assert.doesNotMatch(component, /Provider export JSON/);
@@ -170,8 +170,8 @@ test('Ceph insights title bar is isolated from host header rules and remains res
 test('Ceph Wizard keeps validation and connection feedback inside the modal', () => {
   const component = fs.readFileSync(path.resolve(__dirname, '../src/app/resources/ceph.component.ts'), 'utf8');
   const validateBlock = component.slice(component.indexOf('validatePlan(): void'), component.indexOf('connect(): void'));
-  assert.match(component, /connectError\(\)[^]*wizard-feedback[^]*role="alert"/);
-  assert.match(component, /connectNotice\(\)[^]*wizard-feedback[^]*role="status"/);
+  assert.match(component, /<clr-alert \*ngIf="connectError\(\)"[^]*\[clrAlertType\]="'danger'"/);
+  assert.match(component, /<clr-alert \*ngIf="connectNotice\(\)"[^]*\[clrAlertType\]="'success'"/);
   assert.match(component, /this\.connectError\.set\(this\.message\(failure\)\)/);
   assert.match(component, /this\.connectNotice\.set\('CephX 사용자를 Rook용 정식 엔티티/);
   assert.match(component, /this\.connectCompleted\.set\(true\)/);
@@ -351,7 +351,7 @@ test('Ceph UI reports every installed storage service and provides actionable pr
   assert.match(component, /<details class="provider-request-details">/);
   assert.match(component, /요청 정보와 권한 조건 보기/);
   assert.match(component, /\.provider-request \{[^}]*background: transparent/);
-  assert.match(component, /\.service-blockers \{[^}]*#f1c21b/);
+  assert.match(component, /\.service-blockers \{[^}]*var\(--os-warn-border\)/);
   assert.match(component, /구성 완료만으로 실사용 검증 완료로 계산하지 않습니다/);
   assert.match(component, /구성 완료 · 미검증/);
   assert.match(component, /Ceph 관리자에게 요청할 정보/);
@@ -893,11 +893,9 @@ test('Ceph Monitoring embeds read-only Grafana with explicit browser security bo
   assert.match(component, /rel="noopener noreferrer"/);
   assert.match(component, /anonymous Viewer/);
   assert.match(component, /조직 Root CA를 신뢰 저장소에 등록/);
-  assert.match(component, /aria-label="HTTPS 인증서 안내 닫기"/);
-  assert.match(component, /\(click\)="dismissCertificateHelp\(\)"/);
+  assert.match(component, /<clr-alert \*ngIf="certificateHelpVisible\(\)"[^]*\(clrAlertClosedChange\)="dismissCertificateHelp\(\)"/);
   assert.match(component, /sessionStorage\?\.setItem\(CERTIFICATE_HELP_DISMISSED_KEY, '1'\)/);
-  assert.match(component, /aria-label="읽기 전용 외부 화면 안내 닫기"/);
-  assert.match(component, /\(click\)="dismissReadOnlyNotice\(\)"/);
+  assert.match(component, /<clr-alert \*ngIf="readOnlyNoticeVisible\(\)"[^]*\(clrAlertClosedChange\)="dismissReadOnlyNotice\(\)"/);
   assert.match(component, /sessionStorage\?\.setItem\(READ_ONLY_NOTICE_DISMISSED_KEY, '1'\)/);
   assert.match(component, /params\.append\('kiosk', ''\)/);
   assert.match(component, /refresh: this\.refresh\(\)/);

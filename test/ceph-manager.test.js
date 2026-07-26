@@ -869,6 +869,9 @@ test('Ceph Monitoring embeds read-only Grafana with explicit browser security bo
   assert.match(component, /rel="noopener noreferrer"/);
   assert.match(component, /anonymous Viewer/);
   assert.match(component, /조직 Root CA를 신뢰 저장소에 등록/);
+  assert.match(component, /aria-label="HTTPS 인증서 안내 닫기"/);
+  assert.match(component, /\(click\)="dismissCertificateHelp\(\)"/);
+  assert.match(component, /sessionStorage\?\.setItem\(CERTIFICATE_HELP_DISMISSED_KEY, '1'\)/);
   assert.match(component, /params\.append\('kiosk', ''\)/);
   assert.match(component, /refresh: this\.refresh\(\)/);
 });

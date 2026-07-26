@@ -17,6 +17,8 @@ interface RefreshInterval {
   label: string;
 }
 
+const CERTIFICATE_HELP_DISMISSED_KEY = 'opensphere.ceph-monitoring.certificate-help-dismissed';
+
 @Component({
   selector: 'app-ceph-monitoring',
   standalone: true,
@@ -79,9 +81,15 @@ interface RefreshInterval {
           </div>
         </header>
 
-        <div class="certificate-help">
-          <strong>화면이 표시되지 않습니까?</strong>
-          <span><code>ceph.triangles.com</code>의 HTTPS 인증서를 브라우저가 신뢰해야 합니다. 인증서 경고를 우회하지 말고 조직 Root CA를 신뢰 저장소에 등록하십시오.</span>
+        <div *ngIf="certificateHelpVisible()" class="certificate-help" role="note">
+          <div class="certificate-copy">
+            <strong>화면이 표시되지 않습니까?</strong>
+            <span><code>ceph.triangles.com</code>의 HTTPS 인증서를 브라우저가 신뢰해야 합니다. 인증서 경고를 우회하지 말고 조직 Root CA를 신뢰 저장소에 등록하십시오.</span>
+          </div>
+          <button class="btn btn-sm btn-link certificate-close" type="button"
+            aria-label="HTTPS 인증서 안내 닫기" (click)="dismissCertificateHelp()">
+            닫기
+          </button>
         </div>
 
         <div class="dashboard-frame" [class.loading]="!frameLoaded()">
@@ -155,9 +163,12 @@ interface RefreshInterval {
       background: #fff; color: var(--os-ink, #1b2438); font-size: .7rem;
     }
     .certificate-help {
-      display: flex; gap: .45rem; padding: .42rem .8rem; background: #fff8e1; border-bottom: 1px solid #f1dfaa;
+      display: flex; align-items: flex-start; justify-content: space-between; gap: .75rem;
+      padding: .42rem .55rem .42rem .8rem; background: #fff8e1; border-bottom: 1px solid #f1dfaa;
       color: #5f4b17; font-size: .67rem;
     }
+    .certificate-copy { display: flex; align-items: baseline; gap: .45rem; min-width: 0; }
+    .certificate-close { flex: 0 0 auto; margin: -.25rem 0; color: #5f4b17; }
     .dashboard-frame { position: relative; min-height: calc(100vh - 15rem); background: #f3f5f7; overflow: hidden; }
     .dashboard-frame iframe {
       display: block; width: 100%; height: calc(100vh - 15rem); min-height: 44rem;
@@ -173,6 +184,7 @@ interface RefreshInterval {
       .dashboard-toolbar { align-items: flex-start; flex-direction: column; }
       .dashboard-controls { width: 100%; flex-wrap: wrap; }
       .dashboard-title span { white-space: normal; }
+      .certificate-copy { align-items: flex-start; flex-direction: column; gap: .15rem; }
     }
   `],
 })
@@ -187,6 +199,7 @@ export class CephMonitoringComponent {
   readonly refresh = signal('30s');
   readonly frameNonce = signal(0);
   readonly frameLoaded = signal(false);
+  readonly certificateHelpVisible = signal(this.readCertificateHelpVisibility());
 
   readonly timeRanges: readonly TimeRange[] = [
     { value: 'now-1h', label: '최근 1시간' },
@@ -223,6 +236,23 @@ export class CephMonitoringComponent {
   reload(): void {
     this.frameLoaded.set(false);
     this.frameNonce.update(value => value + 1);
+  }
+
+  dismissCertificateHelp(): void {
+    this.certificateHelpVisible.set(false);
+    try {
+      globalThis.sessionStorage?.setItem(CERTIFICATE_HELP_DISMISSED_KEY, '1');
+    } catch {
+      // Storage가 차단되어도 현재 화면에서는 안내를 닫을 수 있어야 한다.
+    }
+  }
+
+  private readCertificateHelpVisibility(): boolean {
+    try {
+      return globalThis.sessionStorage?.getItem(CERTIFICATE_HELP_DISMISSED_KEY) !== '1';
+    } catch {
+      return true;
+    }
   }
 
   private buildDashboardUrl(includeNonce: boolean): string {

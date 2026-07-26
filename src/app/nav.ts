@@ -93,7 +93,7 @@ export const NAV: NavGroup[] = [
     group: 'Host Infrastructure',
     view: 'his',
     items: [
-      { id: 'his', label: 'HIS Prerequisites', component: HisComponent },
+      { id: 'his', label: 'HISS', component: HisComponent },
     ],
   },
   {

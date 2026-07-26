@@ -12,7 +12,7 @@ COPY tools/bundle-app.mjs ./tools/bundle-app.mjs
 COPY src ./src
 RUN npm run build
 
-# HIS Helm executor and the closed, checksum-pinned chart catalog. Runtime
+# HISS Helm executor and the closed, checksum-pinned chart catalog. Runtime
 # installation does not accept arbitrary repositories and does not depend on
 # a chart repository being reachable.
 FROM docker.io/alpine/helm:3.19.0@sha256:aef9b56f64e866207d9591d0abd8f6d767b36aadd12edf68f8a719716d9d29c9 AS helm-assets
@@ -22,6 +22,7 @@ RUN mkdir -p /his-charts /ceph-charts \
     && helm pull metrics-server --repo https://kubernetes-sigs.github.io/metrics-server --version 3.13.1 --destination /his-charts \
     && helm pull oci://quay.io/jetstack/charts/cert-manager --version v1.20.0 --destination /his-charts \
     && helm pull oci://ghcr.io/prometheus-community/charts/kube-prometheus-stack --version 86.0.1 --destination /his-charts \
+    && helm pull oci://ghcr.io/prometheus-community/charts/kube-prometheus-stack --version 87.19.1 --destination /his-charts \
     && helm pull rook-ceph --repo https://charts.rook.io/release --version v1.20.2 --destination /ceph-charts \
     && helm pull rook-ceph-cluster --repo https://charts.rook.io/release --version v1.20.2 --destination /ceph-charts \
     && helm pull ceph-csi-drivers --repo https://ceph.github.io/ceph-csi-operator --version 1.0.4 --destination /ceph-charts \
@@ -29,6 +30,7 @@ RUN mkdir -p /his-charts /ceph-charts \
     && echo '084e6edb680cf4e2acc30bd496568c53fdf663cbacf6e17876b25785c35b7a13  /his-charts/metrics-server-3.13.1.tgz' | sha256sum -c - \
     && echo '1f1a268fd1642d76d0b9fd162aaedc91973a81b87d9e57c0fff246024ccd2ad4  /his-charts/cert-manager-v1.20.0.tgz' | sha256sum -c - \
     && echo '834c252b3e769516578f6199a374daf688b0bf7b7693089ebbf36aa7dcfd8d0d  /his-charts/kube-prometheus-stack-86.0.1.tgz' | sha256sum -c - \
+    && echo '87893c23e84ad7f4282b816541a7e571a128c6c0dd2ac9ffff2527d3d54ee6b1  /his-charts/kube-prometheus-stack-87.19.1.tgz' | sha256sum -c - \
     && echo '6e0f10f5ca54e618fb90dd149dc9dfbc8a4932955bff2227b692fb32069daf52  /ceph-charts/rook-ceph-v1.20.2.tgz' | sha256sum -c - \
     && echo 'fca482746239bfc9fb2d888f1f5fc206fcc6305934674759f122b011ece87827  /ceph-charts/rook-ceph-cluster-v1.20.2.tgz' | sha256sum -c - \
     && echo '76a1787baa7d62232eb073ab8260a455a016c02b59aae584a47be6791f05994b  /ceph-charts/ceph-csi-drivers-1.0.4.tgz' | sha256sum -c -

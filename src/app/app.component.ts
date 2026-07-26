@@ -8,7 +8,7 @@ import { K8sService } from './core/k8s.service';
 
 // ShadowDom 인캡슐레이션 → 컴포넌트와 Clarity CSS가 shadow root에 격리(자체완결, 셸 CSS 영향 0).
 // 인덱스 = Cluster Overview. 사이드바 = 표준 2단 보조 내비(.cc-secondbar, /containers/overview 템플릿).
-// 관리 관점(Kubernetes / Ceph / HIS): 서로 다른 운영 책임을 하나의 메뉴 트리로 섞지 않는다.
+// 관리 관점(Kubernetes / Ceph / HISS): 서로 다른 운영 책임을 하나의 메뉴 트리로 섞지 않는다.
 // KubeVirt는 Kubernetes 관점 안에서 capability-gate로 노출한다.
 @Component({
   selector: 'app-root',
@@ -80,14 +80,14 @@ import { K8sService } from './core/k8s.service';
         <!-- 브랜드 -->
         <div class="cm-brand"><strong>Cluster Manager</strong><span class="label label-info">{{ viewBadge() }}</span></div>
 
-        <!-- 최상위 관리 관점: K8s / Ceph / HIS. 설치 여부와 무관하게 항상 진입 가능. -->
+        <!-- 최상위 관리 관점: K8s / Ceph / HISS. 설치 여부와 무관하게 항상 진입 가능. -->
         <div class="cm-scope">
           <label class="cm-scope-label" for="cm-management-view">Management view</label>
           <clr-select-container class="cm-scope-control">
             <select id="cm-management-view" clrSelect aria-label="관리 관점 선택" [value]="viewScope()" (change)="setScope($any($event.target).value)">
               <option value="k8s">Kubernetes</option>
               <option value="ceph">Ceph Storage</option>
-              <option value="his">HIS Prerequisites</option>
+              <option value="his">HISS</option>
             </select>
           </clr-select-container>
         </div>
@@ -159,7 +159,7 @@ export class AppComponent implements OnDestroy {
   /** 펼쳐진 섹션(기본: 전부 접힘) */
   readonly expanded = signal<Set<string>>(new Set());
 
-  /** 최상위 관리 관점: Kubernetes / Ceph / HIS. */
+  /** 최상위 관리 관점: Kubernetes / Ceph / HISS. */
   readonly viewScope = signal<ManagementView>('k8s');
   /** 클러스터에 실제 존재하는 apiGroup 집합(GET /apis 디스커버리) — nav 항목별 capability-gate·VM 스코프 결정. */
   readonly availableGroups = signal<Set<string>>(new Set());
@@ -296,9 +296,9 @@ export class AppComponent implements OnDestroy {
   }
 
   viewLabel(view: ManagementView = this.viewScope()): string {
-    return view === 'k8s' ? 'Kubernetes' : view === 'ceph' ? 'Ceph Storage' : 'HIS Prerequisites';
+    return view === 'k8s' ? 'Kubernetes' : view === 'ceph' ? 'Ceph Storage' : 'HISS';
   }
-  viewBadge(): string { return this.viewScope() === 'k8s' ? 'K8s' : this.viewScope() === 'ceph' ? 'Ceph' : 'HIS'; }
+  viewBadge(): string { return this.viewScope() === 'k8s' ? 'K8s' : this.viewScope() === 'ceph' ? 'Ceph' : 'HISS'; }
 
   private goViewHome(view: ManagementView): void {
     this.viewScope.set(view);

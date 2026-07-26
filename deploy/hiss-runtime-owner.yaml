@@ -1,0 +1,178 @@
+# HISS lifecycle authority is installed from the signed infrastructure-owner release.
+# It is intentionally separate from the generic module permission profile: a UI
+# module update must not be able to silently expand cluster-infrastructure rights.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: opensphere-hiss-runtime-owner
+  labels:
+    app.kubernetes.io/managed-by: opensphere-platform
+    opensphere.io/authority: hiss-runtime-owner
+rules:
+  # Helm --create-namespace. Namespace mutation is intentionally the only
+  # core/v1 cluster-scoped write granted to this runtime.
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [get, list, watch, create, update, patch]
+  # HISS inventory and validation read host resources but never mutate them.
+  - apiGroups: [""]
+    resources: [nodes, persistentvolumes]
+    verbs: [get, list, watch]
+  # Fixed charts own these cluster-scoped API contracts.
+  - apiGroups: [apiextensions.k8s.io]
+    resources: [customresourcedefinitions]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [apiregistration.k8s.io]
+    resources: [apiservices]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [admissionregistration.k8s.io]
+    resources: [mutatingwebhookconfigurations, validatingwebhookconfigurations]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [clusterroles, clusterrolebindings]
+    verbs: [get, list, watch, create, update, patch, delete, bind, escalate]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingressclasses]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [cert-manager.io]
+    resources: [clusterissuers]
+    verbs: [get, list, watch, create, update, patch, delete]
+  # Installation plans and storage policy checks never mutate host StorageClasses.
+  - apiGroups: [storage.k8s.io]
+    resources: [storageclasses, csidrivers, csinodes, volumeattachments]
+    verbs: [get, list, watch]
+  - apiGroups: [snapshot.storage.k8s.io]
+    resources: [volumesnapshotclasses]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: opensphere-hiss-runtime-owner
+  labels:
+    app.kubernetes.io/managed-by: opensphere-platform
+    opensphere.io/authority: hiss-runtime-owner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: opensphere-hiss-runtime-owner
+subjects:
+  - kind: ServiceAccount
+    name: opensphere-cluster-manager
+    namespace: opensphere-console
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ingress-nginx
+  labels:
+    app.kubernetes.io/managed-by: opensphere-platform
+    opensphere.io/authority: hiss-runtime-owner
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cert-manager
+  labels:
+    app.kubernetes.io/managed-by: opensphere-platform
+    opensphere.io/authority: hiss-runtime-owner
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    app.kubernetes.io/managed-by: opensphere-platform
+    opensphere.io/authority: hiss-runtime-owner
+---
+# Namespace-scoped Helm state and chart resources. This role is bound only in
+# the closed namespace set below; it does not authorize arbitrary namespaces.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: opensphere-hiss-release-editor
+  labels:
+    app.kubernetes.io/managed-by: opensphere-platform
+    opensphere.io/authority: hiss-runtime-owner
+rules:
+  - apiGroups: [""]
+    resources: [secrets, configmaps, serviceaccounts, services, endpoints, pods, pods/log, podtemplates, persistentvolumeclaims, events]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [apps]
+    resources: [deployments, daemonsets, statefulsets, replicasets, controllerrevisions]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [batch]
+    resources: [jobs, cronjobs]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [autoscaling]
+    resources: [horizontalpodautoscalers]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [policy]
+    resources: [poddisruptionbudgets]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses, networkpolicies]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [get, list, watch]
+  - apiGroups: [monitoring.coreos.com]
+    resources: [alertmanagers, alertmanagerconfigs, podmonitors, probes, prometheuses, prometheusagents, prometheusrules, scrapeconfigs, servicemonitors, thanosrulers]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [cert-manager.io]
+    resources: [issuers, certificates, certificaterequests]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [acme.cert-manager.io]
+    resources: [orders, challenges]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [snapshot.storage.k8s.io]
+    resources: [volumesnapshots]
+    verbs: [get, list, watch, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: opensphere-hiss-release-editor
+  namespace: opensphere-console
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: opensphere-hiss-release-editor }
+subjects:
+  - { kind: ServiceAccount, name: opensphere-cluster-manager, namespace: opensphere-console }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: opensphere-hiss-release-editor
+  namespace: ingress-nginx
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: opensphere-hiss-release-editor }
+subjects:
+  - { kind: ServiceAccount, name: opensphere-cluster-manager, namespace: opensphere-console }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: opensphere-hiss-release-editor
+  namespace: cert-manager
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: opensphere-hiss-release-editor }
+subjects:
+  - { kind: ServiceAccount, name: opensphere-cluster-manager, namespace: opensphere-console }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: opensphere-hiss-release-editor
+  namespace: kube-system
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: opensphere-hiss-release-editor }
+subjects:
+  - { kind: ServiceAccount, name: opensphere-cluster-manager, namespace: opensphere-console }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: opensphere-hiss-release-editor
+  namespace: monitoring
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: opensphere-hiss-release-editor }
+subjects:
+  - { kind: ServiceAccount, name: opensphere-cluster-manager, namespace: opensphere-console }

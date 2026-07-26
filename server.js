@@ -169,7 +169,7 @@ async function authorizeK8sProxyRequest(req, isWrite, verifier = verifyToken) {
   try { actor = await verifier(requestToken(req)); }
   catch (e) { throw { code: e.code || 401, msg: e.msg || 'unauthorized' }; }
   if (isWrite) {
-    throw { code: 403, msg: 'generic Kubernetes mutations are disabled; use an approved HIS action' };
+    throw { code: 403, msg: 'generic Kubernetes mutations are disabled; use an approved HISS action' };
   }
   return actor;
 }

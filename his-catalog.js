@@ -1,6 +1,6 @@
 'use strict';
 
-// HIS is a prerequisite contract, not an OpenSphere extension.  Only entries
+// HISS is a prerequisite contract, not an OpenSphere extension.  Only entries
 // in this closed catalog may be mutated by Cluster Manager.  Chart versions
 // and payload checksums are also pinned in Dockerfile.
 const HIS_CATALOG = Object.freeze([
@@ -149,10 +149,15 @@ const HIS_CATALOG = Object.freeze([
     probe: 'kubePrometheusStack',
     release: 'kube-prometheus-stack',
     namespace: 'monitoring',
-    chart: '/app/his-charts/kube-prometheus-stack-86.0.1.tgz',
+    chart: '/app/his-charts/kube-prometheus-stack-87.19.1.tgz',
     chartName: 'kube-prometheus-stack',
-    chartVersion: '86.0.1',
-    appVersion: 'v0.91.0',
+    chartVersion: '87.19.1',
+    appVersion: 'v0.92.1',
+    availableChartVersions: ['87.19.1', '86.0.1'],
+    chartVariants: [
+      { chartVersion: '87.19.1', appVersion: 'v0.92.1', chart: '/app/his-charts/kube-prometheus-stack-87.19.1.tgz' },
+      { chartVersion: '86.0.1', appVersion: 'v0.91.0', chart: '/app/his-charts/kube-prometheus-stack-86.0.1.tgz' },
+    ],
     source: 'oci://ghcr.io/prometheus-community/charts/kube-prometheus-stack',
     values: ['--values', '/app/his-values/kube-prometheus-stack.yaml'],
     operationalProfile: {

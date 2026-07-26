@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { IMAGES, hisTelemetryManifests } = require('../his-telemetry-manifests');
 
-test('HIS telemetry stack is fixed, internal, persistent and digest pinned', () => {
+test('HISS telemetry stack is fixed, internal, persistent and digest pinned', () => {
   const manifests = hisTelemetryManifests({ retention: '72h', lokiStorageSize: '12Gi', tempoStorageSize: '14Gi', storageClassName: 'durable-csi' });
   assert.equal(manifests.length, 18);
   const deployments = manifests.filter((item) => item.kind === 'Deployment');

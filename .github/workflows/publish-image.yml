@@ -166,7 +166,7 @@ jobs:
           subject-name: ghcr.io/opensphere-platform/opensphere-his-binding-controller
           subject-digest: ${{ steps.binding_build.outputs.digest }}
           push-to-registry: true
-      - name: Generate HIS Binding Controller SPDX SBOM
+      - name: Generate HISS Binding Controller SPDX SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
         with:
           image: ghcr.io/opensphere-platform/opensphere-his-binding-controller@${{ steps.binding_build.outputs.digest }}
@@ -179,34 +179,37 @@ jobs:
           subject-digest: ${{ steps.binding_build.outputs.digest }}
           sbom-path: ${{ runner.temp }}/opensphere-his-binding-controller.spdx.json
           push-to-registry: true
-      - name: Render digest-pinned HIS owner release bundle
+      - name: Render digest-pinned HISS owner release bundle
         env:
           MANAGER_DIGEST: ${{ steps.build.outputs.digest }}
           BINDING_DIGEST: ${{ steps.binding_build.outputs.digest }}
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/his-owner-release"
+          mkdir -p "$RUNNER_TEMP/hiss-owner-release"
           sed \
             "s#image: opensphere-his-binding-controller:local-v3#image: ghcr.io/opensphere-platform/opensphere-his-binding-controller@$BINDING_DIGEST#" \
             deploy/observability-binding-controller.yaml \
-            >"$RUNNER_TEMP/his-owner-release/observability-binding-controller.yaml"
+            >"$RUNNER_TEMP/hiss-owner-release/observability-binding-controller.yaml"
           grep -F "image: ghcr.io/opensphere-platform/opensphere-his-binding-controller@$BINDING_DIGEST" \
-            "$RUNNER_TEMP/his-owner-release/observability-binding-controller.yaml"
+            "$RUNNER_TEMP/hiss-owner-release/observability-binding-controller.yaml"
           ! grep -F 'image: opensphere-his-binding-controller:local-v3' \
-            "$RUNNER_TEMP/his-owner-release/observability-binding-controller.yaml"
-          cp deploy/ceph-runtime-owner.yaml "$RUNNER_TEMP/his-owner-release/ceph-runtime-owner.yaml"
-          grep -F 'name: opensphere-ceph-runtime-owner' "$RUNNER_TEMP/his-owner-release/ceph-runtime-owner.yaml"
-          ! grep -E 'resources: \[\*\]|verbs: \[\*\]' "$RUNNER_TEMP/his-owner-release/ceph-runtime-owner.yaml"
+            "$RUNNER_TEMP/hiss-owner-release/observability-binding-controller.yaml"
+          cp deploy/ceph-runtime-owner.yaml "$RUNNER_TEMP/hiss-owner-release/ceph-runtime-owner.yaml"
+          cp deploy/hiss-runtime-owner.yaml "$RUNNER_TEMP/hiss-owner-release/hiss-runtime-owner.yaml"
+          grep -F 'name: opensphere-ceph-runtime-owner' "$RUNNER_TEMP/hiss-owner-release/ceph-runtime-owner.yaml"
+          grep -F 'name: opensphere-hiss-runtime-owner' "$RUNNER_TEMP/hiss-owner-release/hiss-runtime-owner.yaml"
+          ! grep -E 'resources: \[\*\]|verbs: \[\*\]' "$RUNNER_TEMP/hiss-owner-release/ceph-runtime-owner.yaml"
+          ! grep -E 'resources: \[\*\]|verbs: \[\*\]' "$RUNNER_TEMP/hiss-owner-release/hiss-runtime-owner.yaml"
           jq -n \
             --arg revision "$GITHUB_SHA" \
             --arg manager "ghcr.io/opensphere-platform/opensphere-shell-cluster-manager@$MANAGER_DIGEST" \
             --arg binding "ghcr.io/opensphere-platform/opensphere-his-binding-controller@$BINDING_DIGEST" \
-            '{schema:"infrastructure-owner-release.opensphere.io/v1alpha1",sourceRevision:$revision,clusterManagerImage:$manager,bindingControllerImage:$binding,manifests:{observabilityBindingController:"observability-binding-controller.yaml",cephRuntimeOwner:"ceph-runtime-owner.yaml"},prerequisites:{cephOperator:"signed platform-owned Rook operator and Ceph CRDs must be Ready before OAA capability publication"}}' \
-            >"$RUNNER_TEMP/his-owner-release/release.json"
+            '{schema:"infrastructure-owner-release.opensphere.io/v1alpha1",sourceRevision:$revision,clusterManagerImage:$manager,bindingControllerImage:$binding,manifests:{observabilityBindingController:"observability-binding-controller.yaml",cephRuntimeOwner:"ceph-runtime-owner.yaml",hissRuntimeOwner:"hiss-runtime-owner.yaml"},prerequisites:{hissRuntimeOwner:"signed HISS runtime owner RBAC must be applied before lifecycle planning or mutation",cephOperator:"signed platform-owned Rook operator and Ceph CRDs must be Ready before OAA capability publication"}}' \
+            >"$RUNNER_TEMP/hiss-owner-release/release.json"
       - uses: actions/upload-artifact@v4
         with:
-          name: his-owner-release-${{ github.sha }}
-          path: ${{ runner.temp }}/his-owner-release
+          name: hiss-owner-release-${{ github.sha }}
+          path: ${{ runner.temp }}/hiss-owner-release
           retention-days: 365
       - name: Publish immutable release tag, advance GA, and verify
         env:

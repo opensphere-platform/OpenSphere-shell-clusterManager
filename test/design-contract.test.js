@@ -110,6 +110,13 @@ test('Shared Observability keeps essential install choices visible and moves onl
   assert.match(his, /name="quickStorageClass"/);
   assert.match(his, /Shared Observability의 고정 관리 namespace/);
   assert.match(his, /observabilityAdvancedOpen/);
+  assert.match(his, /shape="success-standard"/);
+  assert.doesNotMatch(his, /shape="check-circle"/);
+  assert.match(his, /class="modal-footer observability-modal-footer"/);
+  assert.match(his, /class="observability-footer-view"/);
+  assert.match(his, /class="observability-footer-actions"/);
+  assert.match(his, /\.quick-install-options\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/s);
+  assert.match(his, /\.quick-install-options clr-control-helper\s*\{[^}]*white-space:\s*normal;[^}]*overflow-wrap:\s*anywhere;/s);
   assert.match(his, /기술 계획 보기/);
   assert.doesNotMatch(his, /class="observability-work-model"/);
   assert.doesNotMatch(his, /<clr-timeline\b/);

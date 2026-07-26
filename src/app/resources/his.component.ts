@@ -273,7 +273,7 @@ type ObservabilityConfigurationMode = 'install' | 'operate';
             <ng-template #quickReadinessResolved>
               <ng-container *ngIf="observabilityBlockingIssues(item) as issues">
                 <ng-container *ngIf="!issues.length; else quickBlocked">
-                  <cds-icon shape="check-circle" status="success" size="28" aria-hidden="true"></cds-icon>
+                  <cds-icon shape="success-standard" status="success" size="28" aria-hidden="true"></cds-icon>
                   <div><strong>{{ item.release?.managed ? '서비스 정상' : '설치 가능' }}</strong><p>{{ item.release?.managed ? '필요할 때 구성 변경이나 실검증을 실행할 수 있습니다.' : '선택한 값으로 설치 요청을 제출할 수 있습니다.' }}</p></div>
                 </ng-container>
                 <ng-template #quickBlocked>
@@ -391,22 +391,26 @@ type ObservabilityConfigurationMode = 'install' | 'operate';
           <p class="operation-error" *ngIf="operation.error">{{ operation.error }}</p>
         </section>
       </div>
-      <div class="modal-footer" *ngIf="observabilityTarget() as item">
-        <button class="btn btn-outline" type="button" [disabled]="busy() || configurationBusy()" (click)="observabilityLifecycleModalOpen = false">닫기</button>
-        <button class="btn btn-outline" type="button" [disabled]="configurationLoading()" (click)="observabilityAdvancedOpen = !observabilityAdvancedOpen">
-          {{ observabilityAdvancedOpen ? '간단히 보기' : '고급 설정' }}
-        </button>
-        <button *ngIf="releaseLifecycle(item) === 'install'" class="btn btn-primary" type="button" [disabled]="!observabilityInstallReady(item)" (click)="openPlanFromObservability(item, 'install', true)">빠른 설치 요청</button>
-        <button *ngIf="releaseLifecycle(item) === 'upgrade'" class="btn btn-primary" type="button" [disabled]="busy() || operationActive(item.operation)" (click)="openPlanFromObservability(item, 'upgrade', true)">업그레이드 요청</button>
-        <button *ngIf="releaseLifecycle(item) === 'recover'" class="btn btn-warning-outline" type="button" [disabled]="busy() || operationActive(item.operation)" (click)="openPlanFromObservability(item, 'recover', true)">복구</button>
-        <clr-dropdown *ngIf="item.release?.managed">
-          <button clrDropdownTrigger class="btn btn-outline" type="button">추가 작업</button>
-          <clr-dropdown-menu *clrIfOpen>
-            <button clrDropdownItem type="button" [disabled]="busy() || operationActive(item.operation) || !canValidate(item)" (click)="openCanaryFromObservability(item)">실검증</button>
-            <button clrDropdownItem type="button" [disabled]="busy() || operationActive(item.operation) || !rollbackAvailable(item)" (click)="openPlanFromObservability(item, 'rollback', true)">롤백</button>
-            <button clrDropdownItem type="button" [disabled]="busy() || operationActive(item.operation)" (click)="openPlanFromObservability(item, 'uninstall', true)">삭제</button>
-          </clr-dropdown-menu>
-        </clr-dropdown>
+      <div class="modal-footer observability-modal-footer" *ngIf="observabilityTarget() as item">
+        <div class="observability-footer-view">
+          <button class="btn btn-outline" type="button" [disabled]="configurationLoading()" (click)="observabilityAdvancedOpen = !observabilityAdvancedOpen">
+            {{ observabilityAdvancedOpen ? '간단히 보기' : '고급 설정' }}
+          </button>
+        </div>
+        <div class="observability-footer-actions">
+          <button class="btn btn-outline" type="button" [disabled]="busy() || configurationBusy()" (click)="observabilityLifecycleModalOpen = false">닫기</button>
+          <button *ngIf="releaseLifecycle(item) === 'install'" class="btn btn-primary" type="button" [disabled]="!observabilityInstallReady(item)" (click)="openPlanFromObservability(item, 'install', true)">빠른 설치 요청</button>
+          <button *ngIf="releaseLifecycle(item) === 'upgrade'" class="btn btn-primary" type="button" [disabled]="busy() || operationActive(item.operation)" (click)="openPlanFromObservability(item, 'upgrade', true)">업그레이드 요청</button>
+          <button *ngIf="releaseLifecycle(item) === 'recover'" class="btn btn-warning-outline" type="button" [disabled]="busy() || operationActive(item.operation)" (click)="openPlanFromObservability(item, 'recover', true)">복구</button>
+          <clr-dropdown *ngIf="item.release?.managed">
+            <button clrDropdownTrigger class="btn btn-outline" type="button">추가 작업</button>
+            <clr-dropdown-menu *clrIfOpen>
+              <button clrDropdownItem type="button" [disabled]="busy() || operationActive(item.operation) || !canValidate(item)" (click)="openCanaryFromObservability(item)">실검증</button>
+              <button clrDropdownItem type="button" [disabled]="busy() || operationActive(item.operation) || !rollbackAvailable(item)" (click)="openPlanFromObservability(item, 'rollback', true)">롤백</button>
+              <button clrDropdownItem type="button" [disabled]="busy() || operationActive(item.operation)" (click)="openPlanFromObservability(item, 'uninstall', true)">삭제</button>
+            </clr-dropdown-menu>
+          </clr-dropdown>
+        </div>
       </div>
     </clr-modal>
 
@@ -839,7 +843,7 @@ type ObservabilityConfigurationMode = 'install' | 'operate';
     }
     .observability-quick-card {
       display: grid;
-      grid-template-columns: minmax(0, 1.4fr) minmax(18rem, 0.6fr);
+      grid-template-columns: minmax(0, 1fr) minmax(15rem, 0.36fr);
       align-items: stretch;
       gap: var(--os-6);
       padding: var(--os-5);
@@ -851,12 +855,19 @@ type ObservabilityConfigurationMode = 'install' | 'operate';
     .quick-card-copy > p:last-of-type { max-width: 48rem; margin: var(--os-2) 0 0; color: var(--os-ink-muted); line-height: 1.45; }
     .quick-card-title { display: flex; align-items: center; gap: var(--os-4); min-width: 0; }
     .quick-card-title h4 { margin: 0; font-size: 1rem; }
-    .quick-install-options { display: grid; grid-template-columns: minmax(15rem, 1fr) minmax(10rem, 0.65fr) minmax(15rem, 1fr); gap: var(--os-4) var(--os-6); margin-top: var(--os-5); }
-    .quick-install-options clr-select-container { display: block; margin-top: 0; }
-    .quick-install-options select[clrSelect] { width: 100%; }
+    .quick-install-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--os-4) var(--os-6); margin-top: var(--os-5); min-width: 0; }
+    .quick-install-options clr-select-container { display: block; min-width: 0; margin-top: 0; }
+    .quick-install-options select[clrSelect] { width: 100%; min-width: 0; max-width: 100%; }
+    .quick-install-options clr-control-helper {
+      display: block;
+      max-width: 100%;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      line-height: 1.35;
+    }
     .quick-static-field { display: grid; align-content: start; gap: var(--os-2); padding-top: var(--os-3); }
     .quick-static-field > span { font-weight: 600; }
-    .quick-static-field small { color: var(--os-ink-muted); font: var(--os-type-caption); }
+    .quick-static-field small { max-width: 100%; color: var(--os-ink-muted); font: var(--os-type-caption); line-height: 1.35; overflow-wrap: anywhere; }
     .quick-facts { display: flex; flex-wrap: wrap; gap: var(--os-3) var(--os-6); margin: var(--os-5) 0 0; }
     .quick-facts > div { display: grid; grid-template-columns: auto auto; gap: var(--os-2); align-items: baseline; }
     .quick-facts dt { color: var(--os-ink-muted); font: var(--os-type-caption); }
@@ -870,10 +881,26 @@ type ObservabilityConfigurationMode = 'install' | 'operate';
       border-left: 1px solid var(--os-hairline);
       background: var(--os-bg);
     }
+    .quick-card-readiness > div { min-width: 0; overflow-wrap: anywhere; }
     .quick-card-readiness cds-icon, .quick-card-readiness .spinner { flex: 0 0 auto; }
     .quick-card-readiness p { margin: var(--os-2) 0 0; color: var(--os-ink-muted); line-height: 1.4; }
     .quick-card-readiness ul { margin: var(--os-2) 0 0; padding-left: var(--os-5); }
     .quick-card-readiness li + li { margin-top: var(--os-2); }
+    .observability-modal-footer {
+      display: flex;
+      width: 100%;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--os-4);
+    }
+    .observability-footer-view,
+    .observability-footer-actions {
+      display: flex;
+      align-items: center;
+      gap: var(--os-3);
+    }
+    .observability-footer-actions { justify-content: flex-end; }
+    .observability-modal-footer .btn { margin: 0; }
     .observability-advanced { min-width: 0; padding: var(--os-5); border: 1px solid var(--os-hairline); background: var(--os-bg); }
     .observability-advanced > clr-input-container { display: block; width: min(100%, 20rem); margin: 0 0 var(--os-4); }
     .observability-advanced input[clrInput] { width: 100%; }
@@ -946,6 +973,9 @@ type ObservabilityConfigurationMode = 'install' | 'operate';
         padding-right: var(--os-2);
         overflow-y: auto;
       }
+      .observability-modal-footer { align-items: stretch; flex-direction: column; }
+      .observability-footer-view { justify-content: flex-start; }
+      .observability-footer-actions { flex-wrap: wrap; justify-content: flex-end; }
     }
     textarea { min-height: 5rem; }
   `],

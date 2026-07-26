@@ -38,9 +38,9 @@ type InsightsView = 'overview' | 'capacity' | 'osd-pg' | 'hosts';
         </button>
       </div>
 
-      <div *ngIf="error" class="section-alert danger" role="alert">
-        <strong>Ceph 현황을 불러오지 못했습니다.</strong>
-        <span>{{ error }}</span>
+      <div *ngIf="error" class="section-alert" [class.danger]="!insights" [class.warning]="!!insights" role="alert">
+        <strong>{{ insights ? '새 관측값 갱신이 지연되고 있습니다.' : 'Ceph 현황을 불러오지 못했습니다.' }}</strong>
+        <span>{{ error }}<ng-container *ngIf="insights"> 마지막으로 확인된 관측값을 계속 표시합니다.</ng-container></span>
       </div>
 
       <ng-container *ngIf="insights as data; else noData">

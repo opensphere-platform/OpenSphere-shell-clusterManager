@@ -679,6 +679,18 @@ test('Ceph insights endpoint is fixed, read-only, bounded, and accepts no comman
   assert.doesNotMatch(source, /CEPH_OBSERVER_URL[^]*searchParams\.get\('command'\)/);
 });
 
+test('Ceph insights tolerates transient proxy authorization failures without retrying permission denials', () => {
+  const service = fs.readFileSync(path.resolve(__dirname, '../src/app/core/ceph.service.ts'), 'utf8');
+  const component = fs.readFileSync(path.resolve(__dirname, '../src/app/resources/ceph.component.ts'), 'utf8');
+  const insights = fs.readFileSync(path.resolve(__dirname, '../src/app/resources/ceph-insights.component.ts'), 'utf8');
+  assert.match(service, /retry\(\{[^]*count: 2[^]*\[0, 500, 502, 503, 504\]\.includes\(status\)/);
+  assert.doesNotMatch(service, /\[0, 401, 403,/);
+  assert.match(component, /scheduleInsightsPoll\(60_000\)/);
+  assert.match(component, /15_000 \* \(2 \*\* Math\.min\(this\.insightsPollFailures - 1, 4\)\)/);
+  assert.match(component, /Console 권한 확인 또는 Ceph 관측 경로가 일시적으로 응답하지 않습니다/);
+  assert.match(insights, /마지막으로 확인된 관측값을 계속 표시합니다/);
+});
+
 test('Ceph insights keeps legacy runtime observable while reporting the missing application-auth boundary', () => {
   assert.match(source, /const authenticated = observerToken\.length >= 32/);
   assert.match(source, /mode: 'LegacyUnauthenticated'/);

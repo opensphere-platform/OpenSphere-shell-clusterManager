@@ -1,6 +1,6 @@
 import { HttpClient } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
-import { Observable, switchMap } from 'rxjs';
+import { Observable, retry, switchMap, throwError, timer } from 'rxjs';
 
 export type CephConnectionState = 'NotConfigured' | 'Ready' | 'Degraded' | 'Blocked';
 
@@ -306,7 +306,16 @@ export class CephService {
 
   status(): Observable<CephStatus> { return this.http.get<CephStatus>(this.url('oaa/status')); }
   insights(refresh = false): Observable<CephInsights> {
-    return this.http.get<CephInsights>(this.url(`oaa/insights${refresh ? '?refresh=1' : ''}`));
+    return this.http.get<CephInsights>(this.url(`oaa/insights${refresh ? '?refresh=1' : ''}`)).pipe(
+      retry({
+        count: 2,
+        delay: (failure: any, retryCount) => {
+          const status = Number(failure?.status || 0);
+          if (![0, 500, 502, 503, 504].includes(status)) return throwError(() => failure);
+          return timer(retryCount === 1 ? 350 : 1_200);
+        },
+      }),
+    );
   }
   requestPrerequisites(reason: string, source: string): Observable<CephPrerequisiteRequest> {
     return this.http.post<CephPrerequisiteRequest>(this.url('prerequisites/request'), { reason, source });

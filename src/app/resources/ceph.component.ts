@@ -874,6 +874,7 @@ export class CephClustersComponent implements OnInit, OnDestroy {
   private insightsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   private statusInFlight = false;
   private pollFailures = 0;
+  private insightsPollFailures = 0;
   private readonly visibilityHandler = (): void => {
     if (document.hidden) {
       if (this.refreshTimer) clearTimeout(this.refreshTimer);
@@ -944,7 +945,7 @@ export class CephClustersComponent implements OnInit, OnDestroy {
   ngOnInit(): void {
     document.addEventListener('visibilitychange', this.visibilityHandler);
     this.load();
-    this.scheduleInsightsPoll(30_000);
+    this.scheduleInsightsPoll(60_000);
   }
 
   ngOnDestroy(): void {
@@ -1002,10 +1003,11 @@ export class CephClustersComponent implements OnInit, OnDestroy {
   private scheduleInsightsPoll(delay: number): void {
     if (this.insightsRefreshTimer) clearTimeout(this.insightsRefreshTimer);
     if (document.hidden) return;
+    const jitter = Math.round(delay * (0.9 + Math.random() * 0.2));
     this.insightsRefreshTimer = setTimeout(() => {
       if (this.activeTab() === 'insights' && this.status()?.connection && !this.insightsLoading()) this.loadInsights();
-      this.scheduleInsightsPoll(30_000);
-    }, delay);
+      else this.scheduleInsightsPoll(60_000);
+    }, jitter);
   }
 
   selectTab(tab: 'connection' | 'insights' | 'services'): void {
@@ -1026,11 +1028,18 @@ export class CephClustersComponent implements OnInit, OnDestroy {
     this.ceph.insights(refresh).subscribe({
       next: (insights) => {
         this.insights.set(insights);
+        this.insightsPollFailures = 0;
+        this.insightsError.set('');
         this.insightsLoading.set(false);
+        if (this.activeTab() === 'insights') this.scheduleInsightsPoll(60_000);
       },
       error: (failure) => {
-        this.insightsError.set(this.message(failure));
+        this.insightsPollFailures += 1;
+        this.insightsError.set(this.insightsFailureMessage(failure));
         this.insightsLoading.set(false);
+        if (this.activeTab() === 'insights') {
+          this.scheduleInsightsPoll(Math.min(300_000, 15_000 * (2 ** Math.min(this.insightsPollFailures - 1, 4))));
+        }
       },
     });
   }
@@ -1392,5 +1401,13 @@ export class CephClustersComponent implements OnInit, OnDestroy {
 
   private message(failure: any): string {
     return String(failure?.error?.error || failure?.message || 'Ceph 연결 요청에 실패했습니다.');
+  }
+
+  private insightsFailureMessage(failure: any): string {
+    const status = Number(failure?.status || 0);
+    if ([0, 500, 502, 503, 504].includes(status)) {
+      return 'Console 권한 확인 또는 Ceph 관측 경로가 일시적으로 응답하지 않습니다. 자동 재시도를 마쳤으며 잠시 후 다시 확인합니다.';
+    }
+    return this.message(failure);
   }
 }

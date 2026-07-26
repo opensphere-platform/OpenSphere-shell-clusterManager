@@ -137,6 +137,9 @@ test('Ceph UI automatically reports Kubernetes readiness and collects only conne
   assert.match(component, /name="monitoringUrl"/);
   assert.match(component, /openMonitoringConfiguration/);
   assert.match(component, /saveMonitoringConfiguration/);
+  assert.match(component, /Ceph 연결 및 모니터링 구성/);
+  assert.match(component, /class="monitoring-configuration-form"/);
+  assert.match(component, /\.monitoring-configuration-form input\[clrInput\][^}]*width: 100%/);
   assert.match(component, /clr-input-container class="wide-field"[^]*name="clusterID"/);
   assert.match(component, /monitor-input wide-field/);
   assert.match(component, /\.connection-form input\[clrInput\][^}]*width: 100%/);

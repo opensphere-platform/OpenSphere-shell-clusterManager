@@ -166,7 +166,7 @@ import { CephInsightsComponent } from './ceph-insights.component';
         </article>
 
         <article class="readiness-panel">
-          <h3>Ceph 접속 정보</h3>
+          <h3>Ceph 연결 구성값</h3>
           <ng-container *ngIf="s.connection as connection; else requiredConnectionInformation">
             <dl class="provider-info connection-values">
               <dt>Cluster ID (FSID) fingerprint</dt>
@@ -294,7 +294,7 @@ import { CephInsightsComponent } from './ceph-insights.component';
     <ng-container *ngIf="status() as s">
       <section class="connection-card" *ngIf="s.connection as connection; else emptyConnection">
         <div class="card-head">
-          <div><h2>연결 정보</h2><p>Rook External Mode · {{ connection.chartVersion }}</p></div>
+          <div><h2>Ceph 연결 및 모니터링 구성</h2><p>Rook External Mode · {{ connection.chartVersion }}</p></div>
           <div class="card-actions">
             <button class="btn btn-outline" type="button" [disabled]="busy()" (click)="openMonitoringConfiguration()">모니터 주소 설정</button>
             <button class="btn btn-danger-outline" type="button" [disabled]="busy()" (click)="openDisconnect()">연결 해제</button>
@@ -436,7 +436,7 @@ import { CephInsightsComponent } from './ceph-insights.component';
       <div class="modal-body">
         <ol class="wizard-progress" aria-label="연결 단계">
           <li [class.active]="step() >= 1">Kubernetes 준비</li>
-          <li [class.active]="step() >= 2">Ceph 접속 정보</li>
+          <li [class.active]="step() >= 2">Ceph 연결 값</li>
           <li [class.active]="step() >= 3">연결 계획</li>
         </ol>
         <div *ngIf="connectError()" class="alert alert-danger wizard-feedback" role="alert" aria-live="assertive">
@@ -471,7 +471,7 @@ import { CephInsightsComponent } from './ceph-insights.component';
         </section>
 
         <section *ngIf="step() === 2 && !connectCompleted()" class="wizard-step">
-          <h4>2. Ceph 접속 정보 입력</h4>
+          <h4>2. Ceph 연결 값 입력</h4>
           <p>Ceph에서 준비한 접속 값만 입력하십시오. 서버가 UUID, MON 주소·포트, CephX 사용자 표기, pool과 StorageClass 이름의 형식을 확인하고 Kubernetes 리소스로 변환합니다.</p>
           <form clrForm clrLayout="vertical" class="connection-form">
             <clr-input-container class="wide-field">
@@ -651,7 +651,7 @@ import { CephInsightsComponent } from './ceph-insights.component';
     </clr-modal>
 
     <clr-modal [(clrModalOpen)]="monitoringOpen" [clrModalClosable]="!busy()">
-      <h3 class="modal-title">Ceph 모니터 주소 설정</h3>
+      <h3 class="modal-title">Ceph 모니터링 주소 설정</h3>
       <div class="modal-body">
         <div *ngIf="monitoringError()" class="alert alert-danger wizard-feedback" role="alert" aria-live="assertive">
           <div class="alert-items"><div class="alert-item static"><span class="alert-text"><strong>모니터 주소 저장 실패</strong><br>{{ monitoringError() }}</span></div></div>
@@ -660,8 +660,8 @@ import { CephInsightsComponent } from './ceph-insights.component';
           <div class="alert-items"><div class="alert-item static"><span class="alert-text"><strong>모니터 주소 저장 완료</strong><br>{{ monitoringNotice() }}</span></div></div>
         </div>
         <p>Ceph Monitoring 메뉴가 dashboard를 구성할 때 사용하는 Grafana 기본 주소입니다. CephX 자격 증명과는 별도로 관리됩니다.</p>
-        <form *ngIf="!monitoringCompleted()" clrForm clrLayout="vertical">
-          <clr-input-container>
+        <form *ngIf="!monitoringCompleted()" clrForm clrLayout="vertical" class="monitoring-configuration-form">
+          <clr-input-container class="monitoring-url-field">
             <label>모니터 주소</label>
             <input clrInput type="url" name="monitoringConfigurationUrl" [(ngModel)]="monitoringUrl" required autocomplete="off" spellcheck="false" [placeholder]="defaultMonitoringUrl">
             <clr-control-helper>HTTPS만 허용하며 사용자 정보, query, fragment는 저장하지 않습니다.</clr-control-helper>
@@ -892,6 +892,16 @@ import { CephInsightsComponent } from './ceph-insights.component';
     :host ::ng-deep .connection-form .clr-input-wrapper,
     :host ::ng-deep .connection-form .clr-input-group,
     :host ::ng-deep .connection-form .clr-textarea-wrapper { width: 100%; max-width: none; }
+    .monitoring-configuration-form,
+    .monitoring-configuration-form > *,
+    .monitoring-configuration-form input[clrInput],
+    .monitoring-configuration-form textarea[clrTextarea] { width: 100%; max-width: none; }
+    :host ::ng-deep .monitoring-configuration-form .clr-form-control,
+    :host ::ng-deep .monitoring-configuration-form .clr-control-container,
+    :host ::ng-deep .monitoring-configuration-form .clr-input-wrapper,
+    :host ::ng-deep .monitoring-configuration-form .clr-input-group,
+    :host ::ng-deep .monitoring-configuration-form .clr-textarea-wrapper { width: 100%; max-width: none; }
+    .monitoring-url-field input { min-width: 0; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
     .monitor-input textarea { min-height: 6.5rem; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
     textarea { min-height: 4.5rem; }
     .resource-list { max-height: 14rem; overflow: auto; border: 1px solid #d8d8d8; margin: 0.65rem 0; }

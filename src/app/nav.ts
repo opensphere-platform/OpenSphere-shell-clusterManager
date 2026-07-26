@@ -46,6 +46,7 @@ import { VmMigrationPoliciesComponent } from './resources/vm-migrationpolicies.c
 import { VolumeSnapshotsComponent } from './resources/volumesnapshots.component';
 import { VolumeSnapshotClassesComponent } from './resources/volumesnapshotclasses.component';
 import { CephClustersComponent } from './resources/ceph.component';
+import { CephMonitoringComponent } from './resources/ceph-monitoring.component';
 import { MtvProvidersComponent } from './resources/mtv-providers.component';
 import { MtvPlansComponent } from './resources/mtv-plans.component';
 import { PrometheusRulesComponent } from './resources/mon-alerts.component';
@@ -148,6 +149,7 @@ export const NAV: NavGroup[] = [
       { id: 'volumesnapshotclasses', label: 'Volume Snapshot Classes', component: VolumeSnapshotClassesComponent, requires: 'snapshot.storage.k8s.io' },
       // Ceph가 아직 없더라도 전문 관점과 진단 진입점은 항상 보여야 한다.
       { id: 'ceph', label: 'Ceph Clusters', component: CephClustersComponent },
+      { id: 'ceph-monitoring', label: 'Ceph Monitoring', component: CephMonitoringComponent },
     ],
   },
   {

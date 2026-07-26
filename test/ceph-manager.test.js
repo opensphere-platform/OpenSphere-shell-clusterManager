@@ -833,3 +833,31 @@ test('H-04: each mutation has a bounded durable Kubernetes terminal audit mirror
   assert.match(source, /Ceph 변경은 수행되었으나 최종 작업 상태 기록에 실패했습니다/);
   assert.match(source, /redactedAuditMetadata/);
 });
+
+test('Ceph Monitoring is an independent Ceph menu with a fixed Grafana allowlist', () => {
+  const nav = fs.readFileSync(path.resolve(__dirname, '../src/app/nav.ts'), 'utf8');
+  const catalog = fs.readFileSync(path.resolve(__dirname, '../src/app/resources/ceph-monitoring.catalog.ts'), 'utf8');
+  const component = fs.readFileSync(path.resolve(__dirname, '../src/app/resources/ceph-monitoring.component.ts'), 'utf8');
+
+  assert.match(nav, /id: 'ceph-monitoring', label: 'Ceph Monitoring'/);
+  assert.match(catalog, /CEPH_GRAFANA_ORIGIN = 'https:\/\/ceph\.triangles\.com'/);
+  assert.match(catalog, /CEPH_GRAFANA_BASE_PATH = '\/grafana'/);
+  assert.match(catalog, /uid: 'edtb0oxdq'/);
+  assert.match(catalog, /uid: '718Bruins'/);
+  assert.match(catalog, /uid: '41FrpeUiz'/);
+  assert.match(catalog, /uid: 'WAkugZpiz'/);
+  assert.match(component, /CEPH_DASHBOARDS\.find\(item => item\.uid === dashboard\.uid\)/);
+  assert.doesNotMatch(component, /searchParams|get\('url'\)|location\.search/);
+});
+
+test('Ceph Monitoring embeds read-only Grafana with explicit browser security boundaries', () => {
+  const component = fs.readFileSync(path.resolve(__dirname, '../src/app/resources/ceph-monitoring.component.ts'), 'utf8');
+
+  assert.match(component, /sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"/);
+  assert.match(component, /referrerpolicy="no-referrer"/);
+  assert.match(component, /rel="noopener noreferrer"/);
+  assert.match(component, /anonymous Viewer/);
+  assert.match(component, /조직 Root CA를 신뢰 저장소에 등록/);
+  assert.match(component, /params\.append\('kiosk', ''\)/);
+  assert.match(component, /refresh: this\.refresh\(\)/);
+});

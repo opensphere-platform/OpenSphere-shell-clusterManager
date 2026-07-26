@@ -213,12 +213,30 @@ type ObservabilityLifecycleStage = 'plan' | 'install' | 'operate' | 'configure' 
       <clr-dg-footer>{{ s.items.length }}개 HISS capability</clr-dg-footer>
     </clr-datagrid>
 
-    <clr-modal [(clrModalOpen)]="observabilityLifecycleModalOpen" [clrModalClosable]="!busy() && !configurationBusy()" [clrModalSize]="'xl'">
-      <h3 class="modal-title">Shared Observability 관리</h3>
+    <clr-modal class="observability-lifecycle-modal" [(clrModalOpen)]="observabilityLifecycleModalOpen" [clrModalClosable]="!busy() && !configurationBusy()" [clrModalSize]="'xl'">
+      <h3 class="modal-title observability-modal-title">
+        <span class="observability-logo-pair" aria-hidden="true">
+          <img [src]="prometheusLogo" alt="" width="32" height="32">
+          <img [src]="grafanaLogo" alt="" width="32" height="32">
+        </span>
+        <span class="observability-modal-title-copy">
+          <strong>Shared Observability 관리</strong>
+          <small>Prometheus metrics · Grafana dashboards</small>
+        </span>
+      </h3>
       <div class="modal-body lifecycle-workspace" *ngIf="observabilityTarget() as item">
         <div class="card lifecycle-summary-card" aria-label="Shared Observability 대상과 현재 상태">
           <div class="card-header lifecycle-summary-header">
-            <span>{{ item.chartName }}</span>
+            <div class="observability-product-lockup">
+              <span class="observability-logo-pair observability-logo-pair-compact">
+                <img [src]="prometheusLogo" alt="Prometheus" width="28" height="28">
+                <img [src]="grafanaLogo" alt="Grafana" width="28" height="28">
+              </span>
+              <span>
+                <strong>{{ item.chartName }}</strong>
+                <small>수집부터 시각화까지 하나의 관리 revision으로 운영</small>
+              </span>
+            </div>
             <span class="label" [class.label-success]="item.check.state === 'Ready'" [class.label-danger]="item.check.state === 'Blocked'" [class.label-warning]="item.check.state === 'Degraded'">{{ item.check.state }}</span>
           </div>
           <div class="card-block">
@@ -263,7 +281,8 @@ type ObservabilityLifecycleStage = 'plan' | 'install' | 'operate' | 'configure' 
           <clr-alert-item><span class="alert-text">{{ error() }}</span></clr-alert-item>
         </clr-alert>
 
-        <section class="lifecycle-section">
+        <div class="lifecycle-primary-grid">
+        <section class="lifecycle-section lifecycle-readiness-section">
           <div class="section-heading">
             <div><p class="eyebrow">READINESS</p><h4>설치 전 필수 조건</h4></div>
             <span>차단 조건을 모두 해소해야 설치를 실행할 수 있습니다.</span>
@@ -287,7 +306,7 @@ type ObservabilityLifecycleStage = 'plan' | 'install' | 'operate' | 'configure' 
           </div>
         </section>
 
-        <section class="lifecycle-section" *ngIf="observabilityConfig() as config">
+        <section class="lifecycle-section lifecycle-plan-section" *ngIf="observabilityConfig() as config">
           <div class="section-heading">
             <div><p class="eyebrow">PLAN</p><h4>{{ item.release?.managed ? '현재 운영 구성' : '초기 설치 옵션' }}</h4></div>
             <button class="btn btn-sm btn-outline" type="button" [disabled]="configurationLoading() || operationActive(item.operation)" (click)="openObservabilityConfiguration(item.release?.managed ? 'operate' : 'install')">
@@ -339,6 +358,7 @@ type ObservabilityLifecycleStage = 'plan' | 'install' | 'operate' | 'configure' 
             </clr-alert>
           </ng-container>
         </section>
+        </div>
 
         <section class="lifecycle-section" *ngIf="item.release?.managed">
           <div class="section-heading">
@@ -771,7 +791,35 @@ type ObservabilityLifecycleStage = 'plan' | 'install' | 'operate' | 'configure' 
     .profile-card { display: grid; grid-template-columns: 8rem 1fr; gap: 0.3rem 0.75rem; padding: 0.65rem; margin-bottom: 0.7rem; border: 1px solid var(--os-border); background: var(--os-bg-subtle); }
     .history-card { margin: 0.75rem 0; padding: 0.65rem; border: 1px solid var(--os-border); background: var(--os-bg-subtle); }
     .history-card label { display: grid; grid-template-columns: 10rem minmax(14rem, 1fr); gap: 0.5rem; align-items: center; font-weight: 600; }
-    .lifecycle-workspace { display: grid; min-width: 0; gap: var(--os-5); }
+    .observability-modal-title { display: flex; align-items: center; gap: var(--os-4); min-width: 0; }
+    .observability-modal-title-copy { display: grid; min-width: 0; gap: var(--os-2); }
+    .observability-modal-title-copy strong { font: inherit; }
+    .observability-modal-title-copy small { color: var(--os-ink-muted); font: var(--os-type-caption); font-weight: 400; }
+    .observability-logo-pair { display: inline-flex; flex: 0 0 auto; align-items: center; }
+    .observability-logo-pair img {
+      display: block;
+      width: 2rem;
+      height: 2rem;
+      padding: var(--os-2);
+      border: 1px solid var(--os-hairline);
+      border-radius: 50%;
+      background: var(--os-bg);
+      object-fit: contain;
+      box-shadow: var(--os-shadow-sm);
+    }
+    .observability-logo-pair img + img { margin-left: calc(var(--os-2) * -1); }
+    .observability-logo-pair-compact img { width: 1.75rem; height: 1.75rem; box-shadow: none; }
+    .observability-product-lockup { display: flex; align-items: center; gap: var(--os-4); min-width: 0; }
+    .observability-product-lockup > span:last-child { display: grid; min-width: 0; gap: var(--os-2); }
+    .observability-product-lockup strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .observability-product-lockup small { color: var(--os-ink-muted); font: var(--os-type-caption); }
+    .lifecycle-workspace {
+      display: grid;
+      min-width: 0;
+      max-height: none;
+      gap: var(--os-5);
+      overflow: visible;
+    }
     .lifecycle-summary-card { margin: 0; box-shadow: none; }
     .lifecycle-summary-header { display: flex; align-items: center; justify-content: space-between; gap: var(--os-4); }
     .lifecycle-summary-grid { display: grid; grid-template-columns: minmax(18rem, 1.25fr) minmax(16rem, 0.75fr); align-items: start; gap: var(--os-6); }
@@ -782,8 +830,16 @@ type ObservabilityLifecycleStage = 'plan' | 'install' | 'operate' | 'configure' 
     .lifecycle-summary-grid clr-input-container { display: block; margin-top: 0; }
     .lifecycle-summary-grid input[clrInput] { width: 100%; }
     .lifecycle-workspace clr-timeline { margin: var(--os-2) 0; }
+    .lifecycle-primary-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 0.96fr) minmax(0, 1.04fr);
+      gap: var(--os-6);
+      align-items: start;
+    }
+    .lifecycle-primary-grid .lifecycle-section { height: 100%; }
     .lifecycle-section { min-width: 0; padding: var(--os-5) 0 0; border-top: 1px solid var(--os-hairline); }
     .readiness-alerts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--os-4); }
+    .lifecycle-primary-grid .section-heading > span { max-width: 15rem; text-align: right; }
     .readiness-alerts clr-alert, .lifecycle-section > clr-alert { margin: 0; }
     .storage-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--os-4) var(--os-6); margin-top: var(--os-4); }
     .storage-form-grid clr-select-container { display: block; margin-top: 0; }
@@ -837,9 +893,16 @@ type ObservabilityLifecycleStage = 'plan' | 'install' | 'operate' | 'configure' 
       .compact-fields, .ingress-fields { grid-template-columns: 1fr 1fr; }
       .compatibility-card { display: grid; }
       .lifecycle-summary-grid { grid-template-columns: 1fr 1fr; }
+      .lifecycle-primary-grid { grid-template-columns: 1fr; }
     }
     @media (max-width: 720px) {
       .readiness-alerts, .storage-form-grid, .operation-facts, .lifecycle-summary-grid { grid-template-columns: 1fr; }
+      .observability-modal-title-copy small, .observability-product-lockup small { display: none; }
+      .lifecycle-workspace {
+        max-height: calc(100vh - 9rem);
+        padding-right: var(--os-2);
+        overflow-y: auto;
+      }
     }
     textarea { min-height: 5rem; }
   `],
@@ -847,6 +910,8 @@ type ObservabilityLifecycleStage = 'plan' | 'install' | 'operate' | 'configure' 
 export class HisComponent implements OnInit, OnDestroy {
   private his = inject(HisService);
   readonly timelineLayout = ClrTimelineLayout.HORIZONTAL;
+  readonly prometheusLogo = 'https://cdn.statically.io/gh/openplatform-labs/images@main/logos/prometheus-2.svg';
+  readonly grafanaLogo = 'https://cdn.statically.io/gh/openplatform-labs/images@main/logos/grafana-2.svg';
   readonly status = signal<HisStatus | null>(null);
   readonly selected = signal<HisItem | null>(null);
   readonly plan = signal<HisPlan | null>(null);

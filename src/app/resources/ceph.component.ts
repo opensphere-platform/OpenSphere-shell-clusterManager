@@ -33,8 +33,13 @@ import { CephInsightsComponent } from './ceph-insights.component';
         클러스터 현황
         <span *ngIf="status()?.connection" class="tab-status" [class.warn]="status()?.rook?.cephCluster?.health !== 'HEALTH_OK'">{{ status()?.rook?.cephCluster?.health || '연결됨' }}</span>
       </button>
+      <button type="button" [class.active]="activeTab() === 'services'" [attr.aria-current]="activeTab() === 'services' ? 'page' : null" (click)="selectTab('services')">
+        스토리지 서비스
+        <span *ngIf="status()?.csi?.serviceCoverage as coverage" class="tab-status" [class.warn]="coverage.state !== 'Ready'">{{ coverage.ready }}/{{ coverage.installed }} 사용 가능</span>
+      </button>
     </nav>
 
+    <ng-container *ngIf="activeTab() === 'connection' || activeTab() === 'services'">
     <ng-container *ngIf="activeTab() === 'connection'">
     <div *ngIf="error()" class="alert alert-danger" role="alert">
       <div class="alert-items"><div class="alert-item static"><span class="alert-text">{{ error() }}</span></div></div>
@@ -171,7 +176,9 @@ import { CephInsightsComponent } from './ceph-insights.component';
 
     </section>
 
-    <section class="service-coverage" *ngIf="status()?.connection && status()?.csi?.serviceCoverage as coverage">
+    </ng-container>
+
+    <section class="service-coverage" *ngIf="activeTab() === 'services' && status()?.connection && status()?.csi?.serviceCoverage as coverage">
       <div class="card-head service-coverage-head">
         <div>
           <p class="section-kicker">CSI SERVICE READINESS</p>
@@ -190,7 +197,7 @@ import { CephInsightsComponent } from './ceph-insights.component';
 
       <div class="service-grid">
         <article *ngFor="let service of coverage.services" class="service-card" [class.service-ready]="service.ready" [class.service-gap]="service.driverInstalled && !service.ready">
-          <header class="service-card-head">
+          <header class="storage-service-header">
             <div class="service-identity">
               <img [src]="cephLogo" alt="" width="30" height="30" />
               <div><h3>{{ service.name }}</h3><p>{{ service.description }}</p></div>
@@ -246,6 +253,13 @@ import { CephInsightsComponent } from './ceph-insights.component';
       <p class="verification-note"><strong>판정 범위:</strong> CSI 드라이버 등록, StorageClass 필수 값과 참조 Secret을 확인합니다. 실제 읽기·쓰기 mount 검증은 테스트 PVC 또는 업무 PVC를 생성한 시점에 별도 이력으로 남겨야 합니다.</p>
     </section>
 
+    <section class="empty-state" *ngIf="activeTab() === 'services' && !status()?.connection">
+      <h2>Ceph 연결 후 서비스 준비도를 확인할 수 있습니다</h2>
+      <p>Ceph 연결이 완료되면 설치된 RBD·CephFS 드라이버와 StorageClass, 참조 Secret을 서비스별로 판정합니다.</p>
+      <button class="btn btn-primary" type="button" [disabled]="status()?.kubernetes?.ready !== true || status()?.ownerPrerequisites?.ready !== true || busy()" (click)="selectTab('connection')">연결 및 설정으로 이동</button>
+    </section>
+
+    <ng-container *ngIf="activeTab() === 'connection'">
     <ng-container *ngIf="status() as s">
       <section class="connection-card" *ngIf="s.connection as connection; else emptyConnection">
         <div class="card-head">
@@ -289,6 +303,7 @@ import { CephInsightsComponent } from './ceph-insights.component';
           <button class="btn btn-primary" type="button" [disabled]="!s.kubernetes.ready || s.ownerPrerequisites?.ready !== true || busy()" (click)="openConnect()">연결 Wizard 시작</button>
         </section>
       </ng-template>
+    </ng-container>
     </ng-container>
     </ng-container>
 
@@ -693,11 +708,11 @@ import { CephInsightsComponent } from './ceph-insights.component';
     .coverage-badge { flex: 0 0 auto; padding: 0.35rem 0.65rem; border: 1px solid #f1c21b; border-radius: 1rem; background: #fff8d6; color: #6b4d00; font-weight: 700; }
     .coverage-badge.complete { border-color: #69a03a; background: #f1f8e9; color: #266900; }
     .service-warning { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.65rem; margin-top: 0.8rem; padding: 0.65rem 0.75rem; border-left: 4px solid #f1c21b; background: #fff8d6; color: #4f3b00; }
-    .service-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.8rem; margin-top: 0.8rem; }
+    .service-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 0.8rem; margin-top: 0.8rem; }
     .service-card { min-width: 0; padding: 0.85rem; border: 1px solid #c9d2d8; border-top: 4px solid #8d9ba3; background: #fff; }
     .service-card.service-ready { border-top-color: #318700; }
     .service-card.service-gap { border-top-color: #f1c21b; }
-    .service-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.75rem; }
+    .storage-service-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.75rem; padding: 0; background: #fff; color: #1b2a32; }
     .service-identity { display: grid; min-width: 0; grid-template-columns: 2rem minmax(0, 1fr); gap: 0.55rem; align-items: center; }
     .service-identity img { display: block; width: 1.75rem; height: 1.75rem; object-fit: contain; }
     .service-identity h3 { margin: 0; color: #1b2a32; font-size: 0.86rem; }
@@ -777,7 +792,7 @@ export class CephClustersComponent implements OnInit, OnDestroy {
   private insightsRefreshTimer: ReturnType<typeof setInterval> | null = null;
   readonly cephLogo = 'https://cdn.statically.io/gh/openplatform-labs/images@main/logos/ceph.svg';
   readonly kubernetesLogo = 'https://cdn.statically.io/gh/openplatform-labs/images@main/logos/kubernetes-2-icon.svg';
-  readonly activeTab = signal<'connection' | 'insights'>('connection');
+  readonly activeTab = signal<'connection' | 'insights' | 'services'>('connection');
   readonly status = signal<CephStatus | null>(null);
   readonly insights = signal<CephInsights | null>(null);
   readonly insightsLoading = signal(false);
@@ -860,7 +875,7 @@ export class CephClustersComponent implements OnInit, OnDestroy {
     });
   }
 
-  selectTab(tab: 'connection' | 'insights'): void {
+  selectTab(tab: 'connection' | 'insights' | 'services'): void {
     this.activeTab.set(tab);
     if (tab === 'insights' && this.status()?.connection && !this.insights() && !this.insightsLoading()) {
       this.loadInsights();

@@ -22,12 +22,12 @@ type InsightsView = 'overview' | 'capacity' | 'osd-pg' | 'hosts';
   ],
   template: `
     <section class="ceph-insights" aria-labelledby="ceph-insights-title">
-      <header class="insights-hero">
+      <div class="insights-hero">
         <div class="insights-identity">
           <span class="logo-frame ceph-frame">
             <img [src]="cephLogo" alt="Ceph" width="58" height="58" />
           </span>
-          <div>
+          <div class="insights-copy">
             <p class="eyebrow">READ-ONLY CLUSTER OBSERVATION</p>
             <h2 id="ceph-insights-title">외부 Ceph 클러스터 현황</h2>
             <p>연결에 사용한 제한된 CephX 계정으로 health·용량·OSD·PG와 배포 정보를 읽습니다. 이 화면은 Ceph 상태를 변경하지 않습니다.</p>
@@ -36,7 +36,7 @@ type InsightsView = 'overview' | 'capacity' | 'osd-pg' | 'hosts';
         <button class="refresh-button" type="button" [disabled]="loading" (click)="refresh.emit()" aria-label="Ceph 현황 즉시 다시 읽기">
           {{ loading ? '읽는 중…' : '지금 새로고침' }}
         </button>
-      </header>
+      </div>
 
       <div *ngIf="error" class="section-alert danger" role="alert">
         <strong>Ceph 현황을 불러오지 못했습니다.</strong>

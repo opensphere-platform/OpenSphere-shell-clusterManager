@@ -127,6 +127,19 @@ test('Ceph UI automatically reports Kubernetes readiness and collects only conne
   assert.doesNotMatch(component, /disconnectConfirm !== 'DISCONNECT'/);
 });
 
+test('Ceph insights title bar is isolated from host header rules and remains responsive', () => {
+  const component = fs.readFileSync(path.resolve(__dirname, '../src/app/resources/ceph-insights.component.ts'), 'utf8');
+  const styles = fs.readFileSync(path.resolve(__dirname, '../src/app/resources/ceph-insights.component.css'), 'utf8');
+  const hero = component.slice(component.indexOf('<div class="insights-hero">'), component.indexOf('<div *ngIf="error"'));
+  assert.match(hero, /<div class="insights-hero">/);
+  assert.match(hero, /class="insights-copy"/);
+  assert.doesNotMatch(hero, /<header class="insights-hero">/);
+  assert.match(styles, /\.insights-hero\s*\{[^}]*display: grid[^}]*grid-template-columns: minmax\(0, 1fr\) auto[^}]*height: auto[^}]*min-height: 108px[^}]*overflow: visible/s);
+  assert.match(styles, /\.insights-identity\s*\{[^}]*grid-template-columns: 64px minmax\(0, 1fr\)/s);
+  assert.match(styles, /@media \(max-width: 760px\)[^]*\.insights-hero\s*\{[^}]*grid-template-columns: 1fr[^}]*min-height: 0/s);
+  assert.match(styles, /\.refresh-button\s*\{[^}]*align-self: center/s);
+});
+
 test('Ceph Wizard keeps validation and connection feedback inside the modal', () => {
   const component = fs.readFileSync(path.resolve(__dirname, '../src/app/resources/ceph.component.ts'), 'utf8');
   const validateBlock = component.slice(component.indexOf('validatePlan(): void'), component.indexOf('connect(): void'));

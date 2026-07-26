@@ -1,33 +1,58 @@
-# Design QA — Shared Observability 운영 구성
+# Design QA — 외부 Ceph 클러스터 현황 타이틀 바
 
-- Date: 2026-07-17
-- Deployed version: `cluster-manager 1.3.3`
-- URL: `https://localhost:8090/p/cluster-manager/his/his`
-- Browser / viewport: Chrome, 3840 × 1991
-- State: Prometheus StorageClass 변경 계획을 검사해 데이터 초기화 확인 영역이 표시된 상태
+- Date: 2026-07-26
+- Deployed version: `cluster-manager 1.3.6`
+- URL: `https://localhost:1114/p/cluster-manager/ceph/ceph`
+- Browser: signed-in Chrome
+- State: `클러스터 현황` 탭, `HEALTH_OK`, 관측 데이터 표시
 
-## Evidence
+## Visual truth and implementation
 
-- Source — double scrollbar: `C:\Users\cmars\AppData\Local\Temp\codex-clipboard-5fa05939-884a-480f-9722-b1bd0a19b0fc.png`
-- Source — clipped confirmation text: `C:\Users\cmars\AppData\Local\Temp\codex-clipboard-92063813-e96b-40cb-92d2-a422daa5c41c.png`
-- Implementation: `audit-evidence/2026-07-17-observability-modal/after-1.3.3-single-scroll.png`
-- Combined comparison: `audit-evidence/2026-07-17-observability-modal/comparison-before-after.png`
+- Source visual truth: `C:\Users\cmars\AppData\Local\Temp\codex-clipboard-3524cb32-f1a1-465e-8af0-4443fa97d136.png`
+- Browser implementation full view: `audit-evidence/ceph-insights-1.3.6-full.png`
+- Focused title-bar capture: `audit-evidence/ceph-insights-1.3.6-title-bar.png`
+- Narrow viewport capture: `audit-evidence/ceph-insights-1.3.6-mobile.png`
+- Before/after comparison: `audit-evidence/ceph-insights-title-bar-comparison.png`
 
-## Findings and fix history
+## Viewport and normalization
 
-1. The Clarity modal already provided an `overflow-y: auto` scroll surface, while `.configuration-modal` added a second `overflow: auto` and `max-height`. Removed the nested scroll surface and retained the Clarity modal body wrapper as the single vertical scroller.
-2. The destructive reset phrase was used only as a narrow input placeholder. Added a persistent, fully visible `RESET OBSERVABILITY DATA` token, a clearly labelled input, and an explicit mismatch/match status message.
-3. Clarity wraps `clrInput` in three intrinsic-width containers. Expanded those wrappers and the input to the confirmation field width. The deployed input measures 716 px.
+- Source pixels: `2000 × 538`, supplied desktop capture.
+- Desktop implementation pixels and CSS viewport: `2293 × 1934`, device scale factor `1`.
+- Focused implementation pixels: `1950 × 300`.
+- Narrow implementation pixels and CSS viewport: `720 × 1000`, device scale factor `1`.
+- Focused comparison normalizes both title-bar crops to `1950px` width. Browser chrome is excluded.
 
-## Verification
+## Findings and comparison history
 
-- Runtime DOM inspection found exactly one overflowing vertical container: `.modal-body-wrapper`.
-- Confirmation input width: 716 px; all Clarity wrapper widths: 720 px.
-- Full reset token is visible without relying on placeholder text.
-- Cluster Manager deployment: 2/2 Ready.
-- UIPluginRegistration: Activated.
-- Automated tests: 26/26 passed.
+1. **Earlier P1 — Host Shell header rule collapsed the title bar.**
+   - Evidence: the source capture shows the 76px logo and descriptive text extending outside the fixed-height bar.
+   - Cause: the component used a native `<header class="insights-hero">`, allowing the Host Shell's global `header` rule to constrain its height.
+   - Fix: replaced the native header with an isolated component container and defined a two-column `minmax(0, 1fr) auto` grid, explicit content column, intrinsic `height: auto`, `min-height: 108px`, and responsive one-column behavior.
+   - Post-fix evidence: the deployed desktop bar measures `1934 × 112px`; logo, copy and action remain inside its bounds. `scrollWidth === clientWidth` and `scrollHeight === clientHeight`.
 
-## Final result
+2. **Earlier P2 — narrow layouts had no reliable stacking contract.**
+   - Fix: at `max-width: 760px`, the title bar becomes one column, the identity block uses a `56px + minmax(0, 1fr)` grid, and the refresh action fills the available width.
+   - Post-fix evidence: at `720 × 1000`, the available content rail is narrow because the management navigation remains visible, but the title bar has no horizontal or vertical overflow and all text and controls remain readable.
 
-**PASSED** — the modal uses one vertical scrollbar and the reset confirmation text is fully readable.
+## Required fidelity surfaces
+
+- Fonts and typography: existing OpenSphere/Clarity typography is preserved. Heading weight, eyebrow tracking and body line height remain consistent; Korean copy wraps without clipping.
+- Spacing and layout rhythm: logo, title copy and action use explicit grid tracks and remain vertically centered at desktop width. Narrow width stacks predictably.
+- Colors and tokens: existing Ceph observation colors, blue accent rail, neutral border and semantic button states are unchanged.
+- Image quality and assets: the supplied Ceph SVG remains the source asset, rendered at `48 × 48px` inside a `64 × 64px` frame without stretching.
+- Copy and content: all original labels and explanatory text are unchanged.
+
+## Browser verification
+
+- Primary interaction tested: opened `클러스터 현황` from the deployed Ceph page.
+- Desktop overflow: none.
+- Narrow viewport overflow: none.
+- Browser console errors: `0`.
+- Automated regression tests: `79/79` passed.
+- Deployment: `cluster-manager 1.3.6`, `Activated / Ready`, `2/2` replicas.
+
+## Remaining findings
+
+No actionable P0, P1 or P2 visual mismatch remains. The narrow viewport still retains the product's persistent management navigation; this is existing shell behavior and does not break the corrected title bar.
+
+final result: passed

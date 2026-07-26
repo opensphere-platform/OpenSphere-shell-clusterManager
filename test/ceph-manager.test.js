@@ -679,6 +679,14 @@ test('Ceph insights endpoint is fixed, read-only, bounded, and accepts no comman
   assert.doesNotMatch(source, /CEPH_OBSERVER_URL[^]*searchParams\.get\('command'\)/);
 });
 
+test('Ceph insights keeps legacy runtime observable while reporting the missing application-auth boundary', () => {
+  assert.match(source, /const authenticated = observerToken\.length >= 32/);
+  assert.match(source, /mode: 'LegacyUnauthenticated'/);
+  assert.match(source, /authenticated \? \{ 'x-opensphere-observer-token': observerToken \} : \{\}/);
+  const component = fs.readFileSync(path.resolve(__dirname, '../src/app/resources/ceph-insights.component.ts'), 'utf8');
+  assert.match(component, /관측 보안 전환 대기/);
+});
+
 test('Ceph observer is digest-pinned, fixed-command, keyfile-only, and network bounded', () => {
   const observer = fs.readFileSync(path.resolve(__dirname, '../deploy/ceph-runtime-chart/files/ceph-observer.py'), 'utf8');
   const manifest = fs.readFileSync(path.resolve(__dirname, '../deploy/ceph-runtime-chart/templates/observer.yaml'), 'utf8');

@@ -287,6 +287,10 @@ export interface CephInsights {
     lastRefresh: string;
   }>;
   sectionErrors: Array<{ section: string; reason: string; message: string }>;
+  observerSecurity?: {
+    mode: 'Authenticated' | 'LegacyUnauthenticated';
+    message: string;
+  };
 }
 
 @Injectable({ providedIn: 'root' })

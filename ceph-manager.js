@@ -1760,15 +1760,16 @@ function normalizeCephInsights(snapshot) {
 async function cephInsights(ctx, forceRefresh = false) {
   const authSecret = await optionalKube(ctx, `/api/v1/namespaces/${NAMESPACE}/secrets/${OBSERVER_API_SECRET}`);
   const observerToken = decodedSecretField(authSecret, 'token');
-  if (observerToken.length < 32) {
-    throw error('Ceph 관측 서비스 API 인증이 구성되지 않았습니다. 보안 업데이트된 runtime chart를 먼저 적용하십시오.', 503);
-  }
+  const authenticated = observerToken.length >= 32;
   let response;
   try {
     response = await (ctx.cephObserverFetch || fetch)(
       `${CEPH_OBSERVER_URL}/snapshot${forceRefresh ? '?refresh=1' : ''}`,
       {
-        headers: { accept: 'application/json', 'x-opensphere-observer-token': observerToken },
+        headers: {
+          accept: 'application/json',
+          ...(authenticated ? { 'x-opensphere-observer-token': observerToken } : {}),
+        },
         signal: AbortSignal.timeout(25_000),
       },
     );
@@ -1780,7 +1781,18 @@ async function cephInsights(ctx, forceRefresh = false) {
   if (Buffer.byteLength(text, 'utf8') > CEPH_OBSERVER_MAX_BYTES) throw error('Ceph 관측 응답이 허용 크기를 초과했습니다.', 502);
   let snapshot;
   try { snapshot = JSON.parse(text); } catch { throw error('Ceph 관측 서비스가 올바른 JSON을 반환하지 않았습니다.', 502); }
-  return normalizeCephInsights(snapshot);
+  return {
+    ...normalizeCephInsights(snapshot),
+    observerSecurity: authenticated
+      ? {
+          mode: 'Authenticated',
+          message: 'Cluster Manager와 Ceph 관측 서비스 사이의 애플리케이션 인증이 적용되었습니다.',
+        }
+      : {
+          mode: 'LegacyUnauthenticated',
+          message: '기존 runtime 호환 관측입니다. 전용 observer CephX 계정과 보안 runtime chart 적용 전까지 애플리케이션 인증이 강제되지 않습니다.',
+        },
+  };
 }
 
 function createCephManager(ctx) {

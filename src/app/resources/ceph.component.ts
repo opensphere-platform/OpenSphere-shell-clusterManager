@@ -35,7 +35,7 @@ import { CephInsightsComponent } from './ceph-insights.component';
       </button>
       <button type="button" [class.active]="activeTab() === 'services'" [attr.aria-current]="activeTab() === 'services' ? 'page' : null" (click)="selectTab('services')">
         스토리지 서비스
-        <span *ngIf="status()?.csi?.serviceCoverage as coverage" class="tab-status" [class.warn]="coverage.needsConfiguration > 0">{{ coverage.configured }}/{{ coverage.installed }} 구성 · {{ coverage.verified }} 검증</span>
+        <span *ngIf="status()?.csi?.serviceCoverage as coverage" class="tab-status" [class.warn]="coverage.needsConfiguration > 0 || coverage.verified < coverage.configured">{{ coverage.configured }}/{{ coverage.installed }} 구성 · {{ coverage.verified ? coverage.verified + ' 검증' : '실제 검증 없음' }}</span>
       </button>
     </nav>
     <div *ngIf="statusPollWarning()" class="alert alert-warning" role="status">

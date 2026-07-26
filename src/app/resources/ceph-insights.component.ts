@@ -44,6 +44,10 @@ type InsightsView = 'overview' | 'capacity' | 'osd-pg' | 'hosts';
       </div>
 
       <ng-container *ngIf="insights as data; else noData">
+        <div *ngIf="data.observerSecurity?.mode === 'LegacyUnauthenticated'" class="section-alert warning" role="status">
+          <strong>관측 보안 전환 대기</strong>
+          <span>{{ data.observerSecurity.message }}</span>
+        </div>
         <div class="observation-strip">
           <div>
             <span class="observation-label">클러스터 상태</span>

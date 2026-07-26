@@ -193,6 +193,7 @@ export interface StorageClassOption {
 
 export interface ObservabilityLiveState {
   installed: boolean;
+  accessIssues: Array<{ label: string; message: string }>;
   storageClasses: StorageClassOption[];
   ingressClasses: Array<{ name: string; controller: string }>;
   pvcs: Record<string, { name: string; phase: string; storageClassName: string; requested: string; capacity: string; volumeName: string; selectedNode: string }>;

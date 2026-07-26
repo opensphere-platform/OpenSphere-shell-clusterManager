@@ -97,7 +97,7 @@ test('shared operational surfaces keep the standard state and layout primitives'
   assert.match(tokens, /--os-focus-ring:/);
 });
 
-test('Shared Observability defaults to a simple quick-install surface with advanced details on demand', () => {
+test('Shared Observability keeps essential install choices visible and moves only expert controls on demand', () => {
   const his = readFileSync(resolve(appRoot, 'resources/his.component.ts'), 'utf8');
 
   assert.match(his, /logos\/prometheus-2\.svg/);
@@ -106,6 +106,9 @@ test('Shared Observability defaults to a simple quick-install surface with advan
   assert.match(his, /class="observability-quick-card"/);
   assert.match(his, /권장 설정으로 한 번에 설치/);
   assert.match(his, /빠른 설치 요청/);
+  assert.match(his, /name="quickChartVersion"/);
+  assert.match(his, /name="quickStorageClass"/);
+  assert.match(his, /Shared Observability의 고정 관리 namespace/);
   assert.match(his, /observabilityAdvancedOpen/);
   assert.match(his, /기술 계획 보기/);
   assert.doesNotMatch(his, /class="observability-work-model"/);

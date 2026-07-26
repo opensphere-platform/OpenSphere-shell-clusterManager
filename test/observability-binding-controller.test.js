@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { bindingProjection, workloadReady, parseOperation, statusComparable, telemetryPayloads } = require('../his-observability-binding-controller');
 
-test('HIS binding publishes only independently verified capabilities', () => {
+test('HISS binding publishes only independently verified capabilities', () => {
   const status = bindingProjection({
     stackPresent: true,
     prometheusReady: true,
@@ -38,7 +38,7 @@ test('HIS binding publishes only independently verified capabilities', () => {
   ]);
 });
 
-test('HIS binding fails closed when the live metrics query is unavailable', () => {
+test('HISS binding fails closed when the live metrics query is unavailable', () => {
   const status = bindingProjection({ stackPresent: true, prometheusReady: true, prometheusQueryReady: false });
   assert.equal(status.phase, 'Degraded');
   assert.deepEqual(status.capabilities, []);
@@ -87,7 +87,7 @@ test('ObservabilityBinding controller RBAC cannot read Secrets or mutate monitor
   assert.match(manifest, /scope: Cluster/);
 });
 
-test('Cluster Manager and HIS Binding Controller share the GA rebuild release', () => {
+test('Cluster Manager and HISS Binding Controller share the GA rebuild release', () => {
   const publish = fs.readFileSync(path.resolve(__dirname, '../.github/workflows/publish-image.yml'), 'utf8');
   assert.equal(fs.existsSync(path.resolve(__dirname, '../.github/workflows/promote-image-channel.yml')), false);
   assert.match(publish, /workflow_dispatch:/);
@@ -99,7 +99,7 @@ test('Cluster Manager and HIS Binding Controller share the GA rebuild release', 
   assert.match(publish, /ghcr\.io\/opensphere-platform\/opensphere-his-binding-controller/);
   assert.match(publish, /platforms: linux\/amd64,linux\/arm64/);
   assert.match(publish, /binding_build\.outputs\.digest/);
-  assert.match(publish, /his-owner-release-\$\{\{ github\.sha \}\}/);
+  assert.match(publish, /hiss-owner-release-\$\{\{ github\.sha \}\}/);
   assert.match(publish, /observability-binding-controller\.yaml/);
   assert.match(publish, /deploy\/ceph-runtime-owner\.yaml/);
   assert.match(publish, /cephRuntimeOwner:\"ceph-runtime-owner\.yaml\"/);

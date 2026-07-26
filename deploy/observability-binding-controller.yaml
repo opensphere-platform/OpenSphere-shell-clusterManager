@@ -24,7 +24,8 @@ spec:
               type: object
               required: [consumerRef, requestedCapabilities, owner]
               properties:
-                owner: { type: string, enum: [HIS] }
+                # HIS is retained only to read bindings created before the HISS rename.
+                owner: { type: string, enum: [HIS, HISS] }
                 consumerRef:
                   type: object
                   required: [apiVersion, kind, namespace, name]

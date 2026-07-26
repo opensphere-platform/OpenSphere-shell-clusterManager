@@ -11,6 +11,7 @@ const {
   safeError,
   kubeconfigText,
   auditRequired,
+  assertManagedItem,
   operationResourceName,
   operationActive,
   parseKubernetesVersion,
@@ -46,7 +47,7 @@ const {
   DEFAULT_OBSERVABILITY_CONFIG,
 } = require('../his-manager');
 
-test('HIS catalog keeps PFS/plugin concepts outside the prerequisite catalog', () => {
+test('HISS catalog keeps PFS/plugin concepts outside the prerequisite catalog', () => {
   assert.ok(HIS_CATALOG.some((item) => item.mode === 'DetectOnly'));
   assert.ok(HIS_CATALOG.some((item) => item.mode === 'HelmManaged'));
   assert.equal(catalogItem('foundation'), undefined);
@@ -55,7 +56,15 @@ test('HIS catalog keeps PFS/plugin concepts outside the prerequisite catalog', (
   assert.equal(observability.mode, 'HelmManaged');
   assert.equal(observability.required, false);
   assert.equal(observability.profile, 'Observability');
-  assert.equal(observability.chartVersion, '86.0.1');
+  assert.equal(observability.chartVersion, '87.19.1');
+  assert.equal(observability.appVersion, 'v0.92.1');
+  assert.deepEqual(observability.availableChartVersions, ['87.19.1', '86.0.1']);
+  assert.equal(assertManagedItem({ id: 'kube-prometheus-stack', chartVersion: '87.19.1' }).chart, '/app/his-charts/kube-prometheus-stack-87.19.1.tgz');
+  assert.equal(assertManagedItem({ id: 'kube-prometheus-stack', chartVersion: '86.0.1' }).appVersion, 'v0.91.0');
+  assert.throws(() => assertManagedItem({ id: 'kube-prometheus-stack', chartVersion: '99.0.0' }), /포함되지 않은 chart version/);
+  const dockerfile = fs.readFileSync(path.resolve(__dirname, '../Dockerfile'), 'utf8');
+  assert.match(dockerfile, /kube-prometheus-stack --version 87\.19\.1/);
+  assert.match(dockerfile, /87893c23e84ad7f4282b816541a7e571a128c6c0dd2ac9ffff2527d3d54ee6b1/);
   const dataProtection = catalogItem('csi-snapshot');
   assert.equal(dataProtection.required, false);
   assert.equal(dataProtection.profile, 'Data Protection');
@@ -67,7 +76,7 @@ test('HIS catalog keeps PFS/plugin concepts outside the prerequisite catalog', (
   }
 });
 
-test('optional profiles gate HIS only when explicitly selected or backed by a managed release', () => {
+test('optional profiles gate HISS only when explicitly selected or backed by a managed release', () => {
   const items = [
     { id: 'kube-prometheus-stack', profile: 'Observability', release: { managed: true }, check: { state: 'Ready' } },
     { id: 'csi-snapshot', profile: 'Data Protection', release: null, check: { state: 'Degraded' } },
@@ -215,7 +224,7 @@ test('storage canary manifests are bounded, non-privileged and accept no arbitra
 
 test('mutation reason is mandatory and bounded', () => {
   assert.throws(() => reasonFrom({ reason: 'short' }), /8자 이상/);
-  assert.equal(reasonFrom({ reason: 'HIS 설치 승인 근거' }), 'HIS 설치 승인 근거');
+  assert.equal(reasonFrom({ reason: 'HISS 설치 승인 근거' }), 'HISS 설치 승인 근거');
   assert.throws(() => reasonFrom({ reason: 'x'.repeat(501) }), /500자 이하/);
 });
 
@@ -230,7 +239,7 @@ test('generated kubeconfig does not disable TLS verification', () => {
   assert.doesNotMatch(config, /insecure-skip-tls-verify/);
 });
 
-test('HIS operations use bounded Kubernetes names and reject stale heartbeats', () => {
+test('HISS operations use bounded Kubernetes names and reject stale heartbeats', () => {
   assert.equal(operationResourceName('kube-prometheus-stack'), 'opensphere-his-operation-kube-prometheus-stack');
   assert.ok(operationResourceName('X'.repeat(100)).length <= 63);
   assert.equal(operationActive({ phase: 'Installing', updatedAt: new Date().toISOString() }), true);
@@ -278,15 +287,22 @@ test('Helm lifecycle exposes exactly one primary action for each release state',
   assert.equal(releaseLifecycleAction({ managed: true, status: 'unknown', revision: 1 }), 'blocked');
 });
 
-test('HIS UI renders install, upgrade and recovery as mutually exclusive lifecycle actions', () => {
+test('HISS UI renders install, upgrade and recovery as mutually exclusive lifecycle actions', () => {
   const ui = fs.readFileSync(path.resolve(__dirname, '../src/app/resources/his.component.ts'), 'utf8');
   assert.match(ui, /\*ngIf="releaseLifecycle\(item\) === 'install'"[^>]*>[\s\S]*?설치<\/button>/);
   assert.match(ui, /\*ngIf="releaseLifecycle\(item\) === 'upgrade'"[^>]*>[\s\S]*?업그레이드<\/button>/);
   assert.match(ui, /\*ngIf="releaseLifecycle\(item\) === 'recover'"[^>]*>[\s\S]*?복구<\/button>/);
   assert.match(ui, /if \(this\.releaseLifecycle\(item\) !== 'install'\) return false;/);
+  assert.match(ui, /Shared Observability 관리/);
+  assert.match(ui, /대상 Chart version/);
+  assert.match(ui, /Prometheus StorageClass/);
+  assert.match(ui, /storagePlan/);
+  assert.match(ui, /\[disabled\]="!sc\.isCsi"/);
+  assert.match(ui, /CSI 선택 필요/);
+  for (const stage of ['계획', '설치', '운영', '구성', '실검증', '롤백', '삭제']) assert.match(ui, new RegExp(`label: '${stage}'`));
 });
 
-test('kind HIS profile provisions an issuer chain and binds ingress default TLS without weakening standard clusters', () => {
+test('kind HISS profile provisions an issuer chain and binds ingress default TLS without weakening standard clusters', () => {
   const ingress = catalogItem('ingress-nginx');
   const certificates = catalogItem('cert-manager');
   assert.deepEqual(ingress.values, []);
@@ -337,9 +353,16 @@ test('Observability configuration is allowlisted and secure by default', () => {
   assert.equal(config.telemetry.retention, '168h');
 });
 
+test('Observability installation rejects non-CSI storage and allows explicit CSI selection', () => {
+  const manager = fs.readFileSync(path.resolve(__dirname, '../his-manager.js'), 'utf8');
+  assert.match(manager, /csiDrivers\.has\(storageClass\.provisioner/);
+  assert.match(manager, /는 등록된 CSIDriver가 아닙니다/);
+  assert.doesNotMatch(manager, /노드 로컬 provisioner이므로 운영 내구성 저장소로 권장하지 않습니다/);
+});
+
 test('OAA Observability owner input is recursively closed and confirmations expose high-risk choices', () => {
   const config = normalizeOaaObservabilityConfig(DEFAULT_OBSERVABILITY_CONFIG);
-  assert.equal(oaaObservabilityConfirmation(config, false), 'configure HIS observability public=false data-reset=false');
+  assert.equal(oaaObservabilityConfirmation(config, false), 'configure HISS observability public=false data-reset=false');
   assert.throws(() => normalizeOaaObservabilityConfig({ ...DEFAULT_OBSERVABILITY_CONFIG, command: 'kubectl get secrets' }), /허용되지 않은 필드/);
   assert.throws(() => normalizeOaaObservabilityConfig({
     ...DEFAULT_OBSERVABILITY_CONFIG,
@@ -352,7 +375,7 @@ test('OAA Observability owner input is recursively closed and confirmations expo
       exposureMode: 'PublicIngress', hostname: 'grafana.example.com', tlsSecretName: 'grafana-tls', oidcSecretName: 'grafana-oidc',
     },
   });
-  assert.equal(oaaObservabilityConfirmation(publicConfig, true), 'configure HIS observability public=true data-reset=true');
+  assert.equal(oaaObservabilityConfirmation(publicConfig, true), 'configure HISS observability public=true data-reset=true');
 });
 
 test('private Grafana ingress requires TLS, OIDC references and CIDR restrictions', () => {
@@ -402,7 +425,7 @@ test('Observability PVC names are bounded to the five managed data stores', () =
   assert.equal(observabilityPvcComponent('customer-database'), '');
 });
 
-test('HIS log queries are fixed-template, bounded and redact credential-shaped text', () => {
+test('HISS log queries are fixed-template, bounded and redact credential-shaped text', () => {
   const errors = buildObservabilityLogQuery(new URLSearchParams({ template: 'service.errors', service: 'opensphere-console' }));
   assert.equal(errors.query, '{service_name="opensphere-console"} |~ "(?i)(error|exception|failed)"');
   assert.throws(() => buildObservabilityLogQuery(new URLSearchParams({ template: 'raw', service: 'x' })), /지원하지 않는/);
@@ -416,7 +439,7 @@ test('HIS log queries are fixed-template, bounded and redact credential-shaped t
   assert.doesNotMatch(entries[0].line, /sk-example|Bearer abc/);
 });
 
-test('HIS trace projection returns operational span facts without arbitrary attributes', () => {
+test('HISS trace projection returns operational span facts without arbitrary attributes', () => {
   const spans = projectTempoTrace({ batches: [{
     resource: { attributes: [{ key: 'service.name', value: { stringValue: 'console' } }, { key: 'secret', value: { stringValue: 'do-not-return' } }] },
     scopeSpans: [{ spans: [{ traceId: 'a'.repeat(32), spanId: 'b'.repeat(16), name: 'GET /health', startTimeUnixNano: '1000000', endTimeUnixNano: '3500000', status: { code: 1 }, attributes: [{ key: 'password', value: { stringValue: 'hidden' } }] }] }],
@@ -426,6 +449,23 @@ test('HIS trace projection returns operational span facts without arbitrary attr
     startTimeUnixNano: '1000000', durationMs: 2.5,
   });
   assert.doesNotMatch(JSON.stringify(spans), /do-not-return|hidden/);
+});
+
+test('signed HISS owner release includes bounded lifecycle RBAC for fixed namespaces', () => {
+  const manifest = fs.readFileSync(path.resolve(__dirname, '../deploy/hiss-runtime-owner.yaml'), 'utf8');
+  const documents = manifest.split(/^---\s*$/m).map((document) => yaml.load(document)).filter(Boolean);
+  const clusterRole = documents.find((document) => document.kind === 'ClusterRole' && document.metadata?.name === 'opensphere-hiss-runtime-owner');
+  const editorRole = documents.find((document) => document.kind === 'ClusterRole' && document.metadata?.name === 'opensphere-hiss-release-editor');
+  const bindings = documents.filter((document) => document.kind === 'RoleBinding' && document.metadata?.name === 'opensphere-hiss-release-editor');
+  assert.ok(clusterRole);
+  assert.ok(editorRole);
+  assert.deepEqual(bindings.map((binding) => binding.metadata.namespace).sort(), ['cert-manager', 'ingress-nginx', 'kube-system', 'monitoring', 'opensphere-console']);
+  assert.doesNotMatch(manifest, /resources:\s*\[\*\]|verbs:\s*\[\*\]/);
+  assert.match(manifest, /resources: \[secrets, configmaps/);
+  assert.match(manifest, /resources: \[apiservices\]/);
+  const workflow = fs.readFileSync(path.resolve(__dirname, '../.github/workflows/publish-image.yml'), 'utf8');
+  assert.match(workflow, /hiss-runtime-owner\.yaml/);
+  assert.match(workflow, /hiss-owner-release-/);
 });
 
 test('durable audit request authenticates with the managed workload ServiceAccount token', async () => {

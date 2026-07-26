@@ -32,6 +32,8 @@ export interface HisOperation {
   finishedAt: string;
   releaseStatus?: string;
   targetRevision?: number;
+  chartVersion?: string;
+  appVersion?: string;
 }
 
 export type HisEvidenceState = 'Passed' | 'Failed' | 'Info' | 'NotRun' | 'Unsupported';
@@ -85,10 +87,11 @@ export interface HisItem {
   remediation?: HisRemediation;
   chartName?: string;
   chartVersion?: string;
+  availableChartVersions?: string[];
   appVersion?: string;
   source?: string;
   namespace?: string;
-  release?: { managed: boolean; status: string; revision: number } | null;
+  release?: { managed: boolean; status: string; revision: number; chartVersion?: string; appVersion?: string } | null;
   operation?: HisOperation | null;
   operationalProfile?: {
     components: string[];
@@ -102,7 +105,7 @@ export interface HisItem {
 }
 
 export interface HisStatus {
-  stack: 'HIS';
+  stack: 'HISS';
   state: HisState;
   checkedAt: string;
   items: HisItem[];
@@ -142,6 +145,7 @@ export interface HisPlan {
     byKind: Record<string, number>;
   };
   operationalProfile?: HisItem['operationalProfile'];
+  storagePlan?: Array<{ component: string; storageClassName: string; storageSize: string; retention: string }>;
   resources: Array<{ apiVersion: string; kind: string; namespace: string; name: string }>;
   history: Array<{ revision: number; updated: string; status: string; chart: string; appVersion: string; description: string }>;
 }
@@ -180,6 +184,7 @@ export interface ObservabilityConfig {
 export interface StorageClassOption {
   name: string;
   provisioner: string;
+  isCsi: boolean;
   isDefault: boolean;
   allowVolumeExpansion: boolean;
   reclaimPolicy: string;
@@ -248,10 +253,18 @@ export class HisService {
   validate(id: 'cluster-network' | 'cluster-dns' | 'kube-prometheus-stack' | 'storage' | 'csi-snapshot', reason: string): Observable<{ ok: boolean; operation: HisOperation }> {
     return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('validate'), { id, reason });
   }
-  plan(id: string): Observable<HisPlan> { return this.http.post<HisPlan>(this.url('plan'), { id }); }
-  install(id: string, reason: string): Observable<{ ok: boolean; operation: HisOperation }> { return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('install'), { id, reason }); }
-  upgrade(id: string, reason: string): Observable<{ ok: boolean; operation: HisOperation }> { return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('upgrade'), { id, reason }); }
-  recover(id: string, reason: string): Observable<{ ok: boolean; operation: HisOperation }> { return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('recover'), { id, reason }); }
+  plan(id: string, config?: ObservabilityConfig, chartVersion?: string): Observable<HisPlan> {
+    return this.http.post<HisPlan>(this.url('plan'), { id, ...(config ? { config } : {}), ...(chartVersion ? { chartVersion } : {}) });
+  }
+  install(id: string, reason: string, config?: ObservabilityConfig, chartVersion?: string): Observable<{ ok: boolean; operation: HisOperation }> {
+    return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('install'), { id, reason, ...(config ? { config } : {}), ...(chartVersion ? { chartVersion } : {}) });
+  }
+  upgrade(id: string, reason: string, chartVersion?: string): Observable<{ ok: boolean; operation: HisOperation }> {
+    return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('upgrade'), { id, reason, ...(chartVersion ? { chartVersion } : {}) });
+  }
+  recover(id: string, reason: string, chartVersion?: string): Observable<{ ok: boolean; operation: HisOperation }> {
+    return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('recover'), { id, reason, ...(chartVersion ? { chartVersion } : {}) });
+  }
   rollback(id: string, revision: number, reason: string, confirm: string): Observable<{ ok: boolean; operation: HisOperation }> {
     return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('rollback'), { id, revision, reason, confirm });
   }

@@ -23,8 +23,8 @@ export interface CephDashboardGroup {
 /**
  * Ceph가 게시한 Grafana dashboard catalog의 검증된 allowlist.
  *
- * 브라우저 입력이나 API 응답을 iframe URL로 직접 사용하지 않는다. 새 dashboard는 Ceph
- * Grafana의 /api/search 결과를 확인한 뒤 이 목록에 명시적으로 등록해야 한다.
+ * dashboard UID·slug는 브라우저 입력이나 API 응답에서 받지 않는다. 연결 구성의 Grafana
+ * 기본 주소도 승인 origin·path 검증을 통과한 뒤에만 이 allowlist와 결합한다.
  */
 export const CEPH_GRAFANA_ORIGIN = 'https://ceph.triangles.com';
 export const CEPH_GRAFANA_BASE_PATH = '/grafana';
@@ -207,4 +207,3 @@ export const CEPH_DASHBOARDS: readonly CephDashboard[] = [
     category: 'gateways',
   },
 ] as const;
-

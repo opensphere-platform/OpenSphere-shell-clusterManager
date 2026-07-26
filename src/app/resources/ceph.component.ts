@@ -2,7 +2,7 @@ import { CommonModule } from '@angular/common';
 import { Component, OnDestroy, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ClarityModule } from '@clr/angular';
-import { CEPH_PROVIDER_GUIDE, CephConnectionInput, CephFsConfigurationInput, CephInsights, CephPlan, CephPrerequisiteRequest, CephProviderGuide, CephService, CephStatus, CephStorageService } from '../core/ceph.service';
+import { CEPH_DEFAULT_MONITORING_URL, CEPH_PROVIDER_GUIDE, CephConnectionInput, CephFsConfigurationInput, CephInsights, CephPlan, CephPrerequisiteRequest, CephProviderGuide, CephService, CephStatus, CephStorageService } from '../core/ceph.service';
 import { CephInsightsComponent } from './ceph-insights.component';
 
 @Component({
@@ -185,6 +185,8 @@ import { CephInsightsComponent } from './ceph-insights.component';
               <dd><code>{{ connection.userID || '확인되지 않음' }}</code></dd>
               <dt>RBD pool</dt>
               <dd><code>{{ connection.pool || '확인되지 않음' }}</code></dd>
+              <dt>모니터 주소</dt>
+              <dd><a [href]="connection.monitoringUrl" target="_blank" rel="noopener noreferrer"><code>{{ connection.monitoringUrl }}</code></a></dd>
             </dl>
             <p class="secret-boundary-note">User key는 Kubernetes Secret에만 저장되며 이 화면과 API 응답에는 표시하지 않습니다.</p>
           </ng-container>
@@ -293,13 +295,17 @@ import { CephInsightsComponent } from './ceph-insights.component';
       <section class="connection-card" *ngIf="s.connection as connection; else emptyConnection">
         <div class="card-head">
           <div><h2>연결 정보</h2><p>Rook External Mode · {{ connection.chartVersion }}</p></div>
-          <button class="btn btn-danger-outline" type="button" [disabled]="busy()" (click)="openDisconnect()">연결 해제</button>
+          <div class="card-actions">
+            <button class="btn btn-outline" type="button" [disabled]="busy()" (click)="openMonitoringConfiguration()">모니터 주소 설정</button>
+            <button class="btn btn-danger-outline" type="button" [disabled]="busy()" (click)="openDisconnect()">연결 해제</button>
+          </div>
         </div>
         <dl class="connection-meta">
           <dt>FSID fingerprint</dt><dd><code>{{ connection.fsidFingerprint }}</code></dd>
           <dt>연결한 사용자</dt><dd>{{ connection.connectedBy }}</dd>
           <dt>연결 시각</dt><dd>{{ connection.connectedAt | date:'yyyy-MM-dd HH:mm:ss' }}</dd>
           <dt>Secret references</dt><dd>{{ connection.secretRefs.length }}개 · 값 비노출</dd>
+          <dt>모니터 주소</dt><dd><a [href]="connection.monitoringUrl" target="_blank" rel="noopener noreferrer"><code>{{ connection.monitoringUrl }}</code></a></dd>
           <dt>Ceph 상태</dt><dd>{{ s.rook?.cephCluster?.state || 'Unknown' }} · {{ s.rook?.cephCluster?.health || 'Unknown' }}</dd>
         </dl>
 
@@ -512,6 +518,11 @@ import { CephInsightsComponent } from './ceph-insights.component';
               <input clrInput name="storageClassName" [(ngModel)]="storageClassName" required autocomplete="off" spellcheck="false" placeholder="ceph-rbd">
               <clr-control-helper>Kubernetes에서 PVC가 사용할 이름입니다. <code>ceph-rbd</code> 또는 <code>ceph-rbd-</code>로 시작해야 합니다.</clr-control-helper>
             </clr-input-container>
+            <clr-input-container class="wide-field">
+              <label>모니터 주소</label>
+              <input clrInput type="url" name="monitoringUrl" [(ngModel)]="monitoringUrl" required autocomplete="off" spellcheck="false" [placeholder]="defaultMonitoringUrl">
+              <clr-control-helper>Ceph Grafana의 HTTPS 기본 주소입니다. 현재 Console 보안 정책에서 승인된 주소는 <code>{{ defaultMonitoringUrl }}</code>입니다.</clr-control-helper>
+            </clr-input-container>
           </form>
           <div *ngIf="planLoading()" class="progress loop"><progress></progress></div>
         </section>
@@ -523,6 +534,7 @@ import { CephInsightsComponent } from './ceph-insights.component';
             <dt>Cluster ID</dt><dd><code>{{ p.clusterID }}</code></dd>
             <dt>Monitor</dt><dd>{{ p.monitors.join(' · ') }}</dd>
             <dt>MON protocol</dt><dd>{{ (p.monitorProtocols || ['unknown']).join(' · ') }}</dd>
+            <dt>모니터 주소</dt><dd><code>{{ p.monitoringUrl }}</code></dd>
             <dt>Ceph 엔티티</dt><dd><code>{{ p.cephEntity }}</code> <span class="field-purpose">Rook operator용</span></dd>
             <dt>CSI userID</dt><dd><code>{{ p.csiUserID }}</code> <span class="field-purpose">ceph-csi Secret용</span></dd>
             <dt>Storage</dt><dd><span *ngFor="let storage of p.storage">{{ storage.name }} → {{ storage.pool }}{{ storage.filesystem ? ' / ' + storage.filesystem : '' }} · </span></dd>
@@ -552,6 +564,7 @@ import { CephInsightsComponent } from './ceph-insights.component';
           <dl class="connection-meta">
             <dt>상태</dt><dd><span class="label label-success">{{ status()?.state || 'Ready' }}</span></dd>
             <dt>Cluster ID</dt><dd><code>{{ p.clusterID }}</code></dd>
+            <dt>모니터 주소</dt><dd><code>{{ p.monitoringUrl }}</code></dd>
             <dt>Storage</dt><dd><span *ngFor="let storage of p.storage">{{ storage.name }} → {{ storage.pool }} · </span></dd>
             <dt>설치 위치</dt><dd>{{ p.namespace }} namespace</dd>
           </dl>
@@ -637,6 +650,37 @@ import { CephInsightsComponent } from './ceph-insights.component';
       </div>
     </clr-modal>
 
+    <clr-modal [(clrModalOpen)]="monitoringOpen" [clrModalClosable]="!busy()">
+      <h3 class="modal-title">Ceph 모니터 주소 설정</h3>
+      <div class="modal-body">
+        <div *ngIf="monitoringError()" class="alert alert-danger wizard-feedback" role="alert" aria-live="assertive">
+          <div class="alert-items"><div class="alert-item static"><span class="alert-text"><strong>모니터 주소 저장 실패</strong><br>{{ monitoringError() }}</span></div></div>
+        </div>
+        <div *ngIf="monitoringNotice()" class="alert alert-success wizard-feedback" role="status" aria-live="polite">
+          <div class="alert-items"><div class="alert-item static"><span class="alert-text"><strong>모니터 주소 저장 완료</strong><br>{{ monitoringNotice() }}</span></div></div>
+        </div>
+        <p>Ceph Monitoring 메뉴가 dashboard를 구성할 때 사용하는 Grafana 기본 주소입니다. CephX 자격 증명과는 별도로 관리됩니다.</p>
+        <form *ngIf="!monitoringCompleted()" clrForm clrLayout="vertical">
+          <clr-input-container>
+            <label>모니터 주소</label>
+            <input clrInput type="url" name="monitoringConfigurationUrl" [(ngModel)]="monitoringUrl" required autocomplete="off" spellcheck="false" [placeholder]="defaultMonitoringUrl">
+            <clr-control-helper>HTTPS만 허용하며 사용자 정보, query, fragment는 저장하지 않습니다.</clr-control-helper>
+          </clr-input-container>
+          <clr-textarea-container>
+            <label>변경 사유</label>
+            <textarea clrTextarea name="monitoringReason" [(ngModel)]="monitoringReason" required placeholder="모니터링 endpoint 등록 또는 변경 사유"></textarea>
+            <clr-control-helper>8자 이상 입력하며 감사 기록에 남습니다.</clr-control-helper>
+          </clr-textarea-container>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" type="button" [disabled]="busy()" (click)="closeMonitoringConfiguration()">{{ monitoringCompleted() ? '닫기' : '취소' }}</button>
+        <button *ngIf="!monitoringCompleted()" class="btn btn-primary" type="button"
+          [disabled]="busy() || !monitoringUrl.trim() || monitoringReason.trim().length < 8"
+          (click)="saveMonitoringConfiguration()">저장</button>
+      </div>
+    </clr-modal>
+
     <clr-modal [(clrModalOpen)]="disconnectOpen" [clrModalClosable]="!busy()">
       <h3 class="modal-title">외부 Ceph 연결 해제</h3>
       <div class="modal-body">
@@ -717,6 +761,7 @@ import { CephInsightsComponent } from './ceph-insights.component';
     .connector { width: 2px; height: 1.1rem; margin: 0.15rem 0 0.15rem 0.68rem; background: #9a9a9a; }
     .status-message { margin: 0.55rem 0 0 2.2rem; color: #565656; }
     .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+    .card-actions { display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap; }
     .card-head h2, .empty-state h2 { margin: 0; font-size: 1rem; }
     .card-head p { margin: 0.15rem 0 0; color: #6f6f6f; }
     .empty-state { text-align: center; padding: 2rem; }
@@ -906,12 +951,16 @@ export class CephClustersComponent implements OnInit, OnDestroy {
   readonly cephFsError = signal('');
   readonly cephFsNotice = signal('');
   readonly cephFsCompleted = signal(false);
+  readonly monitoringError = signal('');
+  readonly monitoringNotice = signal('');
+  readonly monitoringCompleted = signal(false);
   readonly step = signal(1);
   readonly prerequisiteRequest = signal<CephPrerequisiteRequest | null>(null);
   readonly prerequisiteError = signal('');
   prerequisiteOpen = false;
   connectOpen = false;
   cephFsOpen = false;
+  monitoringOpen = false;
   disconnectOpen = false;
   prerequisiteReason = '';
   prerequisiteSource = '';
@@ -930,6 +979,9 @@ export class CephClustersComponent implements OnInit, OnDestroy {
   roleUserKey: Record<'operator' | 'provisioner' | 'node' | 'observer', string> = { operator: '', provisioner: '', node: '', observer: '' };
   pool = '';
   storageClassName = 'ceph-rbd';
+  readonly defaultMonitoringUrl = CEPH_DEFAULT_MONITORING_URL;
+  monitoringUrl = CEPH_DEFAULT_MONITORING_URL;
+  monitoringReason = '';
   cephFsFilesystem = '';
   cephFsPool = '';
   cephFsProvisionerUserID = '';
@@ -1286,6 +1338,7 @@ export class CephClustersComponent implements OnInit, OnDestroy {
       observerUserKey: this.roleUserKey.observer.trim(),
       pool: this.pool.trim(),
       storageClassName: this.storageClassName.trim(),
+      monitoringUrl: this.monitoringUrl.trim(),
     };
   }
 
@@ -1311,6 +1364,7 @@ export class CephClustersComponent implements OnInit, OnDestroy {
     }
     this.pool = '';
     this.storageClassName = 'ceph-rbd';
+    this.monitoringUrl = this.defaultMonitoringUrl;
   }
 
   private clearConnectFeedback(): void {
@@ -1379,6 +1433,44 @@ export class CephClustersComponent implements OnInit, OnDestroy {
     this.disconnectConfirm = '';
     this.error.set('');
     this.disconnectOpen = true;
+  }
+
+  openMonitoringConfiguration(): void {
+    this.monitoringUrl = this.status()?.connection?.monitoringUrl || this.defaultMonitoringUrl;
+    this.monitoringReason = '';
+    this.monitoringError.set('');
+    this.monitoringNotice.set('');
+    this.monitoringCompleted.set(false);
+    this.monitoringOpen = true;
+  }
+
+  closeMonitoringConfiguration(): void {
+    if (this.busy()) return;
+    this.monitoringOpen = false;
+    this.monitoringReason = '';
+    this.monitoringError.set('');
+    this.monitoringNotice.set('');
+    this.monitoringCompleted.set(false);
+  }
+
+  saveMonitoringConfiguration(): void {
+    if (!this.monitoringUrl.trim() || this.monitoringReason.trim().length < 8) return;
+    this.busy.set(true);
+    this.monitoringError.set('');
+    this.monitoringNotice.set('');
+    this.ceph.updateMonitoringUrl(this.monitoringUrl.trim(), this.monitoringReason.trim()).subscribe({
+      next: (result) => {
+        this.busy.set(false);
+        this.status.set(result.status);
+        this.monitoringUrl = result.status.connection?.monitoringUrl || this.defaultMonitoringUrl;
+        this.monitoringCompleted.set(true);
+        this.monitoringNotice.set('저장된 주소를 Ceph Monitoring 메뉴의 모든 dashboard에 적용했습니다.');
+      },
+      error: (failure) => {
+        this.busy.set(false);
+        this.monitoringError.set(this.message(failure));
+      },
+    });
   }
 
   disconnect(): void {

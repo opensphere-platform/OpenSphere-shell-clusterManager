@@ -8,6 +8,7 @@ const {
   createCephManager,
   validateProviderExport,
   validateConnectionInput,
+  validateMonitoringUrl,
   validateCephFsInput,
   cephStorageServiceDiagnostics,
   planFor,
@@ -61,6 +62,7 @@ function connectionInput() {
     observerUserKey: 'AQDobserver0123456789abcdefg==',
     pool: 'kubernetes-rbd',
     storageClassName: 'ceph-rbd',
+    monitoringUrl: 'https://ceph.triangles.com/grafana',
   };
 }
 
@@ -109,6 +111,7 @@ test('provider guide describes connection values without asking for Ceph health 
   assert.ok(information.has('user-id'));
   assert.ok(information.has('user-key'));
   assert.ok(information.has('pool'));
+  assert.ok(information.has('monitoring-url'));
   assert.ok(!information.has('provider-export'));
   assert.deepEqual(guide.requiredPreparation, []);
   assert.ok(guide.unsupportedInputs.includes('client.admin keyring'));
@@ -131,6 +134,9 @@ test('Ceph UI automatically reports Kubernetes readiness and collects only conne
   }
   assert.match(component, /duplicateRoleCredential/);
   assert.match(component, /name="pool"/);
+  assert.match(component, /name="monitoringUrl"/);
+  assert.match(component, /openMonitoringConfiguration/);
+  assert.match(component, /saveMonitoringConfiguration/);
   assert.match(component, /clr-input-container class="wide-field"[^]*name="clusterID"/);
   assert.match(component, /monitor-input wide-field/);
   assert.match(component, /\.connection-form input\[clrInput\][^}]*width: 100%/);
@@ -190,13 +196,23 @@ test('direct Ceph user identity accepts both notations and targets Rook and ceph
   const qualified = validateConnectionInput({ ...connectionInput(), operatorUserID: 'client.opensphere-healthchecker' });
   assert.equal(qualified.cephEntity, connection.cephEntity);
   assert.equal(connection.storageClasses[0].data.pool, 'kubernetes-rbd');
+  assert.equal(connection.monitoringUrl, 'https://ceph.triangles.com/grafana');
   assert.equal(connection.secrets.length, 5);
   assert.throws(() => validateConnectionInput({ ...connectionInput(), clusterID: 'not-a-uuid' }), /UUID 형식/);
   assert.throws(() => validateConnectionInput({ ...connectionInput(), monitors: '10.0.0.11:443' }), /형식이 올바르지 않습니다/);
   assert.throws(() => validateConnectionInput({ ...connectionInput(), nodeUserID: 'admin' }), /client\.admin은 사용할 수 없습니다/);
   assert.throws(() => validateConnectionInput({ ...connectionInput(), provisionerUserID: 'client.admin' }), /client\.admin은 사용할 수 없습니다/);
   assert.throws(() => validateConnectionInput({ ...connectionInput(), operatorUserID: 'mon.opensphere' }), /Ceph client 엔티티/);
+  assert.throws(() => validateConnectionInput({ ...connectionInput(), monitoringUrl: 'http://ceph.triangles.com/grafana' }), /HTTPS/);
+  assert.throws(() => validateConnectionInput({ ...connectionInput(), monitoringUrl: 'https://user:pass@ceph.triangles.com/grafana' }), /사용자 이름이나 비밀번호/);
+  assert.throws(() => validateConnectionInput({ ...connectionInput(), monitoringUrl: 'https://example.com/grafana' }), /승인된 모니터 주소/);
   assert.throws(() => validateConnectionInput({ ...connectionInput(), extra: 'rejected' }), /허용되지 않은 필드/);
+});
+
+test('Ceph monitoring URL is normalized and constrained to the Console iframe allowlist', () => {
+  assert.equal(validateMonitoringUrl('https://ceph.triangles.com/grafana/'), 'https://ceph.triangles.com/grafana');
+  assert.throws(() => validateMonitoringUrl('https://ceph.triangles.com/grafana?orgId=2'), /query 또는 fragment/);
+  assert.throws(() => validateMonitoringUrl('https://ceph.triangles.com/other'), /승인된 모니터 주소/);
 });
 
 test('H-02: reusing one CephX account or key across roles is rejected', () => {
@@ -245,6 +261,7 @@ test('direct connection plan never exposes the CephX key', () => {
   assert.equal(plan.cephEntity, 'client.opensphere-healthchecker');
   assert.equal(plan.csiUserID, input.provisionerUserID);
   assert.equal(plan.userID, input.provisionerUserID);
+  assert.equal(plan.monitoringUrl, input.monitoringUrl);
   // 어떤 역할의 key도 계획에 노출되지 않아야 한다.
   for (const key of [input.operatorUserKey, input.provisionerUserKey, input.nodeUserKey, input.observerUserKey]) {
     assert.ok(!text.includes(key), '계획에 CephX key가 포함되면 안 된다');
@@ -528,6 +545,7 @@ test('status exposes current non-secret Ceph connection values and never the use
   assert.deepEqual(projection.monitors, ['10.0.0.11:3300', '10.0.0.12:3300', '10.0.0.13:3300']);
   assert.equal(projection.userID, 'opensphere');
   assert.equal(projection.pool, 'kubernetes-rbd');
+  assert.equal(projection.monitoringUrl, 'https://ceph.triangles.com/grafana');
   assert.ok(!JSON.stringify(projection).includes('AQD-secret-value'));
   assert.ok(!Object.hasOwn(projection, 'userKey'));
 });
@@ -855,6 +873,9 @@ test('Ceph Monitoring dashboards live in the second-level navigation tree with a
   assert.match(catalog, /uid: 'WAkugZpiz'/);
   assert.match(component, /readonly dashboardUid = input/);
   assert.match(component, /CEPH_DASHBOARDS\.find\(dashboard => dashboard\.uid === this\.dashboardUid\(\)\)/);
+  assert.match(component, /this\.ceph\.status\(\)\.subscribe/);
+  assert.match(component, /status\.connection\?\.monitoringUrl/);
+  assert.match(component, /this\.monitoringBaseUrl\(\)\}\/d\//);
   assert.match(component, /\[selected\]="item\.value === range\(\)"/);
   assert.match(component, /\[selected\]="item\.value === refresh\(\)"/);
   assert.doesNotMatch(component, /dashboard-menu|dashboard-groups|Dashboard 검색/);
@@ -874,4 +895,6 @@ test('Ceph Monitoring embeds read-only Grafana with explicit browser security bo
   assert.match(component, /sessionStorage\?\.setItem\(CERTIFICATE_HELP_DISMISSED_KEY, '1'\)/);
   assert.match(component, /params\.append\('kiosk', ''\)/);
   assert.match(component, /refresh: this\.refresh\(\)/);
+  assert.match(source, /pathname === '\/api\/ceph\/oaa\/monitoring'/);
+  assert.match(source, /CephMonitoringConfigurationUpdated/);
 });

@@ -3,6 +3,7 @@ import { Injectable, inject } from '@angular/core';
 import { Observable, retry, switchMap, throwError, timer } from 'rxjs';
 
 export type CephConnectionState = 'NotConfigured' | 'Ready' | 'Degraded' | 'Blocked';
+export const CEPH_DEFAULT_MONITORING_URL = 'https://ceph.triangles.com/grafana';
 
 export interface CephProviderGuide {
   schemaVersion: number;
@@ -15,7 +16,7 @@ export interface CephProviderGuide {
 }
 
 export const CEPH_PROVIDER_GUIDE: CephProviderGuide = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   rookVersion: 'v1.20.2',
   consumerNamespace: 'rook-ceph',
   requiredInformation: [
@@ -24,6 +25,7 @@ export const CEPH_PROVIDER_GUIDE: CephProviderGuide = {
     { id: 'user-id', label: 'CephX 사용자', description: 'Ceph 엔티티(client.<id>) 또는 ceph-csi userID(<id>). 시스템이 대상별 형식으로 변환', secret: false },
     { id: 'user-key', label: 'User key', description: 'CephX 사용자 인증 key. Kubernetes Secret에만 저장', secret: true },
     { id: 'pool', label: 'RBD pool', description: 'Kubernetes 볼륨에 사용할 기존 RBD pool 이름', secret: false },
+    { id: 'monitoring-url', label: '모니터 주소', description: 'Console에서 표시할 Ceph Grafana HTTPS 기본 주소', secret: false },
   ],
   requiredPreparation: [],
   network: { monitorTcpPorts: [3300, 6789], cephDaemonTcpRange: '6800-7568', sourceScope: 'all-consumer-kubernetes-nodes' },
@@ -44,6 +46,7 @@ export interface CephStatus {
     monitors: string[];
     userID: string;
     pool: string;
+    monitoringUrl: string;
     secretRefs: string[];
     connectedBy: string;
     connectedAt: string;
@@ -140,6 +143,7 @@ export interface CephPlan {
   monitors: string[];
   monitorCount: number;
   monitorProtocols?: string[];
+  monitoringUrl: string;
   cephEntity: string;
   csiUserID: string;
   /** @deprecated csiUserID 호환 별칭 */
@@ -186,6 +190,7 @@ export interface CephConnectionInput {
   observerUserKey: string;
   pool: string;
   storageClassName: string;
+  monitoringUrl: string;
 }
 
 export interface CephPrerequisiteRequest {
@@ -338,6 +343,13 @@ export class CephService {
       configuration,
       reason,
       confirm: 'configure CephFS storage service',
+    });
+  }
+  updateMonitoringUrl(monitoringUrl: string, reason: string): Observable<{ ok: boolean; status: CephStatus; correlationId: string }> {
+    return this.http.post<{ ok: boolean; status: CephStatus; correlationId: string }>(this.url('oaa/monitoring'), {
+      monitoringUrl,
+      reason,
+      confirm: 'update Ceph monitoring URL',
     });
   }
   disconnect(reason: string): Observable<{ ok: boolean; retained: string[]; removed: string[] }> {

@@ -65,6 +65,8 @@ const CEPH_OBSERVER_URL = String(
 ).replace(/\/+$/, '');
 const CEPH_OBSERVER_MAX_BYTES = 4 * 1024 * 1024;
 const OBSERVER_API_SECRET = 'opensphere-ceph-observer-api-auth';
+const DEFAULT_CEPH_MONITORING_URL = 'https://ceph.triangles.com/grafana';
+const APPROVED_CEPH_MONITORING_ORIGIN = 'https://ceph.triangles.com';
 const importCleanupHealth = {
   totalFailures: 0,
   consecutiveFailures: 0,
@@ -98,7 +100,7 @@ const IGNORED_EXPORTS = new Set([
 ]);
 
 const PROVIDER_GUIDE = Object.freeze({
-  schemaVersion: 2,
+  schemaVersion: 3,
   rookVersion: CHART_VERSION,
   consumerNamespace: NAMESPACE,
   requiredInformation: [
@@ -107,6 +109,7 @@ const PROVIDER_GUIDE = Object.freeze({
     { id: 'user-id', label: 'CephX 사용자', description: 'Ceph 엔티티(client.<id>) 또는 ceph-csi userID(<id>). 시스템이 대상별 형식으로 변환', secret: false },
     { id: 'user-key', label: 'User key', description: 'CephX 사용자 인증 key. Kubernetes Secret에만 저장', secret: true },
     { id: 'pool', label: 'RBD pool', description: 'Kubernetes 볼륨에 사용할 기존 RBD pool 이름', secret: false },
+    { id: 'monitoring-url', label: '모니터 주소', description: 'Console에서 표시할 Ceph Grafana HTTPS 기본 주소', secret: false },
   ],
   requiredPreparation: [],
   network: {
@@ -452,6 +455,23 @@ function roleCredentials(value, specs) {
   return out;
 }
 
+function validateMonitoringUrl(input) {
+  const raw = String(input || '').trim().replace(/\/+$/, '');
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw error('모니터 주소가 올바른 HTTPS URL 형식이 아닙니다.');
+  }
+  if (parsed.protocol !== 'https:') throw error('모니터 주소는 HTTPS를 사용해야 합니다.');
+  if (parsed.username || parsed.password) throw error('모니터 주소에 사용자 이름이나 비밀번호를 포함할 수 없습니다.');
+  if (parsed.search || parsed.hash) throw error('모니터 주소에 query 또는 fragment를 포함할 수 없습니다.');
+  if (parsed.origin !== APPROVED_CEPH_MONITORING_ORIGIN || parsed.pathname.replace(/\/+$/, '') !== '/grafana') {
+    throw error(`현재 Console 보안 정책에서 승인된 모니터 주소는 ${DEFAULT_CEPH_MONITORING_URL}입니다.`);
+  }
+  return DEFAULT_CEPH_MONITORING_URL;
+}
+
 function validateConnectionInput(input) {
   const value = requireClosedObject(input, [
     'clusterID',
@@ -470,6 +490,7 @@ function validateConnectionInput(input) {
     'observerUserKey',
     'pool',
     'storageClassName',
+    'monitoringUrl',
   ], 'Ceph 접속 정보');
   const fsid = String(value.clusterID || '').trim().toLowerCase();
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(fsid)) {
@@ -504,6 +525,7 @@ function validateConnectionInput(input) {
   const pool = String(value.pool || '').trim();
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(pool)) throw error('RBD pool 이름 형식이 올바르지 않습니다.');
   const storageClassName = managedStorageClassName(value.storageClassName, 'ceph-rbd', 'StorageClass 이름');
+  const monitoringUrl = validateMonitoringUrl(value.monitoringUrl);
   // Rook operator는 정식 엔티티(client.<id>), ceph-csi는 접두어 없는 userID를 요구한다.
   const operatorCredentialData = { userID: roles.operator.identity.cephEntity, userKey: roles.operator.userKey };
   const provisionerCredentialData = { userID: roles.provisioner.identity.csiUserID, userKey: roles.provisioner.userKey };
@@ -527,6 +549,7 @@ function validateConnectionInput(input) {
     monitorEndpoints: normalized,
     monitorCount: normalized.length,
     monitorProtocols: monitorProtocols(monitorData),
+    monitoringUrl,
     operatorUser: identity.cephEntity,
     cephEntity: identity.cephEntity,
     // CSI userID projection은 provisioner 신원을 대표값으로 사용한다(node와 분리됨).
@@ -990,13 +1013,14 @@ async function snapshotApiAvailable(ctx) {
 function metadataManifest(connection, snapshotClasses, actor) {
   const rbdStorageClass = connection.storageClasses.find((item) => !item.data.fsName);
   const payload = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     mode: 'RookExternal',
     fsid: connection.fsid,
     fsidFingerprint: connection.fsidFingerprint,
     monitors: connection.monitorEndpoints || monitorEndpointsFromData(connection.monitorData),
     csiUserID: connection.csiUserID || connection.userID || '',
     rbdPool: rbdStorageClass?.data?.pool || '',
+    monitoringUrl: validateMonitoringUrl(connection.monitoringUrl || DEFAULT_CEPH_MONITORING_URL),
     storageClasses: connection.storageClasses.map((item) => item.name),
     snapshotClasses,
     secretRefs: connection.secrets.map((item) => `${NAMESPACE}/${item.name}`),
@@ -1084,6 +1108,10 @@ function statusConnectionProjection(metadata, monitorConfigMap, storageClasses, 
     monitors,
     userID: String(metadata.csiUserID || decodedSecretField(csiSecret, 'userID')).replace(/^client\./, ''),
     pool: String(metadata.rbdPool || rbdClass?.parameters?.pool || ''),
+    monitoringUrl: (() => {
+      try { return validateMonitoringUrl(metadata.monitoringUrl || DEFAULT_CEPH_MONITORING_URL); }
+      catch { return DEFAULT_CEPH_MONITORING_URL; }
+    })(),
     secretRefs: metadata.secretRefs || [],
     connectedBy: metadata.connectedBy,
     connectedAt: metadata.connectedAt,
@@ -1208,6 +1236,7 @@ function planFor(connection, snapshotSupported) {
     monitors: connection.monitorEndpoints || String(connection.monitorData || '').split(',').map((item) => item.replace(/^[^=]+=/, '')),
     monitorCount: connection.monitorCount,
     monitorProtocols: connection.monitorProtocols,
+    monitoringUrl: validateMonitoringUrl(connection.monitoringUrl || DEFAULT_CEPH_MONITORING_URL),
     cephEntity,
     csiUserID,
     userID: csiUserID,
@@ -1447,6 +1476,36 @@ async function installConnection(ctx, connection, actor) {
     status = await cephStatus(ctx);
   }
   return status;
+}
+
+async function updateMonitoringConfiguration(ctx, monitoringUrl, actor) {
+  const current = await optionalKube(ctx, `/api/v1/namespaces/${NAMESPACE}/configmaps/${CONNECTION_CONFIGMAP}`);
+  const metadata = parseMetadata(current);
+  if (!metadata) throw error('먼저 외부 Ceph 연결을 완료해야 모니터 주소를 설정할 수 있습니다.', 409);
+  const normalizedUrl = validateMonitoringUrl(monitoringUrl);
+  const nextMetadata = {
+    ...metadata,
+    schemaVersion: 3,
+    monitoringUrl: normalizedUrl,
+    monitoringUpdatedBy: actor.username,
+    monitoringUpdatedAt: new Date().toISOString(),
+  };
+  await upsert(
+    ctx,
+    `/api/v1/namespaces/${NAMESPACE}/configmaps`,
+    CONNECTION_CONFIGMAP,
+    {
+      apiVersion: 'v1',
+      kind: 'ConfigMap',
+      metadata: {
+        name: CONNECTION_CONFIGMAP,
+        namespace: NAMESPACE,
+        labels: { ...(current?.metadata?.labels || {}), ...MANAGED_LABELS },
+      },
+      data: { ...(current?.data || {}), connection: JSON.stringify(nextMetadata) },
+    },
+  );
+  return cephStatus(ctx);
 }
 
 async function configureCephFsService(ctx, configuration, actor) {
@@ -1813,7 +1872,7 @@ function createCephManager(ctx) {
         await actorForOaaOwner(ctx, req, false);
         const prerequisites = await cephOwnerPrerequisites(ctx);
         const capabilities = ['status-read'];
-        if (prerequisites.ready) capabilities.push('import-stage', 'plan-from-import', 'connect-from-import', 'disconnect');
+        if (prerequisites.ready) capabilities.push('import-stage', 'plan-from-import', 'connect-from-import', 'monitoring-update', 'disconnect');
         ctx.jsonRes(res, 200, {
           apiVersion: 'opensphere.io/oaa-ceph-owner/v1', capabilities,
           secretInputPolicy: 'StagedSecretRefOnly', mutationAssurance: 'aal2', prerequisites,
@@ -1929,6 +1988,38 @@ function createCephManager(ctx) {
           return true;
         } finally { activeOperations.delete('cephfs'); }
       }
+      if (req.method === 'POST' && pathname === '/api/ceph/oaa/monitoring') {
+        const actor = await actorForOaaOwner(ctx, req, true);
+        const body = requireClosedObject(await readJson(req), ['monitoringUrl', 'confirm', 'reason'], 'request');
+        if (String(body.confirm || '') !== 'update Ceph monitoring URL') {
+          throw error("모니터 주소 변경 확인 값으로 'update Ceph monitoring URL'을 입력해야 합니다.");
+        }
+        const monitoringUrl = validateMonitoringUrl(body.monitoringUrl);
+        const reason = reasonFrom(body);
+        if (activeOperations.has('monitoring')) throw error('Ceph 모니터 주소 변경 작업이 이미 진행 중입니다.', 409);
+        activeOperations.add('monitoring');
+        try {
+          const correlationId = correlationFrom(req);
+          const status = await auditedChange(
+            ctx,
+            actor,
+            'CephMonitoringConfigurationUpdated',
+            reason,
+            { monitoringUrl },
+            correlationId,
+            () => updateMonitoringConfiguration(ctx, monitoringUrl, actor),
+          );
+          await ctx.publishNotify({
+            userActor: actor.username,
+            action: 'CephMonitoringConfigurationUpdated',
+            target: 'CephExternal/rook-ceph',
+            result: 'success',
+            reason: `${reason} · ${monitoringUrl}`,
+          });
+          ctx.jsonRes(res, 200, { ok: true, status, correlationId });
+          return true;
+        } finally { activeOperations.delete('monitoring'); }
+      }
       if (req.method === 'POST' && pathname === '/api/ceph/oaa/disconnect') {
         const actor = await actorForOaaOwner(ctx, req, true);
         const body = requireClosedObject(await readJson(req), ['confirm', 'reason'], 'request');
@@ -1987,6 +2078,7 @@ module.exports = {
   createCephManager,
   validateProviderExport,
   validateConnectionInput,
+  validateMonitoringUrl,
   validateCephFsInput,
   cephStorageServiceDiagnostics,
   planFor,

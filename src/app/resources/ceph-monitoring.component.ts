@@ -1,6 +1,7 @@
 import { CommonModule } from '@angular/common';
-import { Component, computed, input, signal } from '@angular/core';
+import { Component, OnInit, computed, input, signal } from '@angular/core';
 import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
+import { CEPH_DEFAULT_MONITORING_URL, CephService } from '../core/ceph.service';
 import {
   CEPH_DASHBOARDS,
   CEPH_GRAFANA_BASE_PATH,
@@ -36,7 +37,7 @@ const CERTIFICATE_HELP_DISMISSED_KEY = 'opensphere.ceph-monitoring.certificate-h
             <p>Ceph가 수집한 Prometheus 지표를 Grafana dashboard로 직접 조회합니다.</p>
           </div>
         </div>
-        <a class="btn btn-outline" [href]="grafanaCatalogUrl" target="_blank" rel="noopener noreferrer">
+        <a class="btn btn-outline" [href]="grafanaCatalogUrl()" target="_blank" rel="noopener noreferrer">
           Grafana 원본 열기
         </a>
       </header>
@@ -48,7 +49,7 @@ const CERTIFICATE_HELP_DISMISSED_KEY = 'opensphere.ceph-monitoring.certificate-h
         </div>
         <div class="origin">
           <span class="status-dot" aria-hidden="true"></span>
-          <code>{{ grafanaOriginLabel }}</code>
+          <code>{{ grafanaOriginLabel() }}</code>
         </div>
       </div>
 
@@ -84,7 +85,7 @@ const CERTIFICATE_HELP_DISMISSED_KEY = 'opensphere.ceph-monitoring.certificate-h
         <div *ngIf="certificateHelpVisible()" class="certificate-help" role="note">
           <div class="certificate-copy">
             <strong>화면이 표시되지 않습니까?</strong>
-            <span><code>ceph.triangles.com</code>의 HTTPS 인증서를 브라우저가 신뢰해야 합니다. 인증서 경고를 우회하지 말고 조직 Root CA를 신뢰 저장소에 등록하십시오.</span>
+            <span><code>{{ monitoringHost() }}</code>의 HTTPS 인증서를 브라우저가 신뢰해야 합니다. 인증서 경고를 우회하지 말고 조직 Root CA를 신뢰 저장소에 등록하십시오.</span>
           </div>
           <button class="btn btn-sm btn-link certificate-close" type="button"
             aria-label="HTTPS 인증서 안내 닫기" (click)="dismissCertificateHelp()">
@@ -188,11 +189,13 @@ const CERTIFICATE_HELP_DISMISSED_KEY = 'opensphere.ceph-monitoring.certificate-h
     }
   `],
 })
-export class CephMonitoringComponent {
+export class CephMonitoringComponent implements OnInit {
   readonly dashboardUid = input(CEPH_DASHBOARDS[0].uid);
   readonly cephLogo = 'https://cdn.statically.io/gh/openplatform-labs/images@main/logos/ceph.svg';
-  readonly grafanaOriginLabel = `${CEPH_GRAFANA_ORIGIN}${CEPH_GRAFANA_BASE_PATH}`;
-  readonly grafanaCatalogUrl = `${this.grafanaOriginLabel}/dashboards`;
+  readonly monitoringBaseUrl = signal(CEPH_DEFAULT_MONITORING_URL);
+  readonly grafanaOriginLabel = computed(() => this.monitoringBaseUrl());
+  readonly grafanaCatalogUrl = computed(() => `${this.monitoringBaseUrl()}/dashboards`);
+  readonly monitoringHost = computed(() => new URL(this.monitoringBaseUrl()).host);
   readonly selected = computed(() =>
     CEPH_DASHBOARDS.find(dashboard => dashboard.uid === this.dashboardUid()) ?? CEPH_DASHBOARDS[0]);
   readonly range = signal('now-6h');
@@ -219,7 +222,23 @@ export class CephMonitoringComponent {
   readonly dashboardUrl = computed<SafeResourceUrl>(() =>
     this.sanitizer.bypassSecurityTrustResourceUrl(this.buildDashboardUrl(true)));
 
-  constructor(private readonly sanitizer: DomSanitizer) {}
+  constructor(
+    private readonly sanitizer: DomSanitizer,
+    private readonly ceph: CephService,
+  ) {}
+
+  ngOnInit(): void {
+    this.ceph.status().subscribe({
+      next: (status) => {
+        const configured = this.approvedMonitoringUrl(status.connection?.monitoringUrl);
+        if (configured === this.monitoringBaseUrl()) return;
+        this.monitoringBaseUrl.set(configured);
+        this.reload();
+      },
+      // 연결 상태를 읽을 수 없는 동안에도 승인된 기본 주소로 read-only dashboard를 제공한다.
+      error: () => undefined,
+    });
+  }
 
   setRange(value: string): void {
     if (!this.timeRanges.some(item => item.value === value)) return;
@@ -255,6 +274,25 @@ export class CephMonitoringComponent {
     }
   }
 
+  private approvedMonitoringUrl(value: string | undefined): string {
+    try {
+      const parsed = new URL(String(value || CEPH_DEFAULT_MONITORING_URL).trim());
+      const pathname = parsed.pathname.replace(/\/+$/, '');
+      if (
+        parsed.protocol === 'https:'
+        && !parsed.username
+        && !parsed.password
+        && !parsed.search
+        && !parsed.hash
+        && parsed.origin === CEPH_GRAFANA_ORIGIN
+        && pathname === CEPH_GRAFANA_BASE_PATH
+      ) return `${parsed.origin}${pathname}`;
+    } catch {
+      // API 변조나 오래된 잘못된 값은 iframe 주소로 사용하지 않는다.
+    }
+    return CEPH_DEFAULT_MONITORING_URL;
+  }
+
   private buildDashboardUrl(includeNonce: boolean): string {
     const dashboard = this.selected();
     const params = new URLSearchParams({
@@ -267,6 +305,6 @@ export class CephMonitoringComponent {
     });
     params.append('kiosk', '');
     if (includeNonce) params.set('_os', String(this.frameNonce()));
-    return `${CEPH_GRAFANA_ORIGIN}${CEPH_GRAFANA_BASE_PATH}/d/${encodeURIComponent(dashboard.uid)}/${encodeURIComponent(dashboard.slug)}?${params.toString()}`;
+    return `${this.monitoringBaseUrl()}/d/${encodeURIComponent(dashboard.uid)}/${encodeURIComponent(dashboard.slug)}?${params.toString()}`;
   }
 }

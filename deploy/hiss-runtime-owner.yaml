@@ -1,4 +1,4 @@
-# HISS lifecycle authority is installed from the signed infrastructure-owner release.
+# HIS lifecycle authority is installed from the signed infrastructure-owner release.
 # It is intentionally separate from the generic module permission profile: a UI
 # module update must not be able to silently expand cluster-infrastructure rights.
 apiVersion: rbac.authorization.k8s.io/v1
@@ -14,7 +14,7 @@ rules:
   - apiGroups: [""]
     resources: [namespaces]
     verbs: [get, list, watch, create, update, patch]
-  # HISS inventory and validation read host resources but never mutate them.
+  # HIS inventory and validation read host resources but never mutate them.
   - apiGroups: [""]
     resources: [nodes, persistentvolumes]
     verbs: [get, list, watch]

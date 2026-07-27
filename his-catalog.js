@@ -1,6 +1,6 @@
 'use strict';
 
-// HISS is a prerequisite contract, not an OpenSphere extension.  Only entries
+// HIS is a prerequisite contract, not an OpenSphere extension.  Only entries
 // in this closed catalog may be mutated by Cluster Manager.  Chart versions
 // and payload checksums are also pinned in Dockerfile.
 const HIS_CATALOG = Object.freeze([

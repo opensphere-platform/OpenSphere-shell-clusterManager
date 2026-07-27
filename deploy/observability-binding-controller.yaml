@@ -24,7 +24,8 @@ spec:
               type: object
               required: [consumerRef, requestedCapabilities, owner]
               properties:
-                # HIS is retained only to read bindings created before the HISS rename.
+                # HISS is retained only for bindings created before HIS was
+                # restored as the CONSTITUTION-0004 canonical acronym.
                 owner: { type: string, enum: [HIS, HISS] }
                 consumerRef:
                   type: object

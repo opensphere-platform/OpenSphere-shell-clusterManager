@@ -12,7 +12,7 @@ COPY tools/bundle-app.mjs ./tools/bundle-app.mjs
 COPY src ./src
 RUN npm run build
 
-# HISS Helm executor and the closed, checksum-pinned chart catalog. Runtime
+# HIS Helm executor and the closed, checksum-pinned chart catalog. Runtime
 # installation does not accept arbitrary repositories and does not depend on
 # a chart repository being reachable.
 FROM docker.io/alpine/helm:3.19.0@sha256:aef9b56f64e866207d9591d0abd8f6d767b36aadd12edf68f8a719716d9d29c9 AS helm-assets

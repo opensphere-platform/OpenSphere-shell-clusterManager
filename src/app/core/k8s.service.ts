@@ -4,7 +4,7 @@ import { Observable } from 'rxjs';
 
 /** 제네릭 K8s API 프록시 클라이언트. 백엔드 /api/k8s/<표준 K8s 경로>로 패스스루.
  *  Main Shell HttpInterceptor가 ctx.api.fetch로 인증을 중개하고, backend가 유효한 Console 신원만
- *  Cluster Manager의 고정된 읽기 권한에 연결한다. 범용 쓰기는 서버에서 차단되며 HISS 승인 경로를 사용한다.
+ *  Cluster Manager의 고정된 읽기 권한에 연결한다. 범용 쓰기는 서버에서 차단되며 HIS 승인 경로를 사용한다.
  *  Consumer JavaScript는 raw token을 읽지 않는다. */
 export interface K8sList<T = any> {
   kind?: string;
@@ -54,7 +54,7 @@ export class K8sService {
   }
 
   // ── 레거시 쓰기 클라이언트 ──
-  // 서버 보안 계약상 범용 쓰기는 403이다. HISS 설치/삭제는 HisService의 승인 API만 사용한다.
+  // 서버 보안 계약상 범용 쓰기는 403이다. HIS 설치/삭제는 HisService의 승인 API만 사용한다.
   /** 전체 교체(PUT). Edit YAML 적용에 사용(resourceVersion 포함된 obj 필요). */
   replace<T = any>(path: string, obj: any): Observable<T> {
     return this.http.put<T>(this.url(path), obj, this.hdr());

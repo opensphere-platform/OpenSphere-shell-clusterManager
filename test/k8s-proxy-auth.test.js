@@ -38,9 +38,9 @@ test('missing or invalid Console credentials fail closed instead of falling back
   );
 });
 
-test('generic Kubernetes mutations stay outside the approved HISS mutation boundary', async () => {
+test('generic Kubernetes mutations stay outside the approved HIS mutation boundary', async () => {
   await assert.rejects(
     authorizeK8sProxyRequest(req('Bearer console-token'), true, async () => ({ username: 'cmars', groups: ['opensphere-console-admins'] })),
-    (error) => error.code === 403 && /approved HISS action/.test(error.msg),
+    (error) => error.code === 403 && /approved HIS action/.test(error.msg),
   );
 });

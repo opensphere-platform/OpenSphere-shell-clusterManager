@@ -30,3 +30,8 @@ test('navigation does not rely on Clarity unknown three-dot fallback', () => {
   assert.doesNotMatch(navSource, /['"]unknown['"]/);
   assert.match(navSource, /'sec:Virtualization': 'vm'/);
 });
+
+test('icon registration reuses the Clarity Angular registry hosted by the subShell', () => {
+  assert.match(registrySource, /from '@clr\/angular'/);
+  assert.doesNotMatch(registrySource, /@cds\/core/);
+});

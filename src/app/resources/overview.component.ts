@@ -62,9 +62,13 @@ interface Bar { label: string; value: number; sub?: string; pct: number; color: 
     </div>
 
     <clr-alert *ngIf="error()" [clrAlertType]="'danger'" [clrAlertClosable]="false">
-      <clr-alert-item><span class="alert-text">{{ error() }}</span></clr-alert-item>
+      <clr-alert-item>
+        <span class="alert-text"><strong>클러스터 정보를 불러오지 못했습니다.</strong><br>{{ error() }}</span>
+        <div class="alert-actions"><button class="btn alert-action" type="button" (click)="loadAll()">다시 시도</button></div>
+      </clr-alert-item>
     </clr-alert>
 
+    <ng-container *ngIf="!error()">
     <!-- 게이지 카드 -->
     <div class="os-ov-cards">
       <div class="os-ov-gcard" role="button" tabindex="0" (click)="go('nodes')" (keydown.enter)="go('nodes')">
@@ -179,6 +183,7 @@ interface Bar { label: string; value: number; sub?: string; pct: number; color: 
         <clr-dg-placeholder>경고 이벤트 없음.</clr-dg-placeholder>
       </clr-datagrid>
     </div>
+    </ng-container>
   `,
 })
 export class OverviewComponent implements OnInit {
@@ -202,11 +207,15 @@ export class OverviewComponent implements OnInit {
   loadAll(): void {
     this.loaded.set(false);
     this.error.set(null);
-    const safe = (p: string) => this.k8s.list(p).pipe(catchError(() => of({ items: [] as any[] })));
     forkJoin({
-      nodes: safe('/api/v1/nodes'), namespaces: safe('/api/v1/namespaces'), pods: safe('/api/v1/pods'),
-      deploys: safe('/apis/apps/v1/deployments'), statefulsets: safe('/apis/apps/v1/statefulsets'),
-      daemonsets: safe('/apis/apps/v1/daemonsets'), services: safe('/api/v1/services'), events: safe('/api/v1/events'),
+      nodes: this.k8s.list('/api/v1/nodes'),
+      namespaces: this.k8s.list('/api/v1/namespaces'),
+      pods: this.k8s.list('/api/v1/pods'),
+      deploys: this.k8s.list('/apis/apps/v1/deployments'),
+      statefulsets: this.k8s.list('/apis/apps/v1/statefulsets'),
+      daemonsets: this.k8s.list('/apis/apps/v1/daemonsets'),
+      services: this.k8s.list('/api/v1/services'),
+      events: this.k8s.list('/api/v1/events'),
       metrics: this.k8s.list('/apis/metrics.k8s.io/v1beta1/nodes').pipe(catchError(() => of(null))),
     }).subscribe({
       next: r => {
@@ -215,8 +224,21 @@ export class OverviewComponent implements OnInit {
         this.services.set(r.services.items || []); this.events.set(r.events.items || []);
         this.metrics.set(r.metrics ? (r.metrics.items || []) : null); this.loaded.set(true);
       },
-      error: e => { this.error.set(e?.error?.error || e?.message || String(e)); this.loaded.set(true); },
+      error: e => { this.error.set(this.loadErrorMessage(e)); this.loaded.set(true); },
     });
+  }
+
+  private loadErrorMessage(error: any): string {
+    const status = Number(error?.status || error?.error?.status || 0);
+    if (status === 401) {
+      return 'Console 로그인 세션을 확인할 수 없습니다. 다시 로그인한 뒤 재시도하십시오. (HTTP 401)';
+    }
+    if (status === 403) {
+      return '현재 계정에는 Cluster Manager 조회 권한이 없습니다. 역할과 권한을 확인하십시오. (HTTP 403)';
+    }
+    const detail = String(error?.error?.error || error?.error?.message || error?.message || '').trim();
+    if (status) return `${detail || 'Cluster Manager API 요청이 실패했습니다.'} (HTTP ${status})`;
+    return detail || 'Cluster Manager API에 연결할 수 없습니다.';
   }
 
   go(id: string) { this.open.emit(id); }

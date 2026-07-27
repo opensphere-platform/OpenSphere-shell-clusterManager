@@ -6,7 +6,7 @@ export const NAV_ICON: Record<string, string> = {
   'sec:Config & Storage': 'storage',
   'sec:Cluster': 'cluster',
   'sec:Access': 'shield',
-  'sec:Virtualization': 'virtual-machine',
+  'sec:Virtualization': 'vm',
   'sec:Migration': 'two-way-arrows',
   'sec:Observability': 'dashboard',
   'sec:Ceph Storage': 'storage',

@@ -7,7 +7,8 @@ import { K8sService } from '../core/k8s.service';
 
 /**
  * VM serial 콘솔 — virt-api console 서브리소스 WS 게이트웨이(/api/k8s-vmconsole/<ns>/<name>)에
- * raw 스트림으로 연결(exec와 달리 K8s 채널 프레이밍 없음 — 게스트 직렬 포트 그대로). 인증=세션 쿠키.
+ * raw 스트림으로 연결(exec와 달리 K8s 채널 프레이밍 없음 — 게스트 직렬 포트 그대로).
+ * 인증은 Main Shell의 서버 측 bearer 중계를 사용한다.
  */
 @Component({
   selector: 'app-vm-console',
@@ -35,10 +36,10 @@ export class VmConsoleComponent implements OnInit, OnDestroy {
   private onWinResize = () => this.doFit();
 
   ngOnInit(): void {
-    // 세션 쿠키 발급(브라우저 WS는 헤더 못 실음) → WS 연결
+    // Console 신원 확인 후 연결. WS bearer는 Main Shell 서버 중계가 주입한다.
     this.k8s.session().subscribe({
       next: () => this.connect(),
-      error: e => this.error.set('세션 발급 실패: ' + (e?.error?.error || e?.message || e)),
+      error: e => this.error.set('Console 신원 확인 실패: ' + (e?.error?.error || e?.message || e)),
     });
   }
 

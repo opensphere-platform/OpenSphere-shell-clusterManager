@@ -6,7 +6,8 @@ import { K8sService } from '../core/k8s.service';
 
 /**
  * VM VNC(그래픽) 콘솔 — noVNC RFB를 virt-api vnc 서브리소스 WS 게이트웨이(/api/k8s-vmvnc/<ns>/<name>)에 연결.
- * OpenShift Virtualization 콘솔 패턴(noVNC ← vnc subresource)과 동일. 인증=세션 쿠키.
+ * OpenShift Virtualization 콘솔 패턴(noVNC ← vnc subresource)과 동일.
+ * 인증은 Main Shell의 서버 측 bearer 중계를 사용한다.
  */
 @Component({
   selector: 'app-vm-vnc',
@@ -42,7 +43,7 @@ export class VmVncComponent implements OnInit, OnDestroy {
   ngOnInit(): void {
     this.k8s.session().subscribe({
       next: () => this.connect(),
-      error: e => this.error.set('세션 발급 실패: ' + (e?.error?.error || e?.message || e)),
+      error: e => this.error.set('Console 신원 확인 실패: ' + (e?.error?.error || e?.message || e)),
     });
   }
 

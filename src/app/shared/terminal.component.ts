@@ -6,7 +6,7 @@ import { Terminal } from '@xterm/xterm';
 import { K8sService } from '../core/k8s.service';
 
 /** Pod exec 터미널 — 백엔드 WS 게이트웨이(/api/k8s-exec)에 K8s 채널(v4.channel.k8s.io) 프레이밍으로 연결.
- *  채널 0=stdin, 1=stdout, 2=stderr, 3=error, 4=resize. 인증은 세션 쿠키(백엔드 JWKS 검증→임퍼소네이션). */
+ *  채널 0=stdin, 1=stdout, 2=stderr, 3=error, 4=resize. 인증은 Main Shell의 서버 측 bearer 중계를 사용한다. */
 @Component({
   selector: 'app-terminal',
   standalone: true,
@@ -37,10 +37,10 @@ export class TerminalComponent implements OnInit, OnDestroy {
   private ro?: ResizeObserver;
 
   ngOnInit(): void {
-    // 먼저 세션 쿠키 발급(브라우저 WS가 토큰을 헤더로 못 싣기 때문) → 성공 시 WS 연결
+    // 먼저 Console 신원을 확인한 뒤 연결한다. WS bearer는 Main Shell 서버 중계가 주입한다.
     this.k8s.session().subscribe({
       next: () => this.connect(),
-      error: e => this.error.set('세션 발급 실패: ' + (e?.error?.error || e?.message || e)),
+      error: e => this.error.set('Console 신원 확인 실패: ' + (e?.error?.error || e?.message || e)),
     });
   }
 

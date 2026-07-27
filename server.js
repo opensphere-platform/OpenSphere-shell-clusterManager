@@ -10,19 +10,11 @@ const path = require('path');
 const { WebSocketServer, WebSocket } = require('ws');
 const { createHisManager } = require('./his-manager');
 const { createCephManager } = require('./ceph-manager');
-const COOKIE = 'osng_token'; // 브라우저 WS는 커스텀 헤더를 못 실음 → 신원 토큰을 HttpOnly 쿠키로 전달
-function tokenFromCookie(cookieHeader) {
-  if (!cookieHeader) return null;
-  for (const part of cookieHeader.split(';')) {
-    const i = part.indexOf('=');
-    if (i > 0 && part.slice(0, i).trim() === COOKIE) return decodeURIComponent(part.slice(i + 1).trim());
-  }
-  return null;
-}
 function requestToken(req) {
   const match = String(req.headers.authorization || '').match(/^Bearer\s+(.+)$/i);
   return match ? match[1] : '';
-}const PORT = process.env.PORT || 8080;
+}
+const PORT = process.env.PORT || 8080;
 const PLUGINS = process.env.PLUGINS_DIR || '/app/plugins';
 const WWW = process.env.WWW_DIR || '/app/www';
 const VERSION = process.env.APP_VERSION || '0.1.0';
@@ -225,15 +217,12 @@ const server = http.createServer(async (req, res) => {
   try {
     if (p === '/healthz') { res.writeHead(200); return res.end('ok'); }
     if (p === '/api/session') {
-      // WS(exec/터미널)용 신원 쿠키 발급 — 토큰 JWKS 검증 후 HttpOnly 쿠키로(브라우저 WS가 보낼 수 있게)
+      // WS 연결 전 신원 확인. 실제 handshake bearer는 Main Shell nginx auth_request가
+      // 서버 측으로 주입하므로 별도 토큰 쿠키를 만들지 않는다.
       let actor;
       try { actor = await verifyToken(requestToken(req)); }
       catch (e) { return jsonRes(res, e.code || 401, { error: e.msg || 'unauthorized' }); }
-      const secure = req.headers['x-forwarded-proto'] === 'https' ? ' Secure;' : '';
-      res.writeHead(200, {
-        'content-type': 'application/json',
-        'set-cookie': `${COOKIE}=${encodeURIComponent(requestToken(req))}; HttpOnly; SameSite=Strict; Path=/api/plugins/cluster-manager;${secure} Max-Age=600`,
-      });
+      res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
       return res.end(JSON.stringify({ user: actor.username }));
     }
     if (p.startsWith('/api/his/')) return hisManager(req, res, p);
@@ -259,7 +248,8 @@ const server = http.createServer(async (req, res) => {
   }
 });
 // ── WS exec/터미널 게이트웨이 ──────────────────────────────────────────────
-// 브라우저 WS(/api/k8s-exec/<ns>/<pod>?container=&command=) → 쿠키 토큰 JWKS 검증 → apiserver exec
+// 브라우저 WS(/api/k8s-exec/<ns>/<pod>?container=&command=) → Main Shell이 주입한
+// bearer 검증 → apiserver exec. 브라우저와 plugin 전용 토큰 쿠키는 사용하지 않는다.
 // 채널(v4.channel.k8s.io)로 투명 릴레이. SA 토큰 + Impersonate-User로 사용자 본인 RBAC(create pods/exec) 인가.
 const wss = new WebSocketServer({ noServer: true });
 // 검증된 actor → 임퍼소네이션 헤더(그룹은 배열=별도 헤더 라인). exec/VM콘솔 공용.
@@ -284,7 +274,7 @@ server.on('upgrade', async (req, socket, head) => {
   const vmc = u.pathname.match(/^\/api\/k8s-(vmconsole|vmvnc)\/([^/]+)\/([^/]+)$/);
   if (!exec && !vmc) { socket.destroy(); return; }
   let actor;
-  try { actor = await verifyToken(tokenFromCookie(req.headers.cookie)); }
+  try { actor = await verifyToken(requestToken(req)); }
   catch { socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n'); socket.destroy(); return; }
   const headers = impHeaders(actor);
   if (exec) {

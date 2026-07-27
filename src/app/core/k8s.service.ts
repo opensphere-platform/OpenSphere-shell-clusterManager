@@ -42,7 +42,7 @@ export class K8sService {
     return this.http.get<T>(this.url(path), this.hdr());
   }
 
-  /** WS(exec/터미널)용 신원 쿠키 발급 — 토큰을 HttpOnly 쿠키로 심어 브라우저 WS가 보낼 수 있게. */
+  /** WS 연결 전 현재 Console 신원을 확인한다. bearer 전달은 Main Shell의 서버 중계가 담당한다. */
   session(): Observable<any> {
     return this.http.get(`${this.base()}/api/session`, this.hdr());
   }

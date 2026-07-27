@@ -8,6 +8,7 @@ const { verifySupabaseToken } = require('../server');
 
 const hisManagerSource = fs.readFileSync(path.join(__dirname, '..', 'his-manager.js'), 'utf8');
 const cephManagerSource = fs.readFileSync(path.join(__dirname, '..', 'ceph-manager.js'), 'utf8');
+const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
 
 test('Cluster Manager delegates an authenticated request to the Console Supabase identity authority', async () => {
   let call;
@@ -64,4 +65,11 @@ test('dedicated Ceph OAA owner facade double-validates permission, AAL2, and sta
   assert.match(cephManagerSource, /actorForOaaOwner/);
   assert.match(cephManagerSource, /Ceph OAA 변경은 AAL2 재인증/);
   assert.match(cephManagerSource, /StagedSecretRefOnly/);
+});
+
+test('HTTP and WebSocket requests share the host-injected bearer without a plugin token cookie', () => {
+  assert.match(serverSource, /server\.on\('upgrade'[\s\S]*verifyToken\(requestToken\(req\)\)/);
+  assert.doesNotMatch(serverSource, /osng_token/);
+  assert.doesNotMatch(serverSource, /set-cookie.*requestToken/);
+  assert.match(serverSource, /Main Shell nginx auth_request/);
 });

@@ -60,14 +60,14 @@ export interface ColumnDef {
           <span class="badge badge-info" *ngIf="countFor(NS)">{{ countFor(NS) }}</span>
           <cds-icon shape="angle" direction="down" aria-hidden="true"></cds-icon>
         </button>
-        <div clrDropdownMenu aria-label="Namespace filter">
+        <clr-dropdown-menu *clrIfOpen clrPosition="bottom-left" aria-label="Namespace filter">
           <button type="button" clrDropdownItem *ngIf="countFor(NS)" (click)="clearFacet(NS)">모든 namespace</button>
           <label class="dropdown-item os-filter-check" *ngFor="let ns of nsOptions()">
             <input type="checkbox" clrCheckbox [checked]="isPicked(NS, ns)"
                    (change)="toggle(NS, ns, $any($event.target).checked)" />
             <span>{{ ns }}</span>
           </label>
-        </div>
+        </clr-dropdown-menu>
       </clr-dropdown>
 
       <ng-container *ngFor="let c of facetCols()">
@@ -77,7 +77,7 @@ export interface ColumnDef {
             <span class="badge badge-info" *ngIf="countFor(c.id)">{{ countFor(c.id) }}</span>
             <cds-icon shape="angle" direction="down" aria-hidden="true"></cds-icon>
           </button>
-          <div clrDropdownMenu [attr.aria-label]="c.label + ' filter'">
+          <clr-dropdown-menu *clrIfOpen clrPosition="bottom-left" [attr.aria-label]="c.label + ' filter'">
             <button type="button" clrDropdownItem *ngIf="countFor(c.id)" (click)="clearFacet(c.id)">모두 보기</button>
             <label class="dropdown-item os-filter-check" *ngFor="let v of optionsFor(c)">
               <input type="checkbox" clrCheckbox [checked]="isPicked(c.id, v)"
@@ -85,7 +85,7 @@ export interface ColumnDef {
               <span class="label" *ngIf="c.kind === 'status'" [ngClass]="statusClass(statusSwatch(c, v))">{{ v }}</span>
               <span *ngIf="c.kind !== 'status'">{{ v }}</span>
             </label>
-          </div>
+          </clr-dropdown-menu>
         </clr-dropdown>
       </ng-container>
 

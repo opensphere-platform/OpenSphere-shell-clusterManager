@@ -105,8 +105,8 @@ function bindingProjection(input, now = new Date().toISOString()) {
   };
   const evidenceDigest = `sha256:${createHash('sha256').update(JSON.stringify(evidence)).digest('hex')}`;
   const message = ready
-    ? 'HISS metrics, logs, traces and OTLP paths are independently connected and verified.'
-    : `HISS binding remains fail-closed; unavailable requested capabilities: ${unavailableCapabilities.join(', ') || 'unknown'}.`;
+    ? 'HIS metrics, logs, traces and OTLP paths are independently connected and verified.'
+    : `HIS binding remains fail-closed; unavailable requested capabilities: ${unavailableCapabilities.join(', ') || 'unknown'}.`;
   return {
     phase,
     observedAt: now,
@@ -273,7 +273,7 @@ async function publish(status) {
   const spec = {
     consumerRef: { apiVersion: 'apps/v1', kind: 'Deployment', namespace: CONSOLE_NAMESPACE, name: 'opensphere-console' },
     requestedCapabilities: ['metrics', 'logs', 'traces', 'otlp'],
-    owner: 'HISS',
+    owner: 'HIS',
   };
   if (current.status === 404) {
     const created = await k8s('POST', `/apis/${GROUP}/${VERSION}/observabilitybindings`, {
@@ -340,7 +340,7 @@ if (require.main === module) {
     res.writeHead(ok ? 200 : 503, { 'content-type': 'application/json' });
     return res.end(JSON.stringify({ ok, ready, lastSuccessAt: lastSuccessAt ? new Date(lastSuccessAt).toISOString() : '', lastError }));
   }).listen(PORT, '0.0.0.0', () => {
-    console.log(`HISS ObservabilityBinding controller listening :${PORT}`);
+    console.log(`HIS ObservabilityBinding controller listening :${PORT}`);
     void loop();
   });
 } else {

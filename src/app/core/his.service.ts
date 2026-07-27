@@ -105,7 +105,8 @@ export interface HisItem {
 }
 
 export interface HisStatus {
-  stack: 'HISS';
+  schema: 'his-status.opensphere.io/v1alpha1';
+  stack: 'HIS';
   state: HisState;
   checkedAt: string;
   items: HisItem[];

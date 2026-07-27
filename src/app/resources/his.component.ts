@@ -25,7 +25,7 @@ type ObservabilityConfigurationMode = 'install' | 'operate';
     <div class="os-page-header his-head">
       <div class="os-page-header-main">
         <p class="os-page-eyebrow">Host infrastructure lifecycle</p>
-        <h1 class="os-page-title">HISS <span class="title-expansion">Host Infrastructure Service Stack</span></h1>
+        <h1 class="os-page-title">HIS <span class="title-expansion">Host Infrastructure Service Stack</span></h1>
         <p class="os-page-description">Cluster Manager가 호스트 capability를 진단하고 승인된 항목의 계획·설치·운영·구성·실검증·롤백·삭제를 관리합니다.</p>
       </div>
       <div class="os-page-header-actions">
@@ -37,7 +37,7 @@ type ObservabilityConfigurationMode = 'install' | 'operate';
 
     <clr-alert [clrAlertType]="'info'" [clrAlertClosable]="false">
       <clr-alert-item><span class="alert-text">
-        <strong>PFS와의 경계:</strong> PFS는 자체 기능·페이지를 가진 독립 plugin입니다. HISS 항목은 개별 메뉴나 plugin을 만들지 않으며 이 화면 하나에서만 관리합니다.
+        <strong>PFS와의 경계:</strong> PFS는 자체 기능·페이지를 가진 독립 plugin입니다. HIS 항목은 개별 메뉴나 plugin을 만들지 않으며 이 화면 하나에서만 관리합니다.
       </span></clr-alert-item>
     </clr-alert>
 
@@ -49,13 +49,13 @@ type ObservabilityConfigurationMode = 'install' | 'operate';
     </clr-alert>
 
     <section class="summary" *ngIf="status() as s">
-      <span class="label" [class.label-success]="s.state === 'Ready'" [class.label-danger]="s.state === 'Blocked'" [class.label-warning]="s.state === 'Degraded'">HISS {{ s.state }}</span>
+      <span class="label" [class.label-success]="s.state === 'Ready'" [class.label-danger]="s.state === 'Blocked'" [class.label-warning]="s.state === 'Degraded'">HIS {{ s.state }}</span>
       <span>Core {{ s.summary.coreReady }}/{{ s.summary.coreTotal }} Ready</span>
       <span>활성 profile {{ s.summary.selectedProfilesReady }}/{{ s.summary.selectedProfilesTotal }} Ready</span>
       <span>검사 {{ s.checkedAt | date:'yyyy-MM-dd HH:mm:ss' }}</span>
     </section>
 
-    <section class="profile-summary" *ngIf="status() as s" aria-label="HISS profiles">
+    <section class="profile-summary" *ngIf="status() as s" aria-label="HIS profiles">
       <article *ngFor="let profile of s.profiles" [class.profile-selected]="profile.selected">
         <div>
           <strong>{{ profile.name }}</strong>
@@ -209,7 +209,7 @@ type ObservabilityConfigurationMode = 'install' | 'operate';
         </clr-dg-row-detail>
       </clr-dg-row>
 
-      <clr-dg-footer>{{ s.items.length }}개 HISS capability</clr-dg-footer>
+      <clr-dg-footer>{{ s.items.length }}개 HIS capability</clr-dg-footer>
     </clr-datagrid>
 
     <clr-modal class="observability-lifecycle-modal" [(clrModalOpen)]="observabilityLifecycleModalOpen" [clrModalClosable]="!busy() && !configurationBusy()" [clrModalSize]="'xl'">
@@ -545,7 +545,7 @@ type ObservabilityConfigurationMode = 'install' | 'operate';
             <section class="config-section">
               <div class="section-heading"><div><p class="eyebrow">DATA PLANE</p><h4>영구 저장소와 보존기간</h4></div><span>StorageClass 변경·축소는 명시적 데이터 재배치가 필요합니다.</span></div>
               <clr-toggle-container>
-                <clr-toggle-wrapper><input type="checkbox" clrToggle name="telemetryEnabled" [(ngModel)]="config.telemetry.enabled"><label>HISS 중앙 로그·트레이스·OTLP 수집 사용</label></clr-toggle-wrapper>
+                <clr-toggle-wrapper><input type="checkbox" clrToggle name="telemetryEnabled" [(ngModel)]="config.telemetry.enabled"><label>HIS 중앙 로그·트레이스·OTLP 수집 사용</label></clr-toggle-wrapper>
               </clr-toggle-container>
               <clr-datagrid class="config-table">
                 <clr-dg-column>서비스</clr-dg-column><clr-dg-column>StorageClass</clr-dg-column><clr-dg-column>용량</clr-dg-column><clr-dg-column>보존기간</clr-dg-column><clr-dg-column>현재 PVC</clr-dg-column>
@@ -693,12 +693,12 @@ type ObservabilityConfigurationMode = 'install' | 'operate';
     </clr-modal>
 
     <clr-modal [(clrModalOpen)]="profileModalOpen" [clrModalSize]="'md'" [clrModalClosable]="!profileBusy()">
-      <h3 class="modal-title">HISS profile 요구조건 변경</h3>
+      <h3 class="modal-title">HIS profile 요구조건 변경</h3>
       <div class="modal-body" *ngIf="profileTarget() as item">
         <clr-alert [clrAlertType]="item.profileSelected ? 'info' : 'warning'" [clrAlertClosable]="false">
           <clr-alert-item><span class="alert-text">
             <strong>{{ item.profile }}</strong> profile을 {{ item.profileSelected ? '선택 해제' : '필수 요구조건으로 선택' }}합니다.
-            선택하면 profile capability가 준비되지 않은 동안 HISS 전체 상태가 Ready가 될 수 없습니다.
+            선택하면 profile capability가 준비되지 않은 동안 HIS 전체 상태가 Ready가 될 수 없습니다.
           </span></clr-alert-item>
         </clr-alert>
         <p *ngIf="item.mode === 'DetectOnly'" class="muted">이 capability는 Cluster Manager가 임의 설치하지 않습니다. 선택 후 호스트 공급자 절차로 준비하고 다시 검사하십시오.</p>
@@ -718,7 +718,7 @@ type ObservabilityConfigurationMode = 'install' | 'operate';
     </clr-modal>
 
     <clr-modal [(clrModalOpen)]="canaryModalOpen" [clrModalSize]="'md'" [clrModalClosable]="!canaryBusy()">
-      <h3 class="modal-title">HISS 실제 기능 경로 검증</h3>
+      <h3 class="modal-title">HIS 실제 기능 경로 검증</h3>
       <div class="modal-body" *ngIf="canaryTarget() as item">
         <clr-alert [clrAlertType]="'warning'" [clrAlertClosable]="false">
           <clr-alert-item><span class="alert-text">
@@ -1226,7 +1226,7 @@ export class HisComponent implements OnInit, OnDestroy {
     const lifecycle = this.releaseLifecycle(item);
     if (lifecycle === 'install') return '권장값으로 빠른 설치';
     if (lifecycle === 'recover') return '중단된 Helm release 복구 필요';
-    if (lifecycle === 'blocked') return 'HISS 실행 권한과 Helm 상태 확인 필요';
+    if (lifecycle === 'blocked') return 'HIS 실행 권한과 Helm 상태 확인 필요';
     if (item.check.state === 'Ready') return '운영 상태 정상 · 구성/실검증/롤백 가능';
     if (this.canValidate(item)) return '구성요소 준비 후 실제 metric·log·trace 경로 검증 필요';
     return '구성요소와 저장소 상태 복구 필요';
@@ -1367,10 +1367,10 @@ export class HisComponent implements OnInit, OnDestroy {
   }
 
   actionTitle(): string {
-    return this.action() === 'uninstall' ? 'HISS 삭제 확인'
-      : this.action() === 'upgrade' ? 'HISS 업그레이드 계획'
-        : this.action() === 'recover' ? 'HISS release 복구 계획'
-          : this.action() === 'rollback' ? 'HISS revision 롤백' : 'HISS 설치 계획';
+    return this.action() === 'uninstall' ? 'HIS 삭제 확인'
+      : this.action() === 'upgrade' ? 'HIS 업그레이드 계획'
+        : this.action() === 'recover' ? 'HIS release 복구 계획'
+          : this.action() === 'rollback' ? 'HIS revision 롤백' : 'HIS 설치 계획';
   }
 
   executeButtonLabel(): string {
@@ -1564,6 +1564,6 @@ export class HisComponent implements OnInit, OnDestroy {
   }
 
   private message(error: any): string {
-    return String(error?.error?.error || error?.message || 'HISS 요청에 실패했습니다.');
+    return String(error?.error?.error || error?.message || 'HIS 요청에 실패했습니다.');
   }
 }

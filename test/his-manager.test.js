@@ -45,10 +45,11 @@ const {
   buildObservabilityLogQuery,
   projectLokiResponse,
   projectTempoTrace,
+  HIS_STATUS_SCHEMA,
   DEFAULT_OBSERVABILITY_CONFIG,
 } = require('../his-manager');
 
-test('HISS catalog keeps PFS/plugin concepts outside the prerequisite catalog', () => {
+test('HIS catalog keeps PFS/plugin concepts outside the prerequisite catalog', () => {
   assert.ok(HIS_CATALOG.some((item) => item.mode === 'DetectOnly'));
   assert.ok(HIS_CATALOG.some((item) => item.mode === 'HelmManaged'));
   assert.equal(catalogItem('foundation'), undefined);
@@ -77,7 +78,14 @@ test('HISS catalog keeps PFS/plugin concepts outside the prerequisite catalog', 
   }
 });
 
-test('optional profiles gate HISS only when explicitly selected or backed by a managed release', () => {
+test('HIS status contract uses the constitution-defined acronym and versioned schema', () => {
+  assert.equal(HIS_STATUS_SCHEMA, 'his-status.opensphere.io/v1alpha1');
+  const source = fs.readFileSync(path.resolve(__dirname, '../his-manager.js'), 'utf8');
+  assert.match(source, /schema:\s*HIS_STATUS_SCHEMA,\s*\r?\n\s*stack:\s*'HIS'/);
+  assert.doesNotMatch(source, /stack:\s*'HISS'/);
+});
+
+test('optional profiles gate HIS only when explicitly selected or backed by a managed release', () => {
   const items = [
     { id: 'kube-prometheus-stack', profile: 'Observability', release: { managed: true }, check: { state: 'Ready' } },
     { id: 'csi-snapshot', profile: 'Data Protection', release: null, check: { state: 'Degraded' } },
@@ -225,7 +233,7 @@ test('storage canary manifests are bounded, non-privileged and accept no arbitra
 
 test('mutation reason is mandatory and bounded', () => {
   assert.throws(() => reasonFrom({ reason: 'short' }), /8자 이상/);
-  assert.equal(reasonFrom({ reason: 'HISS 설치 승인 근거' }), 'HISS 설치 승인 근거');
+  assert.equal(reasonFrom({ reason: 'HIS 설치 승인 근거' }), 'HIS 설치 승인 근거');
   assert.throws(() => reasonFrom({ reason: 'x'.repeat(501) }), /500자 이하/);
 });
 
@@ -240,7 +248,7 @@ test('generated kubeconfig does not disable TLS verification', () => {
   assert.doesNotMatch(config, /insecure-skip-tls-verify/);
 });
 
-test('HISS operations use bounded Kubernetes names and reject stale heartbeats', () => {
+test('HIS operations use bounded Kubernetes names and reject stale heartbeats', () => {
   assert.equal(operationResourceName('kube-prometheus-stack'), 'opensphere-his-operation-kube-prometheus-stack');
   assert.ok(operationResourceName('X'.repeat(100)).length <= 63);
   assert.equal(operationActive({ phase: 'Installing', updatedAt: new Date().toISOString() }), true);
@@ -288,7 +296,7 @@ test('Helm lifecycle exposes exactly one primary action for each release state',
   assert.equal(releaseLifecycleAction({ managed: true, status: 'unknown', revision: 1 }), 'blocked');
 });
 
-test('HISS UI renders install, upgrade and recovery as mutually exclusive lifecycle actions', () => {
+test('HIS UI renders install, upgrade and recovery as mutually exclusive lifecycle actions', () => {
   const ui = fs.readFileSync(path.resolve(__dirname, '../src/app/resources/his.component.ts'), 'utf8');
   assert.match(ui, /\*ngIf="releaseLifecycle\(item\) === 'install'"[^>]*>[\s\S]*?설치(?: 요청)?<\/button>/);
   assert.match(ui, /\*ngIf="releaseLifecycle\(item\) === 'upgrade'"[^>]*>[\s\S]*?업그레이드(?: 요청)?<\/button>/);
@@ -320,7 +328,7 @@ test('HISS UI renders install, upgrade and recovery as mutually exclusive lifecy
   assert.doesNotMatch(ui, /class="configuration-summary"/);
 });
 
-test('kind HISS profile provisions an issuer chain and binds ingress default TLS without weakening standard clusters', () => {
+test('kind HIS profile provisions an issuer chain and binds ingress default TLS without weakening standard clusters', () => {
   const ingress = catalogItem('ingress-nginx');
   const certificates = catalogItem('cert-manager');
   assert.deepEqual(ingress.values, []);
@@ -394,7 +402,7 @@ test('Observability installation accepts any existing StorageClass and warns whe
 
 test('OAA Observability owner input is recursively closed and confirmations expose high-risk choices', () => {
   const config = normalizeOaaObservabilityConfig(DEFAULT_OBSERVABILITY_CONFIG);
-  assert.equal(oaaObservabilityConfirmation(config, false), 'configure HISS observability public=false data-reset=false');
+  assert.equal(oaaObservabilityConfirmation(config, false), 'configure HIS observability public=false data-reset=false');
   assert.throws(() => normalizeOaaObservabilityConfig({ ...DEFAULT_OBSERVABILITY_CONFIG, command: 'kubectl get secrets' }), /허용되지 않은 필드/);
   assert.throws(() => normalizeOaaObservabilityConfig({
     ...DEFAULT_OBSERVABILITY_CONFIG,
@@ -407,7 +415,7 @@ test('OAA Observability owner input is recursively closed and confirmations expo
       exposureMode: 'PublicIngress', hostname: 'grafana.example.com', tlsSecretName: 'grafana-tls', oidcSecretName: 'grafana-oidc',
     },
   });
-  assert.equal(oaaObservabilityConfirmation(publicConfig, true), 'configure HISS observability public=true data-reset=true');
+  assert.equal(oaaObservabilityConfirmation(publicConfig, true), 'configure HIS observability public=true data-reset=true');
 });
 
 test('private Grafana ingress requires TLS, OIDC references and CIDR restrictions', () => {
@@ -457,7 +465,7 @@ test('Observability PVC names are bounded to the five managed data stores', () =
   assert.equal(observabilityPvcComponent('customer-database'), '');
 });
 
-test('HISS log queries are fixed-template, bounded and redact credential-shaped text', () => {
+test('HIS log queries are fixed-template, bounded and redact credential-shaped text', () => {
   const errors = buildObservabilityLogQuery(new URLSearchParams({ template: 'service.errors', service: 'opensphere-console' }));
   assert.equal(errors.query, '{service_name="opensphere-console"} |~ "(?i)(error|exception|failed)"');
   assert.throws(() => buildObservabilityLogQuery(new URLSearchParams({ template: 'raw', service: 'x' })), /지원하지 않는/);
@@ -471,7 +479,7 @@ test('HISS log queries are fixed-template, bounded and redact credential-shaped 
   assert.doesNotMatch(entries[0].line, /sk-example|Bearer abc/);
 });
 
-test('HISS trace projection returns operational span facts without arbitrary attributes', () => {
+test('HIS trace projection returns operational span facts without arbitrary attributes', () => {
   const spans = projectTempoTrace({ batches: [{
     resource: { attributes: [{ key: 'service.name', value: { stringValue: 'console' } }, { key: 'secret', value: { stringValue: 'do-not-return' } }] },
     scopeSpans: [{ spans: [{ traceId: 'a'.repeat(32), spanId: 'b'.repeat(16), name: 'GET /health', startTimeUnixNano: '1000000', endTimeUnixNano: '3500000', status: { code: 1 }, attributes: [{ key: 'password', value: { stringValue: 'hidden' } }] }] }],
@@ -483,7 +491,7 @@ test('HISS trace projection returns operational span facts without arbitrary att
   assert.doesNotMatch(JSON.stringify(spans), /do-not-return|hidden/);
 });
 
-test('signed HISS owner release includes bounded lifecycle RBAC for fixed namespaces', () => {
+test('signed HIS owner release includes bounded lifecycle RBAC for fixed namespaces', () => {
   const manifest = fs.readFileSync(path.resolve(__dirname, '../deploy/hiss-runtime-owner.yaml'), 'utf8');
   const documents = manifest.split(/^---\s*$/m).map((document) => yaml.load(document)).filter(Boolean);
   const clusterRole = documents.find((document) => document.kind === 'ClusterRole' && document.metadata?.name === 'opensphere-hiss-runtime-owner');

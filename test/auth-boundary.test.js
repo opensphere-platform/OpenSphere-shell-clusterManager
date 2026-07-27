@@ -43,7 +43,7 @@ test('invalid sessions and unavailable identity authority fail closed', async ()
   );
 });
 
-test('HISS and Ceph owner facades accept the canonical Supabase Console admin role', () => {
+test('HIS and Ceph owner facades accept the canonical Supabase Console admin role', () => {
   for (const source of [hisManagerSource, cephManagerSource]) {
     assert.match(source, /CONSOLE_ADMIN_GROUPS/);
     assert.match(source, /console-admins,opensphere-console-admins/);
@@ -51,7 +51,7 @@ test('HISS and Ceph owner facades accept the canonical Supabase Console admin ro
   }
 });
 
-test('dedicated HISS OAA owner facade double-validates permission and AAL2', () => {
+test('dedicated HIS OAA owner facade double-validates permission and AAL2', () => {
   assert.match(hisManagerSource, /console\.his\.read/);
   assert.match(hisManagerSource, /console\.his\.manage/);
   assert.match(hisManagerSource, /actorForOaaOwner/);

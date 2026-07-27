@@ -26,6 +26,7 @@ const OBSERVABILITY_CONFIG_NAME = 'opensphere-his-config-kube-prometheus-stack';
 const PROFILE_SELECTION_CONFIG_NAME = 'opensphere-his-profile-selection';
 const OBSERVABILITY_RESET_CONFIRMATION = 'RESET OBSERVABILITY DATA';
 const OBSERVABILITY_PUBLIC_CONFIRMATION = 'ENABLE PUBLIC GRAFANA';
+const HIS_STATUS_SCHEMA = 'his-status.opensphere.io/v1alpha1';
 const OAA_HIS_READ_PERMISSION = 'console.his.read';
 const OAA_HIS_MANAGE_PERMISSION = 'console.his.manage';
 const LOKI_QUERY_URL = (process.env.HIS_LOKI_URL || 'http://opensphere-his-loki.monitoring.svc:3100').replace(/\/$/, '');
@@ -215,7 +216,7 @@ function normalizeOaaObservabilityConfig(input) {
 
 function oaaObservabilityConfirmation(config, resetData) {
   const publicExposure = config.grafana.exposureMode === 'PublicIngress';
-  return `configure HISS observability public=${publicExposure} data-reset=${Boolean(resetData)}`;
+  return `configure HIS observability public=${publicExposure} data-reset=${Boolean(resetData)}`;
 }
 
 function observabilityValues(rawConfig) {
@@ -572,7 +573,7 @@ function applyValidationOperation(check, operation, itemId) {
   const state = operation.phase === 'Ready' && matches ? 'Passed' : operation.phase === 'Failed' ? 'Failed' : 'NotRun';
   const message = operation.phase === 'Ready' && matches
     ? `${operation.message} (${operation.finishedAt || operation.updatedAt})`
-    : operation.phase === 'Ready' ? '검증 후 HISS 기능 계약이 변경되어 재검증이 필요합니다.'
+    : operation.phase === 'Ready' ? '검증 후 HIS 기능 계약이 변경되어 재검증이 필요합니다.'
       : operation.phase === 'Failed' ? operation.error || operation.message : `${operation.message} · 작업 ${operation.id}`;
   return {
     ...check,
@@ -1248,7 +1249,7 @@ async function readProfileSelection(ctx) {
     const known = new Set(knownProfileNames());
     return new Set(stored.filter((profile) => known.has(profile)));
   } catch (error) {
-    throw Object.assign(new Error(`저장된 HISS profile 선택 구성이 손상되었습니다: ${safeError(error)}`), { code: 500 });
+    throw Object.assign(new Error(`저장된 HIS profile 선택 구성이 손상되었습니다: ${safeError(error)}`), { code: 500 });
   }
 }
 
@@ -1594,7 +1595,7 @@ async function observabilityConfiguration(ctx) {
 async function createOperation(ctx, item, actor, action, reason, extra = {}) {
   const existing = await readOperation(ctx, item.id);
   if (operationActive(existing)) {
-    throw Object.assign(new Error(`동일 HISS 항목 작업이 이미 진행 중입니다. 작업 ID: ${existing.id}`), { code: 409 });
+    throw Object.assign(new Error(`동일 HIS 항목 작업이 이미 진행 중입니다. 작업 ID: ${existing.id}`), { code: 409 });
   }
   const now = new Date().toISOString();
   const operation = {
@@ -1787,7 +1788,8 @@ async function allStatus(ctx) {
   const profiles = evaluateProfiles(items, explicitProfiles);
   const evaluated = evaluateStackStatus(items, profiles);
   return {
-    stack: 'HISS',
+    schema: HIS_STATUS_SCHEMA,
+    stack: 'HIS',
     state: evaluated.state,
     checkedAt: new Date().toISOString(),
     items: evaluated.items,
@@ -1799,7 +1801,7 @@ async function allStatus(ctx) {
 async function setProfileSelection(ctx, actor, body) {
   const profile = String(body?.profile || '').trim();
   const selected = body?.selected;
-  if (!knownProfileNames().includes(profile)) throw Object.assign(new Error('승인되지 않은 HISS profile입니다.'), { code: 404 });
+  if (!knownProfileNames().includes(profile)) throw Object.assign(new Error('승인되지 않은 HIS profile입니다.'), { code: 404 });
   if (typeof selected !== 'boolean') throw Object.assign(new Error('profile selected 값은 boolean이어야 합니다.'), { code: 400 });
   const reason = reasonFrom(body);
   const profileItems = HIS_CATALOG.filter((item) => item.profile === profile);
@@ -1824,7 +1826,7 @@ async function setProfileSelection(ctx, actor, body) {
   await ctx.publishNotify({
     userActor: actor.username,
     action: 'HISProfileSelectionChanged',
-    target: `HISS/Profile/${profile}`,
+    target: `HIS/Profile/${profile}`,
     result: selected ? 'selected' : 'deselected',
     reason,
   });
@@ -1843,20 +1845,20 @@ async function auditRequired(ctx, actor, action, item, reason, resultValue) {
       source: 'cluster-manager',
       userActor: actor.username,
       action,
-      target: `HISS/${item.id}`,
+      target: `HIS/${item.id}`,
       result: resultValue,
       reason,
       metadata: { chart: item.chartName, chartVersion: item.chartVersion, release: item.release, namespace: item.namespace },
     }),
   });
   if (!response.ok) {
-    throw Object.assign(new Error(`내구 감사 저장소를 사용할 수 없습니다(HTTP ${response.status}). HISS 변경을 차단했습니다.`), { code: 503 });
+    throw Object.assign(new Error(`내구 감사 저장소를 사용할 수 없습니다(HTTP ${response.status}). HIS 변경을 차단했습니다.`), { code: 503 });
   }
 }
 
 function assertManagedItem(body) {
   const item = catalogItem(String(body && body.id || ''));
-  if (!item) throw Object.assign(new Error('승인되지 않은 HISS 항목입니다.'), { code: 404 });
+  if (!item) throw Object.assign(new Error('승인되지 않은 HIS 항목입니다.'), { code: 404 });
   if (item.mode !== 'HelmManaged') throw Object.assign(new Error('이 항목은 호스트 제공 DetectOnly capability입니다.'), { code: 409 });
   const requestedVersion = String(body?.chartVersion || item.chartVersion || '').trim();
   if (item.id !== OBSERVABILITY_ITEM_ID) {
@@ -1870,7 +1872,7 @@ function assertManagedItem(body) {
   }
   const variant = (item.chartVariants || []).find((candidate) => candidate.chartVersion === requestedVersion);
   if (!variant) {
-    throw Object.assign(new Error(`서명된 HISS release에 포함되지 않은 chart version입니다. 허용 버전: ${(item.availableChartVersions || []).join(', ')}`), { code: 400 });
+    throw Object.assign(new Error(`서명된 HIS release에 포함되지 않은 chart version입니다. 허용 버전: ${(item.availableChartVersions || []).join(', ')}`), { code: 400 });
   }
   return { ...item, ...variant };
 }
@@ -1879,7 +1881,7 @@ async function actorFor(ctx, req, adminRequired) {
   const actor = await ctx.verifyToken(ctx.requestToken(req));
   const groups = Array.isArray(actor.groups) ? actor.groups : [];
   if (adminRequired && !groups.some((group) => ADMIN_GROUPS.has(group))) {
-    throw Object.assign(new Error('HISS 변경은 Console 관리자만 수행할 수 있습니다.'), { code: 403 });
+    throw Object.assign(new Error('HIS 변경은 Console 관리자만 수행할 수 있습니다.'), { code: 403 });
   }
   return actor;
 }
@@ -1889,10 +1891,10 @@ async function actorForOaaOwner(ctx, req, mutation) {
   const permissions = new Set(Array.isArray(actor.permissions) ? actor.permissions : []);
   const requiredPermission = mutation ? OAA_HIS_MANAGE_PERMISSION : OAA_HIS_READ_PERMISSION;
   if (!permissions.has(requiredPermission)) {
-    throw Object.assign(new Error(`HISS OAA owner API에는 ${requiredPermission} 권한이 필요합니다.`), { code: 403 });
+    throw Object.assign(new Error(`HIS OAA owner API에는 ${requiredPermission} 권한이 필요합니다.`), { code: 403 });
   }
   if (mutation && String(actor.assurance || 'aal1').toLowerCase() !== 'aal2') {
-    throw Object.assign(new Error('HISS OAA 변경은 AAL2 재인증이 필요합니다.'), { code: 403 });
+    throw Object.assign(new Error('HIS OAA 변경은 AAL2 재인증이 필요합니다.'), { code: 403 });
   }
   return actor;
 }
@@ -2225,7 +2227,7 @@ async function runObservabilityCanary(ctx) {
   const monitorName = `${base}-monitor`.slice(0, 63);
   const ruleName = `${base}-rule`.slice(0, 63);
   const instanceLabels = { 'opensphere.io/canary-instance': base };
-  const metricScript = `require('http').createServer((request,response)=>{response.writeHead(200,{'content-type':request.url==='/metrics'?'text/plain; version=0.0.4':'text/plain'});response.end(request.url==='/metrics'?${JSON.stringify(`# HELP opensphere_his_canary OpenSphere HISS synthetic metric\n# TYPE opensphere_his_canary gauge\nopensphere_his_canary{instance_id="${base}"} 1\n`)}:'ok');}).listen(8080,'0.0.0.0');`;
+  const metricScript = `require('http').createServer((request,response)=>{response.writeHead(200,{'content-type':request.url==='/metrics'?'text/plain; version=0.0.4':'text/plain'});response.end(request.url==='/metrics'?${JSON.stringify(`# HELP opensphere_his_canary OpenSphere HIS synthetic metric\n# TYPE opensphere_his_canary gauge\nopensphere_his_canary{instance_id="${base}"} 1\n`)}:'ok');}).listen(8080,'0.0.0.0');`;
   try {
     await k8sRequest(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/pods`, { method: 'POST', body: syntheticPod(podName, image, metricScript, { domain: 'observability', labels: instanceLabels, ports: [{ name: 'metrics', containerPort: 8080 }], readinessPath: '/' }) });
     await k8sRequest(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/services`, { method: 'POST', body: syntheticService(serviceName, instanceLabels) });
@@ -2236,7 +2238,7 @@ async function runObservabilityCanary(ctx) {
     } });
     await k8sRequest(ctx, '/apis/monitoring.coreos.com/v1/namespaces/monitoring/prometheusrules', { method: 'POST', body: {
       apiVersion: 'monitoring.coreos.com/v1', kind: 'PrometheusRule', metadata: { name: ruleName, namespace: 'monitoring', labels: { 'app.kubernetes.io/managed-by': 'opensphere-cluster-manager', release: 'kube-prometheus-stack' } },
-      spec: { groups: [{ name: `opensphere-his-canary-${base}`, interval: '5s', rules: [{ alert: 'OpenSphereHISCanary', expr: `opensphere_his_canary{instance_id="${base}"} == 1`, for: '0m', labels: { severity: 'none', opensphere_canary_id: base }, annotations: { summary: 'OpenSphere HISS synthetic alert' } }] }] },
+      spec: { groups: [{ name: `opensphere-his-canary-${base}`, interval: '5s', rules: [{ alert: 'OpenSphereHISCanary', expr: `opensphere_his_canary{instance_id="${base}"} == 1`, for: '0m', labels: { severity: 'none', opensphere_canary_id: base }, annotations: { summary: 'OpenSphere HIS synthetic alert' } }] }] },
     } });
     const query = encodeURIComponent(`opensphere_his_canary{instance_id="${base}"}`);
     await waitForHttpJson(`http://kube-prometheus-stack-prometheus.monitoring.svc:9090/api/v1/query?query=${query}`, (value) => value.status === 'success' && (value.data?.result || []).some((entry) => entry.metric?.instance_id === base));
@@ -2413,20 +2415,20 @@ async function executeCanaryValidation(ctx, actor, item, operation) {
     const prerequisites = storageValidation
       ? await storageCanaryPrerequisites(ctx, item.id === 'csi-snapshot')
       : await runtimeCanaryPrerequisites(ctx, item);
-    current = await patchOperation(ctx, item, current, { validationFingerprint: prerequisites.fingerprint, progress: 25, message: '현재 HISS 기능 계약 지문을 고정하고 synthetic 검증 리소스를 생성하고 있습니다.' });
+    current = await patchOperation(ctx, item, current, { validationFingerprint: prerequisites.fingerprint, progress: 25, message: '현재 HIS 기능 계약 지문을 고정하고 synthetic 검증 리소스를 생성하고 있습니다.' });
     const outcome = item.id === 'cluster-network' ? await runNetworkCanary(ctx, prerequisites)
       : item.id === 'cluster-dns' ? await runDnsCanary(ctx, prerequisites)
         : item.id === OBSERVABILITY_ITEM_ID ? await runObservabilityCanary(ctx)
           : item.id === 'storage' ? await runStorageBindCanary(ctx, prerequisites)
             : await runSnapshotRestoreCanary(ctx, prerequisites);
     await auditRequired(ctx, actor, 'HISCanaryValidated', item, operation.reason, `success:${outcome.message}`);
-    await ctx.publishNotify({ userActor: actor.username, action: 'HISCanaryValidated', target: `HISS/${item.id}`, result: 'success', reason: `${operation.reason} · ${outcome.message}` });
+    await ctx.publishNotify({ userActor: actor.username, action: 'HISCanaryValidated', target: `HIS/${item.id}`, result: 'success', reason: `${operation.reason} · ${outcome.message}` });
     await patchOperation(ctx, item, current, { phase: 'Ready', progress: 100, message: outcome.message, error: '' });
   } catch (error) {
     const message = safeError(error);
     try { await auditRequired(ctx, actor, 'HISCanaryValidationFailed', item, operation.reason, message); }
     catch (auditError) { console.error(`[his-canary] failure audit unavailable id=${operation.id}: ${safeError(auditError)}`); }
-    try { await ctx.publishNotify({ userActor: actor.username, action: 'HISCanaryValidationFailed', target: `HISS/${item.id}`, result: 'error', reason: `${operation.reason} · ${message}` }); }
+    try { await ctx.publishNotify({ userActor: actor.username, action: 'HISCanaryValidationFailed', target: `HIS/${item.id}`, result: 'error', reason: `${operation.reason} · ${message}` }); }
     catch { /* best effort notification */ }
     await patchOperation(ctx, item, current, { phase: 'Failed', progress: 100, message: '실제 기능 경로 검증에 실패했습니다.', error: message });
   }
@@ -2485,7 +2487,7 @@ async function executeObservabilityConfiguration(ctx, actor, item, operation, de
     await ctx.publishNotify({
       userActor: actor.username,
       action: 'HISObservabilityConfigured',
-      target: `HISS/${item.id}`,
+      target: `HIS/${item.id}`,
       result: 'success',
       reason: `${operation.reason} · exposure=${desired.grafana.exposureMode} · dataReset=${dataReset}`,
     });
@@ -2501,7 +2503,7 @@ async function executeObservabilityConfiguration(ctx, actor, item, operation, de
     try { await auditRequired(ctx, actor, 'HISObservabilityConfigureFailed', item, operation.reason, message); }
     catch (auditError) { console.error(`[his-operation] configuration failure audit unavailable id=${operation.id}: ${safeError(auditError)}`); }
     try {
-      await ctx.publishNotify({ userActor: actor.username, action: 'HISObservabilityConfigureFailed', target: `HISS/${item.id}`, result: 'error', reason: `${operation.reason} · ${message}` });
+      await ctx.publishNotify({ userActor: actor.username, action: 'HISObservabilityConfigureFailed', target: `HIS/${item.id}`, result: 'error', reason: `${operation.reason} · ${message}` });
     } catch { /* best effort notification */ }
     await patchOperation(ctx, item, current, { phase: 'Failed', progress: 100, message: 'Observability 운영 구성 적용에 실패했습니다.', error: message });
   }
@@ -2550,7 +2552,7 @@ async function executeOperation(ctx, actor, item, operation) {
       }
       const auditAction = recovering ? 'HISRecovered' : upgrading ? 'HISUpgraded' : 'HISInstalled';
       await auditRequired(ctx, actor, auditAction, item, operation.reason, `success:${check.state}:${check.reason}`);
-      await ctx.publishNotify({ userActor: actor.username, action: auditAction, target: `HISS/${item.id}`, result: check.state, reason: `${operation.reason} · ${check.message}` });
+      await ctx.publishNotify({ userActor: actor.username, action: auditAction, target: `HIS/${item.id}`, result: check.state, reason: `${operation.reason} · ${check.message}` });
       current = await patchOperation(ctx, item, current, {
         phase: 'Ready',
         progress: 100,
@@ -2570,7 +2572,7 @@ async function executeOperation(ctx, actor, item, operation) {
       const check = await waitForProbe(ctx, item, (value) => value.state === 'Ready' || acceptableDegraded.has(value.reason));
       if (check.state !== 'Ready' && !acceptableDegraded.has(check.reason)) throw Object.assign(new Error(`롤백 후 검증 실패: ${check.message}`), { code: 502 });
       await auditRequired(ctx, actor, 'HISRolledBack', item, operation.reason, `success:revision=${targetRevision}:${check.state}`);
-      await ctx.publishNotify({ userActor: actor.username, action: 'HISRolledBack', target: `HISS/${item.id}`, result: check.state, reason: `${operation.reason} · revision=${targetRevision} · ${check.message}` });
+      await ctx.publishNotify({ userActor: actor.username, action: 'HISRolledBack', target: `HIS/${item.id}`, result: check.state, reason: `${operation.reason} · revision=${targetRevision} · ${check.message}` });
       await patchOperation(ctx, item, current, { phase: 'Ready', progress: 100, message: `revision ${targetRevision} 롤백과 검증이 완료되었습니다. ${check.message}`, output: out.stdout.slice(-4000), error: '' });
       return;
     }
@@ -2580,7 +2582,7 @@ async function executeOperation(ctx, actor, item, operation) {
     current = await patchOperation(ctx, item, current, { phase: 'Validating', progress: 88, message: '삭제 결과와 보존 리소스를 검증하고 있습니다.' });
     const check = await waitForProbe(ctx, item, (value) => value.state !== 'Ready', 60000);
     await auditRequired(ctx, actor, 'HISUninstalled', item, operation.reason, 'success');
-    await ctx.publishNotify({ userActor: actor.username, action: 'HISUninstalled', target: `HISS/${item.id}`, result: 'success', reason: `${operation.reason} · retained=${(item.retainedOnDelete || []).join(',') || 'none'}` });
+    await ctx.publishNotify({ userActor: actor.username, action: 'HISUninstalled', target: `HIS/${item.id}`, result: 'success', reason: `${operation.reason} · retained=${(item.retainedOnDelete || []).join(',') || 'none'}` });
     await patchOperation(ctx, item, current, {
       phase: 'Removed',
       progress: 100,
@@ -2601,12 +2603,12 @@ async function executeOperation(ctx, actor, item, operation) {
     try { await auditRequired(ctx, actor, failureAction, item, operation.reason, message); }
     catch (auditError) { console.error(`[his-operation] failure audit unavailable id=${operation.id}: ${safeError(auditError)}`); }
     try {
-      await ctx.publishNotify({ userActor: actor.username, action: failureAction, target: `HISS/${item.id}`, result: 'error', reason: `${operation.reason} · ${message}` });
+      await ctx.publishNotify({ userActor: actor.username, action: failureAction, target: `HIS/${item.id}`, result: 'error', reason: `${operation.reason} · ${message}` });
     } catch { /* best effort notification */ }
     await patchOperation(ctx, item, current, {
       phase,
       progress: 100,
-      message: phase === 'RollbackStalled' ? '설치 실패 후 Helm 롤백이 완료되지 않았습니다.' : 'HISS 작업이 실패했습니다.',
+      message: phase === 'RollbackStalled' ? '설치 실패 후 Helm 롤백이 완료되지 않았습니다.' : 'HIS 작업이 실패했습니다.',
       error: message,
       releaseStatus: release?.status || 'unknown',
     });
@@ -2698,9 +2700,9 @@ function projectTempoTrace(body) {
 async function observabilityOwnerFetch(url) {
   let response;
   try { response = await fetch(url, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(15000) }); }
-  catch { throw Object.assign(new Error('HISS telemetry query service에 연결할 수 없습니다.'), { code: 503 }); }
+  catch { throw Object.assign(new Error('HIS telemetry query service에 연결할 수 없습니다.'), { code: 503 }); }
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw Object.assign(new Error(`HISS telemetry query 실패 HTTP ${response.status}`), { code: 502 });
+  if (!response.ok) throw Object.assign(new Error(`HIS telemetry query 실패 HTTP ${response.status}`), { code: 502 });
   return body;
 }
 
@@ -2718,7 +2720,7 @@ async function queryObservabilityLogs(req) {
   url.searchParams.set('direction', 'backward');
   const body = await observabilityOwnerFetch(url);
   const entries = projectLokiResponse(body, limit);
-  return { action: 'his-observability-logs', authority: 'HISS/Loki', observedAt: new Date().toISOString(), template: request.template, target: request.target, sinceMinutes, count: entries.length, entries };
+  return { action: 'his-observability-logs', authority: 'HIS/Loki', observedAt: new Date().toISOString(), template: request.template, target: request.target, sinceMinutes, count: entries.length, entries };
 }
 
 async function queryObservabilityTraces(req) {
@@ -2729,7 +2731,7 @@ async function queryObservabilityTraces(req) {
     if (!/^[a-f0-9]{32}$/.test(traceId)) throw Object.assign(new Error('traceId는 32자리 hex 값이어야 합니다.'), { code: 400 });
     const body = await observabilityOwnerFetch(`${TEMPO_QUERY_URL}/api/traces/${traceId}`);
     const spans = projectTempoTrace(body);
-    return { action: 'his-observability-trace', authority: 'HISS/Tempo', observedAt: new Date().toISOString(), template, traceId, spanCount: spans.length, spans };
+    return { action: 'his-observability-trace', authority: 'HIS/Tempo', observedAt: new Date().toISOString(), template, traceId, spanCount: spans.length, spans };
   }
   if (template !== 'service.recent') throw Object.assign(new Error('지원하지 않는 trace query template입니다.'), { code: 400 });
   const service = observabilityQueryToken(params.get('service'), 'service');
@@ -2747,7 +2749,7 @@ async function queryObservabilityTraces(req) {
     rootTraceName: redactObservabilityText(trace.rootTraceName).slice(0, 256), startTimeUnixNano: String(trace.startTimeUnixNano || ''),
     durationMs: Number(trace.durationMs || 0), spanSets: Number(trace.spanSets?.length || 0),
   }));
-  return { action: 'his-observability-traces', authority: 'HISS/Tempo', observedAt: new Date().toISOString(), template, target: service, sinceMinutes, count: traces.length, traces };
+  return { action: 'his-observability-traces', authority: 'HIS/Tempo', observedAt: new Date().toISOString(), template, target: service, sinceMinutes, count: traces.length, traces };
 }
 
 function createHisManager(ctx) {
@@ -2781,7 +2783,7 @@ function createHisManager(ctx) {
         const configurationPlan = await observabilityConfigurationPlan(ctx, desired);
         const expectedConfirmation = oaaObservabilityConfirmation(desired, body.resetData);
         if (String(body.confirm || '') !== expectedConfirmation) {
-            throw Object.assign(new Error(`HISS observability 변경 확인 값으로 '${expectedConfirmation}'를 입력해야 합니다.`), { code: 400 });
+            throw Object.assign(new Error(`HIS observability 변경 확인 값으로 '${expectedConfirmation}'를 입력해야 합니다.`), { code: 400 });
         }
         if (!configurationPlan.live.installed) throw Object.assign(new Error('Shared Observability가 설치되지 않았습니다.'), { code: 409 });
         if (configurationPlan.blockers.length) throw Object.assign(new Error(configurationPlan.blockers.join(' ')), { code: 409 });
@@ -2823,7 +2825,7 @@ function createHisManager(ctx) {
       }
       if (pathname === '/api/his/validate') {
         const item = catalogItem(String(body?.id || ''));
-        if (!item || !['cluster-network', 'cluster-dns', OBSERVABILITY_ITEM_ID, 'storage', 'csi-snapshot'].includes(item.id)) throw Object.assign(new Error('실검증을 지원하지 않는 HISS 항목입니다.'), { code: 404 });
+        if (!item || !['cluster-network', 'cluster-dns', OBSERVABILITY_ITEM_ID, 'storage', 'csi-snapshot'].includes(item.id)) throw Object.assign(new Error('실검증을 지원하지 않는 HIS 항목입니다.'), { code: 404 });
         const reason = reasonFrom(body);
         await auditRequired(ctx, actor, 'HISCanaryValidationRequested', item, reason, 'requested');
         const operation = await createOperation(ctx, item, actor, 'validate', reason);
@@ -2977,6 +2979,7 @@ module.exports = {
   projectLokiResponse,
   projectTempoTrace,
   flattenConfiguration,
+  HIS_STATUS_SCHEMA,
   DEFAULT_OBSERVABILITY_CONFIG,
   OBSERVABILITY_RESET_CONFIRMATION,
   OBSERVABILITY_PUBLIC_CONFIRMATION,

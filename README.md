@@ -8,7 +8,7 @@ OpenSphere V2 **subShell** — Kubernetes, Ceph Storage, HIS를 독립 관리 �
 | 기술 식별자 | `cluster-manager` (RFC1123 kebab) — route `/p/cluster-manager`, proxy `/api/plugins/cluster-manager` |
 | 프런트엔드 | Angular 22 + Clarity 18, **Angular Element `<osp-k8s-console-ng>`** (CodeMirror·xterm 내장) |
 | 백엔드 | `server.js` — 제네릭 `/api/k8s/*` 프록시(secrets 차단) + WS exec 게이트웨이 + 정적 서빙 |
-| HISS | `his-manager.js` + `his-catalog.js` — 단일 HISS preflight, 고정 Helm chart 계획·설치·검증·삭제 |
+| HIS | `his-manager.js` + `his-catalog.js` — 단일 HIS preflight, 고정 Helm chart 계획·설치·검증·삭제 |
 | Ceph | `ceph-manager.js` — Kubernetes 종속 Rook External/CSI 연결 계획·필터·설치·검증·안전 해제 |
 | 종류 | subShell (1급 host-guest) — ⚠️위계는 현재 advisory (생성기가 `kind`/`hostRef` 미방출, 설계 §9.2) |
 
@@ -16,11 +16,11 @@ OpenSphere V2 **subShell** — Kubernetes, Ceph Storage, HIS를 독립 관리 �
 
 - `Kubernetes`: 코어 리소스와 capability-gate된 Virtualization·Migration·Observability
 - `Ceph Storage`: Kubernetes가 Ready일 때만 Rook provider export JSON을 검증해 외부 Ceph을 Rook External Mode와 CSI로 연결. 자격 증명은 Kubernetes Secret에만 저장하고 원격 data는 관리하지 않음
-- `HISS Prerequisites`: 호스트 전제조건 진단과 승인된 Helm 설치·검증·삭제
+- `HIS Prerequisites`: 호스트 전제조건 진단과 승인된 Helm 설치·검증·삭제
 
-HISS 판정은 **Core**와 **선택 profile**을 분리한다. Core capability는 항상 필수이며,
+HIS 판정은 **Core**와 **선택 profile**을 분리한다. Core capability는 항상 필수이며,
 선택 profile은 관리자가 변경 사유와 함께 활성화하거나 해당 HelmManaged release를
-설치한 때부터 HISS 전체 Ready gate에 포함된다. 현재 profile은 다음과 같다.
+설치한 때부터 HIS 전체 Ready gate에 포함된다. 현재 profile은 다음과 같다.
 
 - `Observability`: Shared Observability 설치 시 자동 활성화
 - `Data Protection`: 호스트 CSI Driver·Snapshot Controller·CRD·VolumeSnapshotClass가
@@ -33,7 +33,7 @@ profile 선택은 `opensphere-his-profile-selection` ConfigMap에 저장되고 C
 Storage Core는 StorageClass 존재만으로 Ready가 되지 않는다. 기본 StorageClass의
 `provisioner`가 실제 `CSIDriver` 이름과 정확히 일치해야 하며, 샘플 CSI나 이름 추정으로
 상태를 우회하지 않는다. 비 CSI local-path/hostpath는 개발 편의 저장소로 표시할 수는
-있지만 HISS Core 요구조건을 충족하지 않는다.
+있지만 HIS Core 요구조건을 충족하지 않는다.
 
 관리자는 CSI-backed 기본 StorageClass가 준비된 뒤 Storage 항목의 `실검증`으로 임시
 64Mi PVC와 비권한 Pod를 생성해 동적 provision·mount·read/write를 확인할 수 있다.
@@ -58,7 +58,7 @@ VolumeSnapshotClass로 snapshot→restore와 데이터 무결성을 검증한다
 ```
 angular.json · tsconfig*.json · package.json · package-lock.json   ← Angular 22 프로젝트
 src/                                                                ← 앱 소스 (42 컴포넌트: workloads·network·config·cluster·access + Ceph/Virt/MTV/Obs 확장)
-server.js · his-{manager,catalog}.js · ceph-manager.js              ← K8s 프록시 + WS exec + HISS/Ceph 관리 API
+server.js · his-{manager,catalog}.js · ceph-manager.js              ← K8s 프록시 + WS exec + HIS/Ceph 관리 API
 ui-shell/  (ui-shell.plugin.js + manifest + .sig)                   ← 셸 플러그인 진입점 (Angular Element 주입, ManifestV2, 서명됨)
 Dockerfile (멀티스테이지)                                            ← ng build → dist/.../browser → /app/www
 uipluginpackage.yaml · rbac.yaml                                    ← DUPA 설치계약 · RBAC

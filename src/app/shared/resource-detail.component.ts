@@ -93,7 +93,7 @@ import { TerminalComponent } from './terminal.component';
             <option [value]="2000">2000 lines</option>
           </select>
           <button class="btn btn-sm btn-link btn-icon" title="Refresh" aria-label="Refresh logs" (click)="loadLogs()"><cds-icon shape="refresh"></cds-icon></button>
-          <button class="btn btn-sm btn-link btn-icon" title="Close logs" aria-label="Close logs" (click)="setMode('view')"><cds-icon shape="close"></cds-icon></button>
+          <button class="btn btn-sm btn-link btn-icon" title="Close logs" aria-label="Close logs" (click)="setMode('view')"><cds-icon shape="times"></cds-icon></button>
         </span>
       </div>
       <!-- 로그: ANSI 색상 렌더 + 검색(노란 하이라이트·이전/다음) + 줄바꿈 토글 -->
@@ -108,7 +108,7 @@ import { TerminalComponent } from './terminal.component';
           <select clrSelect aria-label="터미널 컨테이너" [value]="execContainer()" (change)="reExec($any($event.target).value)">
             <option *ngFor="let c of containers()" [value]="c">{{ c }}</option>
           </select>
-          <button class="btn btn-sm btn-link btn-icon" title="Close terminal" aria-label="Close terminal" (click)="setMode('view')"><cds-icon shape="close"></cds-icon></button>
+          <button class="btn btn-sm btn-link btn-icon" title="Close terminal" aria-label="Close terminal" (click)="setMode('view')"><cds-icon shape="times"></cds-icon></button>
         </span>
       </div>
       <app-terminal *ngIf="execShown()" [ns]="namespace" [pod]="name" [container]="execContainer()"></app-terminal>

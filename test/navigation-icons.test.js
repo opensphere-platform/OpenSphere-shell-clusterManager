@@ -35,3 +35,12 @@ test('icon registration reuses the Clarity Angular registry hosted by the subShe
   assert.match(registrySource, /from '@clr\/angular'/);
   assert.doesNotMatch(registrySource, /@cds\/core/);
 });
+
+test('common UI actions do not fall back to the unknown three-dot icon', () => {
+  const registryBlock = registrySource.match(/REGISTERED_UI_ICON_NAMES\s*=\s*\[([\s\S]*?)\]\s*as const/);
+  assert.ok(registryBlock, 'registered UI icon list is missing');
+  const registered = new Set([...registryBlock[1].matchAll(/'([^']+)'/g)].map((match) => match[1]));
+  for (const shape of ['refresh', 'search', 'angle', 'success-standard', 'warning-standard']) {
+    assert.ok(registered.has(shape), `common UI icon '${shape}' is not registered`);
+  }
+});

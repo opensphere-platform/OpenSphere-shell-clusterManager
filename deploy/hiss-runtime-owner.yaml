@@ -101,6 +101,15 @@ rules:
   - apiGroups: [apps]
     resources: [deployments, daemonsets, statefulsets, replicasets, controllerrevisions]
     verbs: [get, list, watch, create, update, patch, delete]
+  # Fixed Helm charts create short-lived admission-hook Roles and
+  # RoleBindings in the managed namespaces. Atomic rollback must be able to
+  # remove those namespaced RBAC objects as well as create and update them.
+  # The pinned ingress and certificate charts delegate narrow controller
+  # permissions from these Roles, so Helm also needs the namespaced
+  # escalation/binding checks required by the Kubernetes RBAC API.
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [roles, rolebindings]
+    verbs: [get, list, watch, create, update, patch, delete, bind, escalate]
   - apiGroups: [batch]
     resources: [jobs, cronjobs]
     verbs: [get, list, watch, create, update, patch, delete]

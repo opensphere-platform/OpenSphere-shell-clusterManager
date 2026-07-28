@@ -104,30 +104,69 @@ type ObservabilityConfigurationMode = 'install' | 'operate';
           <div class="muted" *ngIf="item.release?.managed">Helm {{ item.release.status }} · revision {{ item.release.revision }}</div>
         </clr-dg-cell>
         <clr-dg-cell>
-          <ng-container *ngIf="item.mode === 'HelmManaged'; else detectOnly">
-            <ng-container *ngIf="item.id === 'kube-prometheus-stack'; else genericHelmLifecycle">
-              <button class="btn btn-sm btn-primary observability-manage" type="button" [disabled]="busy()" (click)="openSharedObservability(item)">
-                Shared Observability 관리
+          <div class="action-cell">
+            <div class="action-buttons">
+              <button
+                class="btn btn-sm action-primary"
+                [ngClass]="primaryActionClass(item)"
+                type="button"
+                [disabled]="primaryActionDisabled(item)"
+                (click)="runPrimaryAction(item)"
+              >
+                {{ primaryActionLabel(item) }}
               </button>
-              <div class="muted next-action">{{ observabilityNextAction(item) }}</div>
-            </ng-container>
-            <ng-template #genericHelmLifecycle>
-              <button class="btn btn-sm btn-outline" type="button" [disabled]="busy() || operationActive(item.operation) || releaseLifecycle(item) === 'blocked'" (click)="openPlan(item, planAction(item))">계획</button>
-              <button *ngIf="releaseLifecycle(item) === 'install'" class="btn btn-sm btn-primary" type="button" [disabled]="busy() || operationActive(item.operation) || !canInstall(item)" (click)="openPlan(item, 'install', true)">설치</button>
-              <button *ngIf="releaseLifecycle(item) === 'upgrade'" class="btn btn-sm btn-outline" type="button" [disabled]="busy() || operationActive(item.operation)" (click)="openPlan(item, 'upgrade', true)">업그레이드</button>
-              <button *ngIf="releaseLifecycle(item) === 'recover'" class="btn btn-sm btn-warning-outline" type="button" [disabled]="busy() || operationActive(item.operation)" (click)="openPlan(item, 'recover', true)">복구</button>
-              <span *ngIf="releaseLifecycle(item) === 'blocked'" class="muted">Helm 상태 확인 필요</span>
-              <button class="btn btn-sm btn-outline" type="button" [disabled]="busy() || operationActive(item.operation) || !rollbackAvailable(item)" (click)="openPlan(item, 'rollback', true)">롤백</button>
-              <button class="btn btn-sm btn-danger-outline" type="button" [disabled]="busy() || operationActive(item.operation) || !item.release?.managed" (click)="openPlan(item, 'uninstall', true)">삭제</button>
-            </ng-template>
-          </ng-container>
-          <ng-template #detectOnly>
-            <span class="muted">호스트 제공 · 진단만</span>
-            <button *ngIf="['cluster-network', 'cluster-dns', 'storage', 'csi-snapshot'].includes(item.id)" class="btn btn-sm btn-outline profile-action" type="button" [disabled]="busy() || operationActive(item.operation) || !canValidate(item)" (click)="openCanaryValidation(item)">실검증</button>
-            <button *ngIf="item.profile" class="btn btn-sm btn-outline profile-action" type="button" [disabled]="busy()" (click)="openProfileSelection(item)">
-              {{ item.profileSelected ? 'profile 해제' : '요구조건으로 선택' }}
-            </button>
-          </ng-template>
+
+              <clr-dropdown *ngIf="item.mode === 'HelmManaged' && item.id !== 'kube-prometheus-stack'">
+                <button
+                  type="button"
+                  class="btn btn-sm btn-link btn-icon action-overflow"
+                  clrDropdownTrigger
+                  [attr.aria-label]="item.displayName + ' 추가 작업'"
+                >
+                  <cds-icon shape="ellipsis-vertical" aria-hidden="true"></cds-icon>
+                </button>
+                <clr-dropdown-menu *clrIfOpen clrPosition="bottom-right" [attr.aria-label]="item.displayName + ' 추가 작업'">
+                  <button
+                    type="button"
+                    clrDropdownItem
+                    [disabled]="busy() || operationActive(item.operation) || releaseLifecycle(item) === 'blocked'"
+                    (click)="openPlan(item, planAction(item))"
+                  >계획 검토</button>
+                  <button
+                    *ngIf="item.release?.managed"
+                    type="button"
+                    clrDropdownItem
+                    [disabled]="busy() || operationActive(item.operation) || !rollbackAvailable(item)"
+                    (click)="openPlan(item, 'rollback', true)"
+                  >롤백</button>
+                  <button
+                    *ngIf="item.release?.managed"
+                    type="button"
+                    clrDropdownItem
+                    class="action-danger"
+                    [disabled]="busy() || operationActive(item.operation)"
+                    (click)="openPlan(item, 'uninstall', true)"
+                  >삭제</button>
+                </clr-dropdown-menu>
+              </clr-dropdown>
+
+              <clr-dropdown *ngIf="item.mode === 'DetectOnly' && item.profile">
+                <button
+                  type="button"
+                  class="btn btn-sm btn-link btn-icon action-overflow"
+                  clrDropdownTrigger
+                  [attr.aria-label]="item.displayName + ' 추가 작업'"
+                >
+                  <cds-icon shape="ellipsis-vertical" aria-hidden="true"></cds-icon>
+                </button>
+                <clr-dropdown-menu *clrIfOpen clrPosition="bottom-right" [attr.aria-label]="item.displayName + ' 추가 작업'">
+                  <button type="button" clrDropdownItem [disabled]="busy()" (click)="openProfileSelection(item)">
+                    {{ item.profileSelected ? '요구조건 해제' : '요구조건으로 선택' }}
+                  </button>
+                </clr-dropdown-menu>
+              </clr-dropdown>
+            </div>
+          </div>
         </clr-dg-cell>
         <clr-dg-row-detail *clrIfExpanded>
           <div class="detail">
@@ -712,7 +751,7 @@ type ObservabilityConfigurationMode = 'install' | 'operate';
       <div class="modal-footer">
         <button class="btn btn-outline" type="button" [disabled]="profileBusy()" (click)="profileModalOpen = false">취소</button>
         <button class="btn btn-primary" type="button" [disabled]="profileBusy() || profileReason.trim().length < 8" (click)="applyProfileSelection()">
-          {{ profileTarget()?.profileSelected ? 'profile 해제' : '요구조건으로 선택' }}
+          {{ profileTarget()?.profileSelected ? '요구조건 해제' : '요구조건으로 선택' }}
         </button>
       </div>
     </clr-modal>
@@ -757,9 +796,13 @@ type ObservabilityConfigurationMode = 'install' | 'operate';
     .muted { color: var(--os-text-dim); font-size: 0.65rem; margin-top: 0.12rem; }
     .required { margin-left: 0.35rem; color: var(--os-danger); font-size: 0.62rem; font-weight: 600; }
     .optional { margin-left: 0.35rem; color: var(--os-info); font-size: 0.62rem; font-weight: 600; }
-    .profile-action { display: block; margin: 0.3rem 0 0; }
-    .observability-manage { min-width: 8.5rem; white-space: normal; line-height: 1.25; }
-    .next-action { max-width: 11rem; line-height: 1.35; }
+    .action-cell { min-width: 7rem; }
+    .action-buttons { display: flex; align-items: center; gap: 0.2rem; white-space: nowrap; }
+    .action-buttons .btn { margin: 0; }
+    .action-primary { min-width: 5.25rem; }
+    .action-overflow { min-width: 1.5rem; padding-inline: 0.2rem; }
+    .action-overflow cds-icon { margin: 0; }
+    .action-danger { color: var(--os-danger); }
     .domain-badge { display: inline-block; margin-left: 0.4rem; padding: 0.05rem 0.3rem; border: 1px solid var(--os-info-border); border-radius: 0.5rem; color: var(--os-info); font-size: 0.55rem; vertical-align: middle; }
     .detail { padding: 0.6rem 1rem; line-height: 1.5; }
     .detail-summary { display: grid; gap: 0.2rem; margin-bottom: 0.7rem; }
@@ -1056,6 +1099,45 @@ export class HisComponent implements OnInit, OnDestroy {
   requiredReady(status: HisStatus): number { return status.items.filter((item) => item.required && item.check.state === 'Ready').length; }
   optionalTotal(status: HisStatus): number { return status.items.filter((item) => !item.required).length; }
   optionalReady(status: HisStatus): number { return status.items.filter((item) => !item.required && item.check.state === 'Ready').length; }
+  primaryActionLabel(item: HisItem): string {
+    if (item.mode === 'DetectOnly') return this.canValidate(item) ? '기능 검증' : '상세 진단';
+    if (item.id === 'kube-prometheus-stack') return '관측 서비스 관리';
+    const lifecycle = this.releaseLifecycle(item);
+    return lifecycle === 'install' ? '설치'
+      : lifecycle === 'upgrade' ? '업그레이드'
+        : lifecycle === 'recover' ? '복구' : '상태 확인';
+  }
+
+  primaryActionClass(item: HisItem): string {
+    if (item.mode === 'DetectOnly' || this.releaseLifecycle(item) === 'blocked') return 'btn-outline';
+    if (this.releaseLifecycle(item) === 'recover') return 'btn-warning-outline';
+    return 'btn-primary';
+  }
+
+  primaryActionDisabled(item: HisItem): boolean {
+    if (this.busy() || this.operationActive(item.operation)) return true;
+    if (item.mode === 'DetectOnly' || item.id === 'kube-prometheus-stack') return false;
+    return this.releaseLifecycle(item) === 'install' && !this.canInstall(item);
+  }
+
+  runPrimaryAction(item: HisItem): void {
+    if (item.mode === 'DetectOnly') {
+      if (this.canValidate(item)) this.openCanaryValidation(item);
+      else this.setExpanded(item.id, true);
+      return;
+    }
+    if (item.id === 'kube-prometheus-stack') {
+      this.openSharedObservability(item);
+      return;
+    }
+    const lifecycle = this.releaseLifecycle(item);
+    if (lifecycle === 'blocked') {
+      this.setExpanded(item.id, true);
+      return;
+    }
+    this.openPlan(item, lifecycle, true);
+  }
+
   openProfileSelection(item: HisItem): void {
     this.profileTarget.set(item);
     this.profileReason = '';
@@ -1221,17 +1303,6 @@ export class HisComponent implements OnInit, OnDestroy {
       : `${storageClass.provisioner} · 설치 가능, snapshot·온라인 확장은 제한될 수 있음`;
   }
 
-  observabilityNextAction(item: HisItem): string {
-    if (this.operationActive(item.operation)) return `${this.operationLabel(item.operation!)} 작업 진행 중`;
-    const lifecycle = this.releaseLifecycle(item);
-    if (lifecycle === 'install') return '권장값으로 빠른 설치';
-    if (lifecycle === 'recover') return '중단된 Helm release 복구 필요';
-    if (lifecycle === 'blocked') return 'HIS 실행 권한과 Helm 상태 확인 필요';
-    if (item.check.state === 'Ready') return '운영 상태 정상 · 구성/실검증/롤백 가능';
-    if (this.canValidate(item)) return '구성요소 준비 후 실제 metric·log·trace 경로 검증 필요';
-    return '구성요소와 저장소 상태 복구 필요';
-  }
-
   storageReadiness(): string {
     const state = this.observabilityState();
     const config = this.observabilityConfig();
@@ -1273,9 +1344,16 @@ export class HisComponent implements OnInit, OnDestroy {
     return this.observabilityState()?.storageClasses.find((item) => item.isDefault)?.name || '기본 StorageClass 미지정';
   }
 
+  observabilityInstallCandidate(item: HisItem): boolean {
+    if (item.id !== 'kube-prometheus-stack' || item.mode !== 'HelmManaged') return false;
+    if (this.operationActive(item.operation) || this.releaseLifecycle(item) !== 'install') return false;
+    if (item.check.state === 'Ready' && item.ownership === 'External') return false;
+    return item.check.state !== 'Ready';
+  }
+
   observabilityInstallReady(item: HisItem): boolean {
     const plan = this.observabilityPlan();
-    return this.canInstall(item)
+    return this.observabilityInstallCandidate(item)
       && this.storageReadiness() === 'Ready'
       && this.chartVersionSupported(item)
       && Boolean(plan?.canApply)

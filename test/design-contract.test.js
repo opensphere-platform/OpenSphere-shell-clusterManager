@@ -110,6 +110,7 @@ test('Shared Observability keeps essential install choices visible and moves onl
   assert.match(his, /name="quickStorageClass"/);
   assert.match(his, /Shared Observability의 고정 관리 namespace/);
   assert.match(his, /observabilityAdvancedOpen/);
+  assert.match(his, /observabilityInstallReady\(item: HisItem\)[\s\S]*this\.observabilityInstallCandidate\(item\)[\s\S]*Boolean\(plan\?\.canApply\)/);
   assert.match(his, /shape="success-standard"/);
   assert.doesNotMatch(his, /shape="check-circle"/);
   assert.match(his, /class="modal-footer observability-modal-footer"/);
@@ -123,4 +124,19 @@ test('Shared Observability keeps essential install choices visible and moves onl
   assert.match(his, /\.lifecycle-workspace\s*\{[^}]*max-height:\s*none;[^}]*overflow:\s*visible;/s);
   assert.match(his, /\.observability-quick-card\s*\{[^}]*grid-template-columns:/s);
   assert.match(his, /\.storage-form-grid\s*\{[^}]*grid-template-columns:\s*repeat\(4,/s);
+});
+
+test('HIS action column exposes one primary action and moves secondary work into a standard menu', () => {
+  const his = readFileSync(resolve(appRoot, 'resources/his.component.ts'), 'utf8');
+
+  assert.equal((his.match(/class="btn btn-sm action-primary"/g) || []).length, 1);
+  assert.match(his, /\{\{ primaryActionLabel\(item\) \}\}/);
+  assert.match(his, /primaryActionLabel\(item: HisItem\)[\s\S]*기능 검증[\s\S]*상세 진단[\s\S]*관측 서비스 관리/);
+  assert.match(his, /shape="ellipsis-vertical"/);
+  assert.match(his, /clrPosition="bottom-right"/);
+  assert.match(his, />계획 검토<\/button>/);
+  assert.match(his, /요구조건 해제/);
+  assert.doesNotMatch(his, /<span class="muted">호스트 제공 · 진단만<\/span>/);
+  assert.doesNotMatch(his, /profile 해제/);
+  assert.match(his, /\.action-buttons\s*\{[^}]*display:\s*flex;[^}]*white-space:\s*nowrap;/s);
 });

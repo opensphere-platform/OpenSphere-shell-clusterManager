@@ -503,6 +503,9 @@ test('signed HIS owner release includes bounded lifecycle RBAC for fixed namespa
   assert.doesNotMatch(manifest, /resources:\s*\[\*\]|verbs:\s*\[\*\]/);
   assert.match(manifest, /resources: \[secrets, configmaps/);
   assert.match(manifest, /resources: \[apiservices\]/);
+  const namespaceRbacRule = editorRole.rules.find((rule) => rule.apiGroups?.includes('rbac.authorization.k8s.io'));
+  assert.deepEqual(namespaceRbacRule.resources, ['roles', 'rolebindings']);
+  assert.deepEqual(namespaceRbacRule.verbs, ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete', 'bind', 'escalate']);
   const workflow = fs.readFileSync(path.resolve(__dirname, '../.github/workflows/publish-image.yml'), 'utf8');
   assert.match(workflow, /hiss-runtime-owner\.yaml/);
   assert.match(workflow, /hiss-owner-release-/);

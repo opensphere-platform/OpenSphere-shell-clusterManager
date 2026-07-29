@@ -21,6 +21,7 @@ const {
   evaluateStorageContract,
   validationCanaryName,
   applyValidationOperation,
+  validationEvidenceFresh,
   gateValidationReadiness,
   runtimeContractFingerprint,
   storageContractFingerprint,
@@ -29,6 +30,7 @@ const {
   syntheticPod,
   syntheticService,
   syntheticDenyPolicy,
+  networkCanaryPlan,
   renderedResources,
   recoverableHelmCleanupError,
   retryableProbeError,
@@ -239,7 +241,7 @@ test('completed validation operations replace only their matching canary evidenc
   ] } };
   assert.equal(validationCanaryName('storage'), 'Dynamic provision/bind');
   assert.equal(validationCanaryName('csi-snapshot'), 'Snapshot → restore');
-  const operation = { action: 'validate', phase: 'Ready', message: 'read/write passed', finishedAt: '2026-07-17T00:00:00Z', validationFingerprint: fingerprint };
+  const operation = { action: 'validate', phase: 'Ready', message: 'read/write passed', finishedAt: new Date().toISOString(), validationFingerprint: fingerprint };
   const completed = applyValidationOperation(check, operation, 'storage');
   assert.equal(completed.details.canaries[0].state, 'Passed');
   assert.equal(completed.details.canaries[1].state, 'Passed');
@@ -270,11 +272,55 @@ test('network, DNS and observability readiness is gated by matching synthetic va
     const required = gateValidationReadiness(check, null, id);
     assert.equal(required.state, 'Degraded');
     assert.equal(required.reason, requiredReason);
-    const operation = { action: 'validate', phase: 'Ready', message: 'passed', validationFingerprint: fingerprint };
+    const operation = { action: 'validate', phase: 'Ready', message: 'passed', finishedAt: new Date().toISOString(), validationFingerprint: fingerprint };
     const ready = gateValidationReadiness(check, operation, id);
     assert.equal(ready.state, 'Ready');
     assert.equal(ready.details.canaries[0].state, 'Passed');
   }
+});
+
+test('validation evidence expires and the network canary covers every directional node pair', () => {
+  const now = Date.parse('2026-07-30T00:00:00Z');
+  assert.equal(validationEvidenceFresh({
+    action: 'validate', phase: 'Ready', finishedAt: '2026-07-29T12:00:00Z',
+  }, now), true);
+  assert.equal(validationEvidenceFresh({
+    action: 'validate', phase: 'Ready', finishedAt: '2026-07-28T23:59:59Z',
+  }, now), false);
+  const fingerprint = runtimeContractFingerprint('cluster-network', [], ['network-contract']);
+  const expired = gateValidationReadiness({
+    state: 'Ready',
+    reason: 'CniReady',
+    details: {
+      validationFingerprint: fingerprint,
+      canaries: [{ name: 'Cross-node / egress traffic', state: 'NotRun', message: 'pending' }],
+    },
+  }, {
+    action: 'validate',
+    phase: 'Ready',
+    message: 'passed',
+    finishedAt: '2020-01-01T00:00:00Z',
+    validationFingerprint: fingerprint,
+  }, 'cluster-network');
+  assert.equal(expired.state, 'Degraded');
+  assert.equal(expired.reason, 'NetworkCanaryExpired');
+  assert.equal(expired.details.canaries[0].state, 'NotRun');
+  assert.match(expired.details.canaries[0].message, /24시간/);
+
+  const nodes = ['control-plane', 'worker-a', 'worker-b'].map((name) => ({ metadata: { name } }));
+  const plan = networkCanaryPlan('opensphere-his-network-test', nodes);
+  assert.equal(plan.nodes.length, 3);
+  assert.equal(plan.directionalLinks.length, 6);
+  assert.deepEqual(plan.directionalLinks, [
+    { source: 'control-plane', destination: 'worker-a' },
+    { source: 'control-plane', destination: 'worker-b' },
+    { source: 'worker-a', destination: 'control-plane' },
+    { source: 'worker-a', destination: 'worker-b' },
+    { source: 'worker-b', destination: 'control-plane' },
+    { source: 'worker-b', destination: 'worker-a' },
+  ]);
+  assert.equal(new Set(plan.nodes.map((entry) => entry.serverName)).size, 3);
+  assert.equal(new Set(plan.nodes.map((entry) => entry.clientName)).size, 3);
 });
 
 test('runtime synthetic manifests are bounded, non-privileged and cannot target arbitrary APIs', () => {

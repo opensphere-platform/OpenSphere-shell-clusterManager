@@ -20,6 +20,7 @@ const MAX_OUTPUT = 1024 * 1024;
 const HELM_TIMEOUT_MS = 12 * 60 * 1000;
 const OPERATION_NAMESPACE = process.env.HIS_OPERATION_NAMESPACE || process.env.POD_NAMESPACE || 'opensphere-console';
 const OPERATION_STALE_MS = 60 * 1000;
+const VALIDATION_EVIDENCE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const ACTIVE_OPERATION_PHASES = new Set(['Queued', 'Recovering', 'Installing', 'Upgrading', 'RollingBack', 'Configuring', 'Migrating', 'Validating', 'Uninstalling']);
 const OBSERVABILITY_ITEM_ID = 'kube-prometheus-stack';
 const OBSERVABILITY_CONFIG_NAME = 'opensphere-his-config-kube-prometheus-stack';
@@ -570,10 +571,12 @@ function snapshotContractFingerprint(storageClass, snapshotClass) {
 function applyValidationOperation(check, operation, itemId) {
   const canaryName = validationCanaryName(itemId);
   if (!canaryName || operation?.action !== 'validate' || !check?.details?.canaries) return check;
-  const matches = Boolean(operation.validationFingerprint && operation.validationFingerprint === check.details.validationFingerprint);
+  const fingerprintMatches = Boolean(operation.validationFingerprint && operation.validationFingerprint === check.details.validationFingerprint);
+  const matches = fingerprintMatches && validationEvidenceFresh(operation);
   const state = operation.phase === 'Ready' && matches ? 'Passed' : operation.phase === 'Failed' ? 'Failed' : 'NotRun';
   const message = operation.phase === 'Ready' && matches
     ? `${operation.message} (${operation.finishedAt || operation.updatedAt})`
+    : operation.phase === 'Ready' && fingerprintMatches ? '마지막 실제 기능 경로 검증이 24시간 유효기간을 초과했습니다.'
     : operation.phase === 'Ready' ? '검증 후 HIS 기능 계약이 변경되어 재검증이 필요합니다.'
       : operation.phase === 'Failed' ? operation.error || operation.message : `${operation.message} · 작업 ${operation.id}`;
   return {
@@ -583,6 +586,12 @@ function applyValidationOperation(check, operation, itemId) {
       canaries: check.details.canaries.map((canary) => canary.name === canaryName ? { ...canary, state, message } : canary),
     },
   };
+}
+
+function validationEvidenceFresh(operation, now = Date.now()) {
+  if (operation?.action !== 'validate' || operation.phase !== 'Ready') return false;
+  const observedAt = Date.parse(operation.finishedAt || operation.updatedAt || '');
+  return Number.isFinite(observedAt) && observedAt <= now && now - observedAt <= VALIDATION_EVIDENCE_MAX_AGE_MS;
 }
 
 function gateValidationReadiness(check, operation, itemId) {
@@ -599,10 +608,15 @@ function gateValidationReadiness(check, operation, itemId) {
   const matches = operation?.action === 'validate'
     && operation.phase === 'Ready'
     && operation.validationFingerprint
-    && operation.validationFingerprint === check.details?.validationFingerprint;
+    && operation.validationFingerprint === check.details?.validationFingerprint
+    && validationEvidenceFresh(operation);
   if (matches) return enriched;
   const running = operation?.action === 'validate' && operationActive(operation);
   const failed = operation?.action === 'validate' && operation.phase === 'Failed';
+  const expired = operation?.action === 'validate'
+    && operation.phase === 'Ready'
+    && operation.validationFingerprint === check.details?.validationFingerprint
+    && !validationEvidenceFresh(operation);
   const domain = itemId === 'cluster-network' ? 'Network'
     : itemId === 'cluster-dns' ? 'Dns'
       : itemId === OBSERVABILITY_ITEM_ID ? 'Observability'
@@ -610,9 +624,10 @@ function gateValidationReadiness(check, operation, itemId) {
   return {
     ...enriched,
     state: 'Degraded',
-    reason: `${domain}Canary${running ? 'Running' : failed ? 'Failed' : 'Required'}`,
+    reason: `${domain}Canary${running ? 'Running' : failed ? 'Failed' : expired ? 'Expired' : 'Required'}`,
     message: running ? '승인된 실제 기능 경로 검증이 진행 중입니다.'
       : failed ? `실제 기능 경로 검증에 실패했습니다: ${operation.error || operation.message}`
+        : expired ? '마지막 실제 기능 경로 검증이 24시간 유효기간을 초과했습니다. 현재 계약을 다시 검증해야 합니다.'
         : '객체 계약은 준비되었지만 현재 계약에 대한 실제 기능 경로 검증이 필요합니다.',
   };
 }
@@ -2452,6 +2467,21 @@ function syntheticDenyPolicy(name, labels) {
   };
 }
 
+function networkCanaryPlan(base, nodes) {
+  const normalized = nodes.map((node, index) => ({
+    index,
+    nodeName: node?.metadata?.name || '',
+    serverName: `${base}-server-${index}`.slice(0, 63),
+    clientName: `${base}-client-${index}`.slice(0, 63),
+  }));
+  return {
+    nodes: normalized,
+    directionalLinks: normalized.flatMap((source) => normalized
+      .filter((destination) => destination.index !== source.index)
+      .map((destination) => ({ source: source.nodeName, destination: destination.nodeName }))),
+  };
+}
+
 async function waitForCanaryPodReady(ctx, name, timeoutMs = 60000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -2487,29 +2517,52 @@ async function runtimeCanaryPrerequisites(ctx, item) {
 async function runNetworkCanary(ctx, prerequisites) {
   const image = await currentRuntimeImage(ctx);
   const base = canaryResourceName('network');
-  const serverName = `${base}-server`.slice(0, 63);
+  const canaryPlan = networkCanaryPlan(base, prerequisites.nodes);
   const serviceName = `${base}-service`.slice(0, 63);
-  const clientName = `${base}-client`.slice(0, 63);
   const deniedName = `${base}-denied`.slice(0, 63);
   const policyName = `${base}-deny`.slice(0, 63);
   const instanceLabels = { 'opensphere.io/canary-instance': base };
   const serviceHost = `${serviceName}.${OPERATION_NAMESPACE}.svc.cluster.local`;
   const serverScript = "require('http').createServer((request,response)=>{response.writeHead(200,{'content-type':'text/plain'});response.end('opensphere-his-network-canary');}).listen(8080,'0.0.0.0');";
-  const positiveScript = `const dns=require('dns').promises; (async()=>{const internal=await fetch(${JSON.stringify(`http://${serviceHost}:8080`)},{signal:AbortSignal.timeout(10000)});if((await internal.text()).trim()!=='opensphere-his-network-canary')throw new Error('cross-node payload mismatch');await dns.lookup('registry.k8s.io');const external=await fetch('https://registry.k8s.io/v2/',{signal:AbortSignal.timeout(15000)});if(external.status>=500)throw new Error('egress status '+external.status);})().catch(error=>{console.error(error);process.exit(1)});`;
   const deniedScript = `(async()=>{try{await fetch(${JSON.stringify(`http://${serviceHost}:8080`)},{signal:AbortSignal.timeout(5000)});throw new Error('NetworkPolicy deny가 적용되지 않았습니다.');}catch(error){if(String(error.message).includes('적용되지'))throw error;}})().catch(error=>{console.error(error);process.exit(1)});`;
   try {
-    await k8sRequest(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/pods`, { method: 'POST', body: syntheticPod(serverName, image, serverScript, { domain: 'network', labels: instanceLabels, nodeName: prerequisites.nodes[0].metadata.name, ports: [{ name: 'metrics', containerPort: 8080 }], readinessPath: '/' }) });
+    await Promise.all(canaryPlan.nodes.map((entry) => k8sRequest(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/pods`, {
+      method: 'POST',
+      body: syntheticPod(entry.serverName, image, serverScript, {
+        domain: 'network', labels: instanceLabels, nodeName: entry.nodeName, ports: [{ name: 'metrics', containerPort: 8080 }], readinessPath: '/',
+      }),
+    })));
     await k8sRequest(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/services`, { method: 'POST', body: syntheticService(serviceName, instanceLabels) });
-    await waitForCanaryPodReady(ctx, serverName);
-    await k8sRequest(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/pods`, { method: 'POST', body: syntheticPod(clientName, image, positiveScript, { domain: 'network', nodeName: prerequisites.nodes[1].metadata.name }) });
-    await waitForCanaryPod(ctx, clientName, 90000);
+    const serverPods = await Promise.all(canaryPlan.nodes.map((entry) => waitForCanaryPodReady(ctx, entry.serverName)));
+    if (serverPods.some((pod) => !pod.status?.podIP)) throw Object.assign(new Error('모든 노드의 검증 서버 Pod IP를 확인할 수 없습니다.'), { code: 502 });
+    await Promise.all(canaryPlan.nodes.map((entry) => {
+      const peerUrls = serverPods
+        .filter((_, index) => index !== entry.index)
+        .map((pod) => `http://${pod.status.podIP}:8080`);
+      const positiveScript = `const dns=require('dns').promises;const peers=${JSON.stringify(peerUrls)};(async()=>{for(const endpoint of peers){const response=await fetch(endpoint,{signal:AbortSignal.timeout(10000)});if((await response.text()).trim()!=='opensphere-his-network-canary')throw new Error('cross-node payload mismatch '+endpoint);}const service=await fetch(${JSON.stringify(`http://${serviceHost}:8080`)},{signal:AbortSignal.timeout(10000)});if((await service.text()).trim()!=='opensphere-his-network-canary')throw new Error('service payload mismatch');await dns.lookup('registry.k8s.io');const external=await fetch('https://registry.k8s.io/v2/',{signal:AbortSignal.timeout(15000)});if(external.status>=500)throw new Error('egress status '+external.status);})().catch(error=>{console.error(error);process.exit(1)});`;
+      return k8sRequest(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/pods`, {
+        method: 'POST', body: syntheticPod(entry.clientName, image, positiveScript, { domain: 'network', nodeName: entry.nodeName }),
+      });
+    }));
+    await Promise.all(canaryPlan.nodes.map((entry) => waitForCanaryPod(ctx, entry.clientName, 90000)));
     await k8sRequest(ctx, `/apis/networking.k8s.io/v1/namespaces/${OPERATION_NAMESPACE}/networkpolicies`, { method: 'POST', body: syntheticDenyPolicy(policyName, instanceLabels) });
     await new Promise((resolve) => setTimeout(resolve, 3000));
-    await k8sRequest(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/pods`, { method: 'POST', body: syntheticPod(deniedName, image, deniedScript, { domain: 'network', nodeName: prerequisites.nodes[1].metadata.name }) });
+    await k8sRequest(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/pods`, {
+      method: 'POST',
+      body: syntheticPod(deniedName, image, deniedScript, {
+        domain: 'network', nodeName: canaryPlan.nodes[canaryPlan.nodes.length - 1].nodeName,
+      }),
+    });
     await waitForCanaryPod(ctx, deniedName, 60000);
-    return { message: `서로 다른 노드 ${prerequisites.nodes[0].metadata.name}→${prerequisites.nodes[1].metadata.name} Service 통신, 외부 egress와 NetworkPolicy deny를 검증했습니다.` };
+    return {
+      message: `${canaryPlan.nodes.length}개 Ready 노드의 ${canaryPlan.directionalLinks.length}개 방향 Pod 통신, 각 노드의 Service·외부 egress와 NetworkPolicy deny를 검증했습니다.`,
+    };
   } finally {
-    for (const name of [deniedName, clientName, serverName]) await deleteIfPresent(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/pods/${encodeURIComponent(name)}`).catch(() => false);
+    for (const name of [
+      deniedName,
+      ...canaryPlan.nodes.map((entry) => entry.clientName),
+      ...canaryPlan.nodes.map((entry) => entry.serverName),
+    ]) await deleteIfPresent(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/pods/${encodeURIComponent(name)}`).catch(() => false);
     await deleteIfPresent(ctx, `/apis/networking.k8s.io/v1/namespaces/${OPERATION_NAMESPACE}/networkpolicies/${encodeURIComponent(policyName)}`).catch(() => false);
     await deleteIfPresent(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/services/${encodeURIComponent(serviceName)}`).catch(() => false);
   }
@@ -3354,6 +3407,7 @@ module.exports = {
   evaluateStorageContract,
   validationCanaryName,
   applyValidationOperation,
+  validationEvidenceFresh,
   gateValidationReadiness,
   runtimeContractFingerprint,
   storageContractFingerprint,
@@ -3361,6 +3415,7 @@ module.exports = {
   syntheticPod,
   syntheticService,
   syntheticDenyPolicy,
+  networkCanaryPlan,
   canaryPvc,
   canaryPod,
   renderedResources,

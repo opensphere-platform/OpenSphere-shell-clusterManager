@@ -1186,11 +1186,11 @@ export class HisComponent implements OnInit, OnDestroy {
   }
   canValidate(item: HisItem): boolean {
     const reasons: Record<string, string[]> = {
-      'cluster-network': ['CniReady', 'NetworkCanaryRequired', 'NetworkCanaryFailed'],
-      'cluster-dns': ['DnsResolutionReady', 'DnsCanaryRequired', 'DnsCanaryFailed'],
-      'kube-prometheus-stack': ['ObservabilityReady', 'ObservabilityCanaryRequired', 'ObservabilityCanaryFailed'],
-      storage: ['CsiStorageReady', 'StorageCanaryRequired', 'StorageCanaryFailed'],
-      'csi-snapshot': ['SnapshotReady', 'DataProtectionCanaryRequired', 'DataProtectionCanaryFailed'],
+      'cluster-network': ['CniReady', 'NetworkCanaryRequired', 'NetworkCanaryExpired', 'NetworkCanaryFailed'],
+      'cluster-dns': ['DnsResolutionReady', 'DnsCanaryRequired', 'DnsCanaryExpired', 'DnsCanaryFailed'],
+      'kube-prometheus-stack': ['ObservabilityReady', 'ObservabilityCanaryRequired', 'ObservabilityCanaryExpired', 'ObservabilityCanaryFailed'],
+      storage: ['CsiStorageReady', 'StorageCanaryRequired', 'StorageCanaryExpired', 'StorageCanaryFailed'],
+      'csi-snapshot': ['SnapshotReady', 'DataProtectionCanaryRequired', 'DataProtectionCanaryExpired', 'DataProtectionCanaryFailed'],
     };
     return (reasons[item.id] || []).includes(item.check.reason);
   }

@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Local edge release declaration for the HIS-owned ObservabilityBinding
+# controller. The base remains a reviewable developer template; deployment
+# always resolves this exact GHCR digest rather than the local placeholder.
+resources:
+  - observability-binding-controller.yaml
+
+images:
+  - name: opensphere-his-binding-controller
+    newName: ghcr.io/opensphere-platform/opensphere-his-binding-controller
+    digest: sha256:9363399679a7c7026f1504ccc733975f717524686f5fb76ad26c70490fba99ba

@@ -109,6 +109,7 @@ test('HIS catalog keeps PFS/plugin concepts outside the prerequisite catalog', (
   assert.match(managerSource, /item\.adoptExisting\s*\?\s*\['--take-ownership'\]/);
   assert.match(managerSource, /await prepareManagedUninstall\(ctx, item\)/);
   assert.match(managerSource, /runtimeContractReady/);
+  assert.match(managerSource, /Promise\.all\(HIS_CATALOG\.map\(\(item\) => itemStatus\(ctx, item\)\)\)/);
   const dataProtection = catalogItem('csi-snapshot');
   assert.equal(dataProtection.required, false);
   assert.equal(dataProtection.profile, 'Data Protection');

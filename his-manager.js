@@ -1975,8 +1975,10 @@ function evaluateStackStatus(items, profiles) {
 }
 
 async function allStatus(ctx) {
-  const items = [];
-  for (const item of HIS_CATALOG) items.push(await itemStatus(ctx, item));
+  // Each catalog probe is read-only and item-scoped. Running them serially can
+  // exceed the Foundation owner proxy's bounded timeout and incorrectly close
+  // an otherwise healthy administrator lifecycle screen.
+  const items = await Promise.all(HIS_CATALOG.map((item) => itemStatus(ctx, item)));
   const explicitProfiles = await readProfileSelection(ctx);
   const profiles = evaluateProfiles(items, explicitProfiles);
   const evaluated = evaluateStackStatus(items, profiles);

@@ -1077,6 +1077,7 @@ export class HisComponent implements OnInit, OnDestroy {
   observabilityChartVersion = '87.19.1';
   private configurationFingerprint = '';
   private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private statusRequestInFlight = false;
   private focusItemId = '';
   private focusApplied = false;
 
@@ -1094,6 +1095,8 @@ export class HisComponent implements OnInit, OnDestroy {
   }
 
   load(showLoading = true): void {
+    if (this.statusRequestInFlight) return;
+    this.statusRequestInFlight = true;
     if (showLoading) {
       this.loading.set(true);
       this.error.set('');
@@ -1105,8 +1108,13 @@ export class HisComponent implements OnInit, OnDestroy {
         this.status.set({ ...status, items });
         this.applyRequestedFocus(items);
         this.loading.set(false);
+        this.statusRequestInFlight = false;
       },
-      error: (error) => { if (showLoading) this.error.set(this.message(error)); this.loading.set(false); },
+      error: (error) => {
+        if (showLoading) this.error.set(this.message(error));
+        this.loading.set(false);
+        this.statusRequestInFlight = false;
+      },
     });
   }
 

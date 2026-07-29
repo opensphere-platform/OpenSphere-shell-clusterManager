@@ -448,6 +448,8 @@ test('HIS UI renders install, upgrade and recovery as mutually exclusive lifecyc
   assert.match(ui, /고급 설정/);
   assert.match(ui, /applyQuickInstallDefaults/);
   assert.match(ui, /기술 계획 보기/);
+  assert.match(ui, /private statusRequestInFlight = false/);
+  assert.match(ui, /if \(this\.statusRequestInFlight\) return/);
   assert.match(ui, /<clr-alert /);
   assert.match(ui, /<form clrForm clrLayout="vertical" class="storage-form-grid">/);
   assert.match(ui, /<clr-select-container>/);

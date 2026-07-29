@@ -5,6 +5,7 @@
   "sourceRepository": "https://github.com/crossplane-contrib/provider-helm",
   "sourceRevision": "df02f201fec49fdabd095421bc3b0a67b1b296b6",
   "upstreamReference": "xpkg.crossplane.io/crossplane-contrib/provider-helm@sha256:97e4d1e72f3fefcc3d101eaa3058e1849ed995f87b48193fc446064874edb63d",
+  "resolvedDigest": "sha256:1e52d72c8f27babe7061a5c8da802cc791b8c492770c89404723f76f8d47a41d",
   "platformRuntimeMirrors": {
     "linux/amd64": "ghcr.io/opensphere-platform/mirror-crossplane-provider-helm@sha256:ca8d52dca0adf26c319ae505c2a3f2e835d53ae335cef60ca75d67d7072f3154"
   }

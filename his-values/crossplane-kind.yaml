@@ -1,0 +1,50 @@
+# OpenSphere HISS Crossplane profile for Docker Desktop kind.
+#
+# kind/containerd has shown repeatable short-read failures against the upstream
+# xpkg registry. All runtime bytes and the Crossplane package index therefore
+# come from public OpenSphere curated mirrors and are pinned by exact digest.
+image:
+  repository: ghcr.io/opensphere-platform/mirror-crossplane@sha256:cbe8a912ab550fa5b724970f7272428d3a6d13f011d437f3015247be4d14645d
+  ignoreTag: true
+
+# Disable the chart init-container bootstrap. The Helm-owned Provider below is
+# deterministic, uninstallable and can be recreated by the same Console flow.
+provider:
+  packages: []
+
+extraObjects:
+  - apiVersion: pkg.crossplane.io/v1beta1
+    kind: DeploymentRuntimeConfig
+    metadata:
+      name: opensphere-provider-helm-linux-amd64
+      labels:
+        app.kubernetes.io/managed-by: Helm
+        opensphere.io/his-capability: platform-delivery
+        opensphere.io/runtime-platform: linux-amd64
+    spec:
+      deploymentTemplate:
+        spec:
+          selector: {}
+          template:
+            metadata:
+              labels:
+                opensphere.io/his-capability: platform-delivery
+                opensphere.io/runtime-platform: linux-amd64
+            spec:
+              containers:
+                - name: package-runtime
+                  image: ghcr.io/opensphere-platform/mirror-crossplane-provider-helm@sha256:ca8d52dca0adf26c319ae505c2a3f2e835d53ae335cef60ca75d67d7072f3154
+  - apiVersion: pkg.crossplane.io/v1
+    kind: Provider
+    metadata:
+      name: crossplane-contrib-provider-helm
+      labels:
+        app.kubernetes.io/managed-by: Helm
+        opensphere.io/his-capability: platform-delivery
+    spec:
+      package: ghcr.io/opensphere-platform/mirror-crossplane-provider-helm-package@sha256:1e52d72c8f27babe7061a5c8da802cc791b8c492770c89404723f76f8d47a41d
+      packagePullPolicy: IfNotPresent
+      runtimeConfigRef:
+        apiVersion: pkg.crossplane.io/v1beta1
+        kind: DeploymentRuntimeConfig
+        name: opensphere-provider-helm-linux-amd64

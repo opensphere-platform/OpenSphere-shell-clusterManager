@@ -1124,6 +1124,30 @@ async function probe(ctx, name) {
     const providerInstalled = condition(providerHelm, 'Installed')?.status === 'True';
     const providerHealthy = condition(providerHelm, 'Healthy')?.status === 'True';
     const providerDigestPinned = /@sha256:[a-f0-9]{64}$/i.test(providerHelm?.spec?.package || '');
+    const providerRevision = providerHelm?.status?.currentRevision || '';
+    const providerRuntime = deployments.find((item) => item.metadata?.name === providerRevision)
+      || deployments.find((item) => /provider-helm/i.test(item.metadata?.name || ''));
+    const variant = await clusterVariant(ctx);
+    const runtimePolicy = catalogItem('crossplane-core')?.runtimePolicy?.[variant] || null;
+    const workloadImages = (workload) => [
+      ...(workload?.spec?.template?.spec?.initContainers || []),
+      ...(workload?.spec?.template?.spec?.containers || []),
+    ].map((container) => container.image).filter(Boolean);
+    const coreImages = workloadImages(core);
+    const rbacImages = workloadImages(rbacManager);
+    const providerRuntimeImages = workloadImages(providerRuntime);
+    const coreImageMatches = !runtimePolicy || (
+      coreImages.length > 0
+      && rbacImages.length > 0
+      && [...coreImages, ...rbacImages].every((image) => image === runtimePolicy.coreImage)
+    );
+    const providerPackageMatches = !runtimePolicy || providerHelm?.spec?.package === runtimePolicy.providerPackage;
+    const providerRuntimeMatches = !runtimePolicy || (
+      providerRuntimeImages.length > 0
+      && providerRuntimeImages.every((image) => image === runtimePolicy.providerRuntimeImage)
+      && providerHelm?.spec?.runtimeConfigRef?.name === runtimePolicy.runtimeConfigName
+    );
+    const runtimeContractReady = coreImageMatches && providerPackageMatches && providerRuntimeMatches;
     const providerRows = providers.map((item) => ({
       name: item.metadata?.name || '',
       package: item.spec?.package || '',
@@ -1135,6 +1159,7 @@ async function probe(ctx, name) {
     const components = [
       { name: 'Crossplane Core', kind: 'Deployment', item: core },
       { name: 'Crossplane RBAC Manager', kind: 'Deployment', item: rbacManager },
+      { name: 'provider-helm Runtime', kind: 'Deployment', item: providerRuntime },
       { name: 'provider-helm', kind: 'Provider', item: providerHelm },
     ];
     const details = diagnosticDetails({
@@ -1143,6 +1168,7 @@ async function probe(ctx, name) {
         { label: 'Core workload', value: core ? `${core.status?.availableReplicas || 0}/${core.spec?.replicas || 1}` : 'Missing', state: core && availableDeployment(core) ? 'Passed' : 'Failed' },
         { label: 'RBAC manager', value: rbacManager ? `${rbacManager.status?.availableReplicas || 0}/${rbacManager.spec?.replicas || 1}` : 'Missing', state: rbacManager && availableDeployment(rbacManager) ? 'Passed' : 'Failed' },
         { label: 'provider-helm', value: providerHelm?.spec?.package || 'Missing', state: providerInstalled && providerHealthy && providerDigestPinned ? 'Passed' : 'Failed' },
+        { label: `${variant} runtime contract`, value: runtimeContractReady ? 'Exact digest 일치' : '불일치', state: runtimeContractReady ? 'Passed' : 'Failed' },
         { label: 'ProviderConfig API', value: providerConfigApiReady ? 'Discovered' : 'Pending', state: providerConfigApiReady ? 'Passed' : 'Failed' },
         { label: 'ProviderConfig / Release', value: `${(providerConfigList.items?.length || 0) + (providerConfigListV2.items?.length || 0)} / ${(releaseList.items?.length || 0) + (releaseListV2.items?.length || 0)}`, state: 'Info' },
       ],
@@ -1156,12 +1182,13 @@ async function probe(ctx, name) {
       }],
       warnings: [
         ...(!providerDigestPinned && providerHelm ? ['provider-helm package가 exact OCI digest로 고정되지 않았습니다.'] : []),
+        ...(!runtimeContractReady ? [`${variant}용 Crossplane core, provider package 또는 provider runtime exact digest가 승인 계약과 일치하지 않습니다.`] : []),
         ...(!providerConfigApiReady ? ['provider-helm API가 아직 discovery되지 않았습니다. ProviderRevision condition을 확인하십시오.'] : []),
       ],
       security: ['Crossplane core와 provider package lifecycle은 HISS가 소유하고 ProviderConfig·Release 운영은 Foundation Platform Delivery에 위임합니다.', 'Provider credential 값은 표시하지 않고 SecretRef 또는 InjectedIdentity만 허용합니다.'],
       canaries: [
         { name: 'Core controllers', state: core && availableDeployment(core) && rbacManager && availableDeployment(rbacManager) ? 'Passed' : 'Failed', message: `${deployments.filter(availableDeployment).length}/${deployments.length} deployments available` },
-        { name: 'Approved provider', state: providerInstalled && providerHealthy && providerDigestPinned ? 'Passed' : 'Failed', message: providerHelm?.spec?.package || 'provider-helm missing' },
+        { name: 'Approved provider', state: providerInstalled && providerHealthy && providerDigestPinned && providerRuntime && availableDeployment(providerRuntime) && runtimeContractReady ? 'Passed' : 'Failed', message: providerHelm?.spec?.package || 'provider-helm missing' },
       ],
     });
     details.components = components.map((component) => ({
@@ -1174,17 +1201,17 @@ async function probe(ctx, name) {
           : (providerInstalled && providerHealthy ? 'Ready' : 'Pending'),
       image: component.kind === 'Deployment' ? containerImages(component.item) : component.item?.spec?.package || '',
     }));
-    details.validationFingerprint = runtimeContractFingerprint('crossplane-core', [core, rbacManager, providerHelm], [
-      packageApiReady, providerConfigApiReady, providerHelm?.spec?.package || '',
+    details.validationFingerprint = runtimeContractFingerprint('crossplane-core', [core, rbacManager, providerRuntime, providerHelm], [
+      packageApiReady, providerConfigApiReady, providerHelm?.spec?.package || '', variant, runtimeContractReady,
     ]);
-    const observed = [containerImages(core), containerImages(rbacManager), providerHelm?.spec?.package || ''].filter(Boolean).join(', ');
+    const observed = [containerImages(core), containerImages(rbacManager), containerImages(providerRuntime), providerHelm?.spec?.package || ''].filter(Boolean).join(', ');
     if (!packageApiReady && !core && !rbacManager) {
       return result('Blocked', 'CrossplaneMissing', 'Crossplane core가 없습니다. Platform Delivery profile에서 선택 설치할 수 있습니다.', '', details);
     }
     if (!packageApiReady || !core || !rbacManager || !availableDeployment(core) || !availableDeployment(rbacManager)) {
       return result('Degraded', 'CrossplaneRuntimePartial', 'Crossplane CRD 또는 core/RBAC manager가 아직 준비되지 않았습니다.', observed, details);
     }
-    if (!providerInstalled || !providerHealthy || !providerDigestPinned || !providerConfigApiReady) {
+    if (!providerInstalled || !providerHealthy || !providerDigestPinned || !providerRuntime || !availableDeployment(providerRuntime) || !providerConfigApiReady || !runtimeContractReady) {
       return result('Degraded', 'CrossplaneProviderPartial', 'Core는 Ready이나 승인된 provider-helm package/API가 준비되지 않았습니다.', observed, details);
     }
     return result('Ready', 'CrossplaneAdapterRuntimeReady', 'Crossplane core와 exact-digest provider-helm package가 Ready입니다.', observed, details);
@@ -1786,6 +1813,22 @@ async function patchOperation(ctx, item, operation, patch) {
 async function deleteIfPresent(ctx, apiPath) {
   try { await k8sRequest(ctx, apiPath, { method: 'DELETE' }); return true; }
   catch (error) { if (error.code === 404) return false; throw error; }
+}
+
+async function waitForApiPathAbsent(ctx, apiPath, timeoutMs = 180000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!await k8sOrNull(ctx, apiPath)) return;
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  throw Object.assign(new Error(`선행 관리 리소스 삭제 대기 시간이 초과되었습니다: ${apiPath}`), { code: 504 });
+}
+
+async function prepareManagedUninstall(ctx, item) {
+  for (const apiPath of item.preUninstallResources || []) {
+    await deleteIfPresent(ctx, apiPath);
+    await waitForApiPathAbsent(ctx, apiPath);
+  }
 }
 
 function recoverableHelmCleanupError(releaseStatus, message) {
@@ -2727,7 +2770,8 @@ async function executeOperation(ctx, actor, item, operation) {
       return;
     }
 
-    current = await patchOperation(ctx, item, current, { phase: 'Uninstalling', progress: 25, message: 'Helm release와 관리 리소스를 삭제하고 있습니다.' });
+    current = await patchOperation(ctx, item, current, { phase: 'Uninstalling', progress: 25, message: '종속 런타임을 정상 종료한 뒤 Helm release를 삭제하고 있습니다.' });
+    await prepareManagedUninstall(ctx, item);
     const out = await commandWithHeartbeat(ctx, item, current, ['uninstall', item.release, '--namespace', item.namespace, '--wait', '--timeout', '10m']);
     current = await patchOperation(ctx, item, current, { phase: 'Validating', progress: 88, message: '삭제 결과와 보존 리소스를 검증하고 있습니다.' });
     const check = await waitForProbe(ctx, item, (value) => value.state !== 'Ready', 60000);

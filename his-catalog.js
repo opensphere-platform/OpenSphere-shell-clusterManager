@@ -192,13 +192,21 @@ const HIS_CATALOG = Object.freeze([
     chartVersion: '2.3.3',
     appVersion: '2.3.3',
     source: 'https://charts.crossplane.io/stable',
-    values: [
-      '--set-string',
-      'image.tag=v2.3.3@sha256:f1c88a98f113a5cb78d75c7e94e2a7fefdf86ffb3353c63f01697dc5ad855b19',
-      '--set-string',
-      'provider.packages[0]=xpkg.crossplane.io/crossplane-contrib/provider-helm@sha256:97e4d1e72f3fefcc3d101eaa3058e1849ed995f87b48193fc446064874edb63d',
+    values: ['--values', '/app/his-values/crossplane.yaml'],
+    kindValues: ['--values', '/app/his-values/crossplane-kind.yaml'],
+    adoptExisting: true,
+    runtimePolicy: {
+      kind: {
+        coreImage: 'ghcr.io/opensphere-platform/mirror-crossplane@sha256:cbe8a912ab550fa5b724970f7272428d3a6d13f011d437f3015247be4d14645d',
+        providerPackage: 'ghcr.io/opensphere-platform/mirror-crossplane-provider-helm-package@sha256:1e52d72c8f27babe7061a5c8da802cc791b8c492770c89404723f76f8d47a41d',
+        providerRuntimeImage: 'ghcr.io/opensphere-platform/mirror-crossplane-provider-helm@sha256:ca8d52dca0adf26c319ae505c2a3f2e835d53ae335cef60ca75d67d7072f3154',
+        runtimeConfigName: 'opensphere-provider-helm-linux-amd64',
+      },
+    },
+    preUninstallResources: [
+      '/apis/pkg.crossplane.io/v1/providers/crossplane-contrib-provider-helm',
     ],
-    retainedOnDelete: ['Namespace', 'CustomResourceDefinition', 'Provider/ProviderRevision', 'ProviderConfig', 'Managed Resource와 connection data'],
+    retainedOnDelete: ['Namespace', 'CustomResourceDefinition', 'ProviderConfig', 'Managed Resource와 connection data'],
     domain: 'Platform Delivery',
     compatibility: { kubernetes: '>=1.30.0 <1.37.0', policy: 'Crossplane v2 package API · provider-helm digest allowlist' },
     remediation: {

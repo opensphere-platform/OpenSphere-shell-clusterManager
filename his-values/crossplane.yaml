@@ -1,0 +1,8 @@
+# Crossplane baseline profile for standard clusters.
+# Multi-architecture upstream references remain exact-digest pinned.
+image:
+  tag: v2.3.3@sha256:f1c88a98f113a5cb78d75c7e94e2a7fefdf86ffb3353c63f01697dc5ad855b19
+
+provider:
+  packages:
+    - xpkg.crossplane.io/crossplane-contrib/provider-helm@sha256:97e4d1e72f3fefcc3d101eaa3058e1849ed995f87b48193fc446064874edb63d

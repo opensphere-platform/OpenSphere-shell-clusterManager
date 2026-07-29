@@ -21,6 +21,7 @@ RUN mkdir -p /his-charts /ceph-charts \
     && helm pull ingress-nginx --repo https://kubernetes.github.io/ingress-nginx --version 4.15.1 --destination /his-charts \
     && helm pull metrics-server --repo https://kubernetes-sigs.github.io/metrics-server --version 3.13.1 --destination /his-charts \
     && helm pull oci://quay.io/jetstack/charts/cert-manager --version v1.20.0 --destination /his-charts \
+    && helm pull argo-cd --repo https://argoproj.github.io/argo-helm --version 9.5.15 --destination /his-charts \
     && helm pull crossplane --repo https://charts.crossplane.io/stable --version 2.3.3 --destination /his-charts \
     && helm pull oci://ghcr.io/prometheus-community/charts/kube-prometheus-stack --version 86.0.1 --destination /his-charts \
     && helm pull oci://ghcr.io/prometheus-community/charts/kube-prometheus-stack --version 87.19.1 --destination /his-charts \
@@ -30,6 +31,7 @@ RUN mkdir -p /his-charts /ceph-charts \
     && echo '3eff0bd18151d6e6b1c441463410571443dda1ac78292cb189346628de784f0c  /his-charts/ingress-nginx-4.15.1.tgz' | sha256sum -c - \
     && echo '084e6edb680cf4e2acc30bd496568c53fdf663cbacf6e17876b25785c35b7a13  /his-charts/metrics-server-3.13.1.tgz' | sha256sum -c - \
     && echo '1f1a268fd1642d76d0b9fd162aaedc91973a81b87d9e57c0fff246024ccd2ad4  /his-charts/cert-manager-v1.20.0.tgz' | sha256sum -c - \
+    && echo '95502bea856e2e1e9bfbb7a5ab90d309970b4ffd098ff3dadb99188350768b9e  /his-charts/argo-cd-9.5.15.tgz' | sha256sum -c - \
     && echo '327cadea168633b9dcaa71da1852fb308d837dd3f9c8a53410c155257df206c8  /his-charts/crossplane-2.3.3.tgz' | sha256sum -c - \
     && echo '834c252b3e769516578f6199a374daf688b0bf7b7693089ebbf36aa7dcfd8d0d  /his-charts/kube-prometheus-stack-86.0.1.tgz' | sha256sum -c - \
     && echo '87893c23e84ad7f4282b816541a7e571a128c6c0dd2ac9ffff2527d3d54ee6b1  /his-charts/kube-prometheus-stack-87.19.1.tgz' | sha256sum -c - \

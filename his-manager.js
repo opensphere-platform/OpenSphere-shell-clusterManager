@@ -458,7 +458,8 @@ async function observabilityRead(label, read, accessIssues) {
 
 function availableDeployment(deployment) {
   const desired = Number(deployment && deployment.spec && deployment.spec.replicas || 1);
-  return Number(deployment && deployment.status && deployment.status.availableReplicas || 0) >= desired;
+  const available = deployment?.status?.availableReplicas ?? deployment?.status?.readyReplicas ?? 0;
+  return Number(available) >= desired;
 }
 
 function readyDaemonSet(ds) {
@@ -1038,6 +1039,69 @@ async function probe(ctx, name) {
       return result('Degraded', 'ObservabilityPartial', `관측 스택 일부만 준비되었습니다. 미준비: ${missing.join(', ') || 'CRD'}`, observedVersion, details);
     }
     return result('Blocked', 'ObservabilityMissing', '공유 kube-prometheus-stack이 없습니다. Observability profile에서 선택 설치할 수 있습니다.', '', details);
+  }
+  if (name === 'argocd') {
+    const [crdList, deploymentList, statefulSetList, applicationList, projectList] = await Promise.all([
+      k8sListOrEmpty(ctx, '/apis/apiextensions.k8s.io/v1/customresourcedefinitions'),
+      k8sListOrEmpty(ctx, '/apis/apps/v1/namespaces/argocd/deployments'),
+      k8sListOrEmpty(ctx, '/apis/apps/v1/namespaces/argocd/statefulsets'),
+      k8sListOrEmpty(ctx, '/apis/argoproj.io/v1alpha1/namespaces/argocd/applications'),
+      k8sListOrEmpty(ctx, '/apis/argoproj.io/v1alpha1/namespaces/argocd/appprojects'),
+    ]);
+    const crds = crdList.items || [];
+    const deployments = deploymentList.items || [];
+    const statefulSets = statefulSetList.items || [];
+    const componentSpecs = [
+      ['Application Controller', 'StatefulSet', statefulSets.find((item) => item.metadata?.name === 'argocd-application-controller')],
+      ['Repository Server', 'Deployment', deployments.find((item) => item.metadata?.name === 'argocd-repo-server')],
+      ['API Server', 'Deployment', deployments.find((item) => item.metadata?.name === 'argocd-server')],
+      ['ApplicationSet Controller', 'Deployment', deployments.find((item) => item.metadata?.name === 'argocd-applicationset-controller')],
+    ];
+    const apiReady = ['applications.argoproj.io', 'appprojects.argoproj.io', 'applicationsets.argoproj.io']
+      .every((name) => crds.some((item) => item.metadata?.name === name));
+    const components = componentSpecs.map(([label, kind, item]) => ({
+      name: label,
+      kind,
+      resourceName: item?.metadata?.name || '',
+      namespace: 'argocd',
+      state: item && availableDeployment(item) ? 'Ready' : (item ? 'Pending' : 'Missing'),
+      image: containerImages(item),
+    }));
+    const runtimeReady = components.every((component) => component.state === 'Ready');
+    const images = components.map((component) => component.image).filter(Boolean);
+    const digestPinned = images.length === components.length && images.every((image) => /@sha256:[a-f0-9]{64}(?:,|$)/i.test(image));
+    const details = diagnosticDetails({
+      facts: [
+        { label: 'Argo CD CRD/API', value: apiReady ? 'Discovered' : 'Missing', state: apiReady ? 'Passed' : 'Failed' },
+        { label: 'Runtime workloads', value: `${components.filter((item) => item.state === 'Ready').length}/${components.length} Ready`, state: runtimeReady ? 'Passed' : 'Failed' },
+        { label: 'Exact image digest', value: digestPinned ? 'Pinned' : '검증 필요', state: digestPinned ? 'Passed' : 'Failed' },
+        { label: 'Delivery declarations', value: `${applicationList.items?.length || 0} Applications · ${projectList.items?.length || 0} AppProjects`, state: 'Info' },
+      ],
+      warnings: digestPinned ? [] : ['Argo CD runtime image 중 exact digest로 고정되지 않은 항목이 있습니다.'],
+      security: ['관리자는 Foundation Platform Delivery 화면에서 작업을 승인하며, 실행기는 고정 chart와 digest만 적용합니다.', 'runtime 제거는 CRD·Application/AppProject·repository credential과 이미 배포된 workload를 보존합니다.'],
+      canaries: [
+        { name: 'Control-plane readiness', state: runtimeReady ? 'Passed' : 'Failed', message: `${components.filter((item) => item.state === 'Ready').length}/${components.length} primary workloads Ready` },
+        { name: 'API discovery', state: apiReady ? 'Passed' : 'Failed', message: apiReady ? 'Application/AppProject/ApplicationSet API discovered' : 'Argo CD CRD missing' },
+      ],
+    });
+    details.components = components;
+    details.validationFingerprint = runtimeContractFingerprint('argocd-runtime', componentSpecs.map((entry) => entry[2]), [
+      apiReady,
+      ...images,
+      ...(applicationList.items || []).map((item) => item.metadata?.uid || item.metadata?.name || ''),
+      ...(projectList.items || []).map((item) => item.metadata?.uid || item.metadata?.name || ''),
+    ]);
+    const observed = images.join(', ');
+    if (!apiReady && components.every((component) => component.state === 'Missing')) {
+      return result('Blocked', 'ArgoCdMissing', 'Argo CD runtime이 설치되지 않았습니다. Platform Delivery에서 선택 설치할 수 있습니다.', '', details);
+    }
+    if (!apiReady || !runtimeReady) {
+      return result('Degraded', 'ArgoCdRuntimePartial', 'Argo CD CRD 또는 필수 control-plane workload가 아직 준비되지 않았습니다.', observed, details);
+    }
+    if (!digestPinned) {
+      return result('Degraded', 'ArgoCdDigestUnverified', 'Argo CD runtime은 Ready이나 exact image digest 검증이 필요합니다.', observed, details);
+    }
+    return result('Ready', 'ArgoCdRuntimeReady', 'Argo CD control-plane과 exact-digest runtime이 Ready입니다.', observed, details);
   }
   if (name === 'crossplane') {
     const [crdList, deploymentList, providerList, providerConfigList, providerConfigListV2, releaseList, releaseListV2] = await Promise.all([
@@ -2608,11 +2672,11 @@ async function executeOperation(ctx, actor, item, operation) {
       if (lifecycleAction !== operation.action) {
         throw Object.assign(new Error(`현재 Helm release 상태에서는 ${actionLabel} 작업을 실행할 수 없습니다. 허용 작업: ${lifecycleAction}`), { code: 409 });
       }
-      if (before.check.state === 'Ready' && !before.release?.managed) {
+      if (before.check.state === 'Ready' && !before.release?.managed && !item.adoptExisting) {
         throw Object.assign(new Error('호스트 또는 외부 관리자가 제공한 capability입니다. Cluster Manager가 덮어쓰지 않습니다.'), { code: 409 });
       }
       const componentPresent = (before.check.details?.components || []).some((component) => component.resourceName);
-      if (before.check.state === 'Degraded' && !before.release?.managed && componentPresent) {
+      if (before.check.state === 'Degraded' && !before.release?.managed && componentPresent && !item.adoptExisting) {
         throw Object.assign(new Error('부분 설치 워크로드가 존재합니다. 충돌을 해소한 뒤 설치하십시오.'), { code: 409 });
       }
       if (recovering) current = await recoverStuckRelease(ctx, actor, item, current, before.release, before.check);
@@ -2624,7 +2688,7 @@ async function executeOperation(ctx, actor, item, operation) {
         clusterVariant: variant,
       });
       const managedValues = await managedValuesForItem(ctx, item, operation.observabilityConfig || null);
-      const args = ['upgrade', '--install', item.release, item.chart, '--namespace', item.namespace, '--create-namespace', '--atomic', '--wait', '--timeout', '10m', '--history-max', '5', ...helmArgs(item, variant)];
+      const args = ['upgrade', '--install', item.release, item.chart, '--namespace', item.namespace, '--create-namespace', '--atomic', '--wait', '--timeout', '10m', '--history-max', '5', ...(item.adoptExisting ? ['--take-ownership'] : []), ...helmArgs(item, variant)];
       const out = await commandWithHeartbeat(ctx, item, current, args, managedValues);
       current = await patchOperation(ctx, item, current, { phase: 'Validating', progress: 88, message: 'Helm 적용이 완료되어 구성요소와 저장소를 검증하고 있습니다.' });
       // Ingress can be installed before cert-manager; that intermediate state

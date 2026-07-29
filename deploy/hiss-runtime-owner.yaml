@@ -42,6 +42,11 @@ rules:
   - apiGroups: [pkg.crossplane.io]
     resources: [providers, providerrevisions, configurations, configurationrevisions, functions, functionrevisions, deploymentruntimeconfigs, locks]
     verbs: [get, list, watch, create, update, patch, delete]
+  # Argo CD runtime lifecycle stays behind the same fixed-chart owner. Delivery
+  # declarations are read-only here and remain governed by the Git write-path.
+  - apiGroups: [argoproj.io]
+    resources: [applications, appprojects, applicationsets]
+    verbs: [get, list, watch]
   - apiGroups: [helm.crossplane.io, helm.m.crossplane.io]
     resources: [providerconfigs, providerconfigusages, releases]
     verbs: [get, list, watch]
@@ -84,6 +89,14 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: opensphere-platform
     opensphere.io/authority: hiss-runtime-owner
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: argocd
+  labels:
+    app.kubernetes.io/managed-by: opensphere-platform
+    opensphere.io/authority: platform-delivery-runtime-owner
 ---
 apiVersion: v1
 kind: Namespace
@@ -189,6 +202,15 @@ kind: RoleBinding
 metadata:
   name: opensphere-hiss-release-editor
   namespace: kube-system
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: opensphere-hiss-release-editor }
+subjects:
+  - { kind: ServiceAccount, name: opensphere-cluster-manager, namespace: opensphere-console }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: opensphere-hiss-release-editor
+  namespace: argocd
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: opensphere-hiss-release-editor }
 subjects:
   - { kind: ServiceAccount, name: opensphere-cluster-manager, namespace: opensphere-console }

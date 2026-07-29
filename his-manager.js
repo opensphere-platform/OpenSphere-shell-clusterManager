@@ -2222,15 +2222,36 @@ async function plan(ctx, item, overrideConfig = null) {
   };
 }
 
+function retryableProbeError(error) {
+  const code = Number(error?.code || error?.status || 0);
+  const message = safeError(error);
+  return [408, 429, 500, 502, 503, 504].includes(code)
+    || /storage is \(re\)initializing|server is currently unable to handle the request|too many requests|timeout|temporarily unavailable/i.test(message);
+}
+
 async function waitForProbe(ctx, item, wanted, timeoutMs = 120000) {
   const deadline = Date.now() + timeoutMs;
   let last;
+  let lastRetryableError = '';
   while (Date.now() < deadline) {
-    last = await probe(ctx, item.probe);
-    if (wanted(last)) return last;
+    try {
+      last = await probe(ctx, item.probe);
+      lastRetryableError = '';
+      if (wanted(last)) return last;
+    } catch (error) {
+      if (!retryableProbeError(error)) throw error;
+      lastRetryableError = safeError(error);
+      console.warn(`[his-probe] transient Kubernetes API response item=${item.id}: ${lastRetryableError}`);
+    }
     await new Promise((resolve) => setTimeout(resolve, 3000));
   }
-  return last || result('Blocked', 'ProbeTimeout', '검증 시간이 초과되었습니다.');
+  return last || result(
+    'Blocked',
+    'ProbeTimeout',
+    lastRetryableError
+      ? `일시적 Kubernetes API 응답이 복구되지 않아 검증 시간이 초과되었습니다: ${lastRetryableError}`
+      : '검증 시간이 초과되었습니다.',
+  );
 }
 
 async function commandWithHeartbeat(ctx, item, operation, args, managedValues = null) {
@@ -3229,6 +3250,7 @@ module.exports = {
   canaryPod,
   renderedResources,
   recoverableHelmCleanupError,
+  retryableProbeError,
   stuckReleaseRecoveryStrategy,
   releaseLifecycleAction,
   uninstallInventoryBlockers,

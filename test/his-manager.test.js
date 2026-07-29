@@ -31,6 +31,7 @@ const {
   syntheticDenyPolicy,
   renderedResources,
   recoverableHelmCleanupError,
+  retryableProbeError,
   stuckReleaseRecoveryStrategy,
   releaseLifecycleAction,
   uninstallInventoryBlockers,
@@ -144,6 +145,13 @@ test('Crossplane uninstall permits only the reproducible default ProviderConfig 
       items: [{ metadata: { name: 'production' }, spec: { credentials: { source: 'Secret' } } }],
     },
   }), ['ProviderConfig production', 'provider-helm Release data/postgres']);
+});
+
+test('HIS validation retries transient Kubernetes discovery and storage responses', () => {
+  assert.equal(retryableProbeError(Object.assign(new Error('storage is (re)initializing'), { code: 429 })), true);
+  assert.equal(retryableProbeError(Object.assign(new Error('server is currently unable to handle the request'), { code: 503 })), true);
+  assert.equal(retryableProbeError(Object.assign(new Error('forbidden'), { code: 403 })), false);
+  assert.equal(retryableProbeError(Object.assign(new Error('not found'), { code: 404 })), false);
 });
 
 test('HIS status contract uses the constitution-defined acronym and versioned schema', () => {

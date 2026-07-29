@@ -34,6 +34,7 @@ const {
   stuckReleaseRecoveryStrategy,
   releaseLifecycleAction,
   uninstallInventoryBlockers,
+  repairCrossplaneInterruptedUninstall,
   ingressDefaultCertificateRef,
   evaluateProfiles,
   evaluateStackStatus,
@@ -76,7 +77,10 @@ test('HIS catalog keeps PFS/plugin concepts outside the prerequisite catalog', (
   assert.deepEqual(crossplane.values, ['--values', '/app/his-values/crossplane.yaml']);
   assert.deepEqual(crossplane.kindValues, ['--values', '/app/his-values/crossplane-kind.yaml']);
   assert.equal(crossplane.adoptExisting, true);
-  assert.deepEqual(crossplane.preUninstallResources, ['/apis/pkg.crossplane.io/v1/providers/crossplane-contrib-provider-helm']);
+  assert.deepEqual(crossplane.preUninstallResources, [
+    '/apis/helm.crossplane.io/v1beta1/providerconfigs/default',
+    '/apis/pkg.crossplane.io/v1/providers/crossplane-contrib-provider-helm',
+  ]);
   assert.deepEqual(crossplane.retainedOnDelete, ['Namespace', 'Crossplane core CustomResourceDefinition']);
   assert.ok(crossplane.preUninstallGuards.some((guard) => guard.label === 'provider-helm Release'));
   assert.ok(crossplane.preUninstallGuards.some((guard) => guard.label === 'ProviderConfigUsage'));
@@ -569,6 +573,7 @@ test('signed HIS owner release includes bounded lifecycle RBAC for fixed namespa
   assert.match(manifest, /apiGroups: \[argoproj\.io\]/);
   assert.match(manifest, /apiGroups: \[pkg\.crossplane\.io\]/);
   assert.match(manifest, /resources: \[providerconfigs, clusterproviderconfigs, providerconfigusages, releases\]/);
+  assert.match(manifest, /resourceNames: \[default\][\s\S]*verbs: \[get, patch, delete\]/);
   assert.match(manifest, /resources: \[apiservices\]/);
   const namespaceRbacRule = editorRole.rules.find((rule) => rule.apiGroups?.includes('rbac.authorization.k8s.io'));
   assert.deepEqual(namespaceRbacRule.resources, ['roles', 'rolebindings']);

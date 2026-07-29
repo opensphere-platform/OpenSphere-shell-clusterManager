@@ -50,6 +50,13 @@ rules:
   - apiGroups: [helm.crossplane.io, helm.m.crossplane.io]
     resources: [providerconfigs, clusterproviderconfigs, providerconfigusages, releases]
     verbs: [get, list, watch]
+  # The repeatable Crossplane lifecycle owns only the Foundation-generated
+  # default InjectedIdentity config during runtime teardown/recovery. Other
+  # ProviderConfigs remain Foundation-owned and are never mutated here.
+  - apiGroups: [helm.crossplane.io, helm.m.crossplane.io]
+    resources: [providerconfigs]
+    resourceNames: [default]
+    verbs: [get, patch, delete]
   # Installation plans and storage policy checks never mutate host StorageClasses.
   - apiGroups: [storage.k8s.io]
     resources: [storageclasses, csidrivers, csinodes, volumeattachments]

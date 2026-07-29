@@ -1857,6 +1857,32 @@ async function assertManagedUninstallSafe(ctx, item) {
   }
 }
 
+async function repairCrossplaneInterruptedUninstall(ctx, item) {
+  if (item.id !== 'crossplane-core') return false;
+  const defaultPath = '/apis/helm.crossplane.io/v1beta1/providerconfigs/default';
+  const defaultConfig = await k8sOrNull(ctx, defaultPath);
+  if (!defaultConfig?.metadata?.deletionTimestamp) return false;
+  await assertManagedUninstallSafe(ctx, item);
+  const finalizers = defaultConfig.metadata?.finalizers || [];
+  if (defaultConfig.metadata?.name !== 'default'
+    || defaultConfig.spec?.credentials?.source !== 'InjectedIdentity'
+    || finalizers.some((value) => value !== 'in-use.crossplane.io')) {
+    throw Object.assign(new Error('삭제 중인 ProviderConfig가 승인된 default InjectedIdentity 복구 계약과 일치하지 않습니다.'), { code: 409 });
+  }
+  await k8sRequest(ctx, defaultPath, {
+    method: 'PATCH',
+    contentType: 'application/merge-patch+json',
+    body: { metadata: { finalizers: [] } },
+  });
+  await waitForApiPathAbsent(ctx, defaultPath, 60000);
+  await waitForApiPathAbsent(
+    ctx,
+    '/apis/apiextensions.k8s.io/v1/customresourcedefinitions/providerconfigs.helm.crossplane.io',
+    60000,
+  );
+  return true;
+}
+
 async function prepareManagedUninstall(ctx, item) {
   // Re-evaluate immediately before deletion as well as at request admission.
   // This closes the race where a managed Release is created after approval.
@@ -2748,6 +2774,12 @@ async function executeOperation(ctx, actor, item, operation) {
       const recovering = operation.action === 'recover';
       const actionLabel = recovering ? '복구' : upgrading ? '업그레이드' : '설치';
       current = await patchOperation(ctx, item, current, { phase: recovering ? 'Recovering' : upgrading ? 'Upgrading' : 'Installing', progress: 10, message: `${actionLabel} 전 상태를 확인하고 있습니다.` });
+      if (await repairCrossplaneInterruptedUninstall(ctx, item)) {
+        current = await patchOperation(ctx, item, current, {
+          progress: 18,
+          message: '이전 제거에서 남은 default ProviderConfig finalizer와 stale provider CRD 소유권을 정리했습니다.',
+        });
+      }
       const before = await itemStatus(ctx, item);
       const lifecycleAction = releaseLifecycleAction(before.release);
       if (lifecycleAction !== operation.action) {
@@ -3200,6 +3232,7 @@ module.exports = {
   stuckReleaseRecoveryStrategy,
   releaseLifecycleAction,
   uninstallInventoryBlockers,
+  repairCrossplaneInterruptedUninstall,
   ingressDefaultCertificateRef,
   evaluateProfiles,
   evaluateStackStatus,

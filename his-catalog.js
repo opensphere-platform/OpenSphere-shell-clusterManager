@@ -204,6 +204,7 @@ const HIS_CATALOG = Object.freeze([
       },
     },
     preUninstallResources: [
+      '/apis/helm.crossplane.io/v1beta1/providerconfigs/default',
       '/apis/pkg.crossplane.io/v1/providers/crossplane-contrib-provider-helm',
     ],
     preUninstallGuards: [

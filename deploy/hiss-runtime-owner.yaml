@@ -48,7 +48,7 @@ rules:
     resources: [applications, appprojects, applicationsets]
     verbs: [get, list, watch]
   - apiGroups: [helm.crossplane.io, helm.m.crossplane.io]
-    resources: [providerconfigs, providerconfigusages, releases]
+    resources: [providerconfigs, clusterproviderconfigs, providerconfigusages, releases]
     verbs: [get, list, watch]
   # Installation plans and storage policy checks never mutate host StorageClasses.
   - apiGroups: [storage.k8s.io]

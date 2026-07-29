@@ -568,6 +568,7 @@ test('signed HIS owner release includes bounded lifecycle RBAC for fixed namespa
   assert.match(manifest, /resources: \[secrets, configmaps/);
   assert.match(manifest, /apiGroups: \[argoproj\.io\]/);
   assert.match(manifest, /apiGroups: \[pkg\.crossplane\.io\]/);
+  assert.match(manifest, /resources: \[providerconfigs, clusterproviderconfigs, providerconfigusages, releases\]/);
   assert.match(manifest, /resources: \[apiservices\]/);
   const namespaceRbacRule = editorRole.rules.find((rule) => rule.apiGroups?.includes('rbac.authorization.k8s.io'));
   assert.deepEqual(namespaceRbacRule.resources, ['roles', 'rolebindings']);

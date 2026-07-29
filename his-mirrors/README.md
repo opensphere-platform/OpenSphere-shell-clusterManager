@@ -9,7 +9,13 @@ upstream xpkg runtime layers.
 | --- | --- | --- | --- | --- |
 | Crossplane core | v2.3.3 | `09ffaea39ccaea0f80817e35b5bbd3632b4e7e0d` | `202606222233` | `ghcr.io/opensphere-platform/mirror-crossplane` |
 | provider-helm | v1.3.0 | `df02f201fec49fdabd095421bc3b0a67b1b296b6` | `202607010129` | `ghcr.io/opensphere-platform/mirror-crossplane-provider-helm` |
+| provider-helm package | v1.3.0 | `df02f201fec49fdabd095421bc3b0a67b1b296b6` | `202607010129` | `ghcr.io/opensphere-platform/mirror-crossplane-provider-helm-package` |
 
 The Dockerfiles pin the upstream child manifest digest and add the
 CONSTITUTION-0005 metadata. Publication is `linux/amd64` only. The HISS chart
 uses the resulting GHCR exact digest; it never deploys `:edge`.
+
+`provider-helm-package.json` records the upstream Crossplane package index and
+the approved platform-runtime mapping. The package mirror preserves every
+upstream manifest and layer while adding OpenSphere publication annotations to
+the top-level OCI index.

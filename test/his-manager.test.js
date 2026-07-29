@@ -33,6 +33,7 @@ const {
   recoverableHelmCleanupError,
   stuckReleaseRecoveryStrategy,
   releaseLifecycleAction,
+  uninstallInventoryBlockers,
   ingressDefaultCertificateRef,
   evaluateProfiles,
   evaluateStackStatus,
@@ -76,7 +77,10 @@ test('HIS catalog keeps PFS/plugin concepts outside the prerequisite catalog', (
   assert.deepEqual(crossplane.kindValues, ['--values', '/app/his-values/crossplane-kind.yaml']);
   assert.equal(crossplane.adoptExisting, true);
   assert.deepEqual(crossplane.preUninstallResources, ['/apis/pkg.crossplane.io/v1/providers/crossplane-contrib-provider-helm']);
-  assert.ok(!crossplane.retainedOnDelete.some((entry) => /ProviderRevision/.test(entry)));
+  assert.deepEqual(crossplane.retainedOnDelete, ['Namespace', 'Crossplane core CustomResourceDefinition']);
+  assert.ok(crossplane.preUninstallGuards.some((guard) => guard.label === 'provider-helm Release'));
+  assert.ok(crossplane.preUninstallGuards.some((guard) => guard.label === 'ProviderConfigUsage'));
+  assert.ok(crossplane.preUninstallGuards.some((guard) => guard.allowDefaultInjectedIdentity));
   const crossplaneValues = yaml.load(fs.readFileSync(path.resolve(__dirname, '../his-values/crossplane.yaml'), 'utf8'));
   const crossplaneKindValues = yaml.load(fs.readFileSync(path.resolve(__dirname, '../his-values/crossplane-kind.yaml'), 'utf8'));
   assert.match(crossplaneValues.image.tag, /^v2\.3\.3@sha256:[a-f0-9]{64}$/);
@@ -119,6 +123,23 @@ test('HIS catalog keeps PFS/plugin concepts outside the prerequisite catalog', (
     assert.ok(item.remediation?.steps?.length >= 3, `${item.id} must declare actionable remediation`);
     assert.ok(item.remediation?.verification, `${item.id} must declare re-validation evidence`);
   }
+});
+
+test('Crossplane uninstall permits only the reproducible default ProviderConfig and blocks live adapter inventory', () => {
+  const item = catalogItem('crossplane-core');
+  const [releasePath] = item.preUninstallGuards.find((guard) => guard.label === 'provider-helm Release').apiPaths;
+  const [configPath] = item.preUninstallGuards.find((guard) => guard.label === 'ProviderConfig').apiPaths;
+  assert.deepEqual(uninstallInventoryBlockers(item, {
+    [configPath]: {
+      items: [{ metadata: { name: 'default' }, spec: { credentials: { source: 'InjectedIdentity' } } }],
+    },
+  }), []);
+  assert.deepEqual(uninstallInventoryBlockers(item, {
+    [releasePath]: { items: [{ metadata: { name: 'postgres', namespace: 'data' } }] },
+    [configPath]: {
+      items: [{ metadata: { name: 'production' }, spec: { credentials: { source: 'Secret' } } }],
+    },
+  }), ['ProviderConfig production', 'provider-helm Release data/postgres']);
 });
 
 test('HIS status contract uses the constitution-defined acronym and versioned schema', () => {

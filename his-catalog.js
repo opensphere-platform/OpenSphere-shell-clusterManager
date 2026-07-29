@@ -206,7 +206,32 @@ const HIS_CATALOG = Object.freeze([
     preUninstallResources: [
       '/apis/pkg.crossplane.io/v1/providers/crossplane-contrib-provider-helm',
     ],
-    retainedOnDelete: ['Namespace', 'CustomResourceDefinition', 'ProviderConfig', 'Managed Resource와 connection data'],
+    preUninstallGuards: [
+      {
+        label: 'provider-helm Release',
+        apiPaths: [
+          '/apis/helm.crossplane.io/v1beta1/releases',
+          '/apis/helm.m.crossplane.io/v1beta1/releases',
+        ],
+      },
+      {
+        label: 'ProviderConfigUsage',
+        apiPaths: [
+          '/apis/helm.crossplane.io/v1beta1/providerconfigusages',
+          '/apis/helm.m.crossplane.io/v1beta1/providerconfigusages',
+        ],
+      },
+      {
+        label: 'ProviderConfig',
+        allowDefaultInjectedIdentity: true,
+        apiPaths: [
+          '/apis/helm.crossplane.io/v1beta1/providerconfigs',
+          '/apis/helm.m.crossplane.io/v1beta1/providerconfigs',
+          '/apis/helm.m.crossplane.io/v1beta1/clusterproviderconfigs',
+        ],
+      },
+    ],
+    retainedOnDelete: ['Namespace', 'Crossplane core CustomResourceDefinition'],
     domain: 'Platform Delivery',
     compatibility: { kubernetes: '>=1.30.0 <1.37.0', policy: 'Crossplane v2 package API · provider-helm digest allowlist' },
     remediation: {

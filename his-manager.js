@@ -1824,7 +1824,43 @@ async function waitForApiPathAbsent(ctx, apiPath, timeoutMs = 180000) {
   throw Object.assign(new Error(`선행 관리 리소스 삭제 대기 시간이 초과되었습니다: ${apiPath}`), { code: 504 });
 }
 
+function uninstallInventoryBlockers(item, inventoryByPath) {
+  const blockers = [];
+  for (const guard of item.preUninstallGuards || []) {
+    for (const apiPath of guard.apiPaths || []) {
+      const resources = inventoryByPath[apiPath]?.items || [];
+      for (const resource of resources) {
+        const name = String(resource?.metadata?.name || 'unknown');
+        const namespace = String(resource?.metadata?.namespace || '');
+        const defaultInjectedIdentity = guard.allowDefaultInjectedIdentity
+          && name === 'default'
+          && resource?.spec?.credentials?.source === 'InjectedIdentity';
+        if (defaultInjectedIdentity) continue;
+        blockers.push(`${guard.label} ${namespace ? `${namespace}/` : ''}${name}`);
+      }
+    }
+  }
+  return [...new Set(blockers)].sort();
+}
+
+async function assertManagedUninstallSafe(ctx, item) {
+  const inventoryByPath = {};
+  await Promise.all((item.preUninstallGuards || []).flatMap((guard) =>
+    (guard.apiPaths || []).map(async (apiPath) => {
+      inventoryByPath[apiPath] = await k8sListOrEmpty(ctx, apiPath);
+    })));
+  const blockers = uninstallInventoryBlockers(item, inventoryByPath);
+  if (blockers.length) {
+    throw Object.assign(new Error(
+      `운영 리소스가 남아 있어 runtime 제거를 차단했습니다: ${blockers.join(', ')}. Foundation에서 해당 리소스를 먼저 정리하십시오.`,
+    ), { code: 409 });
+  }
+}
+
 async function prepareManagedUninstall(ctx, item) {
+  // Re-evaluate immediately before deletion as well as at request admission.
+  // This closes the race where a managed Release is created after approval.
+  await assertManagedUninstallSafe(ctx, item);
   for (const apiPath of item.preUninstallResources || []) {
     await deleteIfPresent(ctx, apiPath);
     await waitForApiPathAbsent(ctx, apiPath);
@@ -3088,6 +3124,7 @@ function createHisManager(ctx) {
       }
       if (action === 'uninstall') {
         if (String(body.confirm || '') !== item.id) throw Object.assign(new Error(`삭제 확인 값으로 '${item.id}'를 입력해야 합니다.`), { code: 400 });
+        await assertManagedUninstallSafe(ctx, item);
       }
       if (action === 'rollback') {
         const targetRevision = Number(body.revision || 0);
@@ -3162,6 +3199,7 @@ module.exports = {
   recoverableHelmCleanupError,
   stuckReleaseRecoveryStrategy,
   releaseLifecycleAction,
+  uninstallInventoryBlockers,
   ingressDefaultCertificateRef,
   evaluateProfiles,
   evaluateStackStatus,

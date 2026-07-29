@@ -2178,19 +2178,88 @@ function renderedResources(rendered, defaultNamespace) {
   return resources;
 }
 
-async function plan(ctx, item, overrideConfig = null) {
-  const variant = await clusterVariant(ctx);
-  const managedValues = await managedValuesForItem(ctx, item, overrideConfig);
+const REPLACEMENT_RESOURCE_PATHS = Object.freeze({
+  Deployment: { base: '/apis/apps/v1', plural: 'deployments', namespaced: true },
+  StatefulSet: { base: '/apis/apps/v1', plural: 'statefulsets', namespaced: true },
+  DaemonSet: { base: '/apis/apps/v1', plural: 'daemonsets', namespaced: true },
+  Service: { base: '/api/v1', plural: 'services', namespaced: true },
+  ConfigMap: { base: '/api/v1', plural: 'configmaps', namespaced: true },
+  Secret: { base: '/api/v1', plural: 'secrets', namespaced: true },
+  ServiceAccount: { base: '/api/v1', plural: 'serviceaccounts', namespaced: true },
+  Role: { base: '/apis/rbac.authorization.k8s.io/v1', plural: 'roles', namespaced: true },
+  RoleBinding: { base: '/apis/rbac.authorization.k8s.io/v1', plural: 'rolebindings', namespaced: true },
+  ClusterRole: { base: '/apis/rbac.authorization.k8s.io/v1', plural: 'clusterroles', namespaced: false },
+  ClusterRoleBinding: { base: '/apis/rbac.authorization.k8s.io/v1', plural: 'clusterrolebindings', namespaced: false },
+  NetworkPolicy: { base: '/apis/networking.k8s.io/v1', plural: 'networkpolicies', namespaced: true },
+  PodDisruptionBudget: { base: '/apis/policy/v1', plural: 'poddisruptionbudgets', namespaced: true },
+  Job: { base: '/apis/batch/v1', plural: 'jobs', namespaced: true },
+});
+
+function replacementResourcePath(item, resource) {
+  const definition = REPLACEMENT_RESOURCE_PATHS[resource?.kind];
+  const name = String(resource?.name || '').trim();
+  if (!definition || !name) return '';
+  if (!item.replacementPolicy?.allowedKinds?.includes(resource.kind)) return '';
+  if (!definition.namespaced) return `${definition.base}/${definition.plural}/${encodeURIComponent(name)}`;
+  const namespace = String(resource?.namespace || item.namespace || '').trim();
+  if (!namespace || namespace !== item.namespace) return '';
+  return `${definition.base}/namespaces/${encodeURIComponent(namespace)}/${definition.plural}/${encodeURIComponent(name)}`;
+}
+
+async function managedReplacementPlan(ctx, item, resources, release = null) {
+  const policy = item.replacementPolicy;
+  if (!policy || release?.managed) {
+    return {
+      supported: Boolean(policy),
+      required: false,
+      strategy: policy?.strategy || '',
+      confirmation: policy?.confirmation || '',
+      existingResources: [],
+      preserved: policy?.preserved || [],
+    };
+  }
+  const candidates = resources
+    .map((resource) => ({ ...resource, apiPath: replacementResourcePath(item, resource) }))
+    .filter((resource) => resource.apiPath);
+  const observed = await Promise.all(candidates.map(async (resource) => ({
+    resource,
+    exists: Boolean(await k8sOrNull(ctx, resource.apiPath)),
+  })));
+  return {
+    supported: true,
+    required: observed.some((entry) => entry.exists),
+    strategy: policy.strategy,
+    confirmation: policy.confirmation,
+    existingResources: observed
+      .filter((entry) => entry.exists)
+      .map(({ resource }) => ({
+        apiVersion: resource.apiVersion,
+        kind: resource.kind,
+        namespace: resource.namespace,
+        name: resource.name,
+      })),
+    preserved: policy.preserved || [],
+  };
+}
+
+async function renderManagedResources(ctx, item, variant, managedValues) {
   const out = await withKubeconfig(ctx, (env, dir) => {
     const args = ['template', item.release, item.chart, '--namespace', item.namespace, '--include-crds', ...helmArgs(item, variant), ...writeManagedValues(item, managedValues, dir)];
     return command('helm', args, { env, timeoutMs: 120000 });
   });
-  const resources = renderedResources(out.stdout, item.namespace);
+  return renderedResources(out.stdout, item.namespace);
+}
+
+async function plan(ctx, item, overrideConfig = null) {
+  const variant = await clusterVariant(ctx);
+  const managedValues = await managedValuesForItem(ctx, item, overrideConfig);
+  const resources = await renderManagedResources(ctx, item, variant, managedValues);
   const byKind = resources.reduce((summary, resource) => {
     summary[resource.kind] = (summary[resource.kind] || 0) + 1;
     return summary;
   }, {});
-  const history = await helmHistory(ctx, item);
+  const [history, release] = await Promise.all([helmHistory(ctx, item), helmStatus(ctx, item)]);
+  const migration = await managedReplacementPlan(ctx, item, resources, release);
   return {
     id: item.id,
     displayName: item.displayName,
@@ -2218,8 +2287,26 @@ async function plan(ctx, item, overrideConfig = null) {
       ] : []),
     ] : [],
     retainedOnDelete: item.retainedOnDelete || [],
+    migration,
     history,
   };
+}
+
+async function prepareManagedReplacement(ctx, actor, item, operation, variant, managedValues) {
+  const resources = await renderManagedResources(ctx, item, variant, managedValues);
+  const replacement = await managedReplacementPlan(ctx, item, resources, null);
+  if (!replacement.required) return { replaced: 0, replacement };
+  if (!operation.replacementApproved || operation.replacementConfirmation !== item.replacementPolicy?.confirmation) {
+    throw Object.assign(new Error(`관리되지 않은 기존 runtime 교체 승인이 필요합니다. 계획을 갱신하고 '${item.replacementPolicy?.confirmation}'를 입력하십시오.`), { code: 409 });
+  }
+  await auditRequired(ctx, actor, 'HISManagedReplacementStarted', item, operation.reason, `resources=${replacement.existingResources.length}`);
+  const targets = replacement.existingResources
+    .map((resource) => ({ ...resource, apiPath: replacementResourcePath(item, resource) }))
+    .filter((resource) => resource.apiPath);
+  await Promise.all(targets.map((resource) => deleteIfPresent(ctx, resource.apiPath)));
+  await Promise.all(targets.map((resource) => waitForApiPathAbsent(ctx, resource.apiPath)));
+  await auditRequired(ctx, actor, 'HISManagedReplacementCompleted', item, operation.reason, `resources=${targets.length}`);
+  return { replaced: targets.length, replacement };
 }
 
 function retryableProbeError(error) {
@@ -2822,7 +2909,18 @@ async function executeOperation(ctx, actor, item, operation) {
         clusterVariant: variant,
       });
       const managedValues = await managedValuesForItem(ctx, item, operation.observabilityConfig || null);
-      const args = ['upgrade', '--install', item.release, item.chart, '--namespace', item.namespace, '--create-namespace', '--atomic', '--wait', '--timeout', '10m', '--history-max', '5', ...(item.adoptExisting ? ['--take-ownership'] : []), ...helmArgs(item, variant)];
+      let takeOwnership = Boolean(item.adoptExisting);
+      if (!before.release?.managed && item.replacementPolicy) {
+        const prepared = await prepareManagedReplacement(ctx, actor, item, current, variant, managedValues);
+        if (prepared.replaced) {
+          current = await patchOperation(ctx, item, current, {
+            progress: 45,
+            message: `승인된 runtime 리소스 ${prepared.replaced}개를 교체 대상으로 정리했습니다. 선언·credential·업무 workload는 보존되었습니다.`,
+          });
+        }
+        takeOwnership = false;
+      }
+      const args = ['upgrade', '--install', item.release, item.chart, '--namespace', item.namespace, '--create-namespace', '--atomic', '--wait', '--timeout', '10m', '--history-max', '5', ...(takeOwnership ? ['--take-ownership'] : []), ...helmArgs(item, variant)];
       const out = await commandWithHeartbeat(ctx, item, current, args, managedValues);
       current = await patchOperation(ctx, item, current, { phase: 'Validating', progress: 88, message: 'Helm 적용이 완료되어 구성요소와 저장소를 검증하고 있습니다.' });
       // Ingress can be installed before cert-manager; that intermediate state
@@ -3199,6 +3297,23 @@ function createHisManager(ctx) {
           throw Object.assign(new Error('초기 설치 계획은 기존 관측 데이터 재배치를 요구할 수 없습니다.'), { code: 409 });
         }
         operationExtra = { ...operationExtra, observabilityConfig: desired };
+      }
+      if (action === 'install' && item.replacementPolicy) {
+        const installPlan = await plan(ctx, item);
+        if (installPlan.migration?.required) {
+          const expected = item.replacementPolicy.confirmation;
+          if (String(body.confirm || '').trim() !== expected) {
+            throw Object.assign(new Error(`기존 runtime 교체를 승인하려면 '${expected}'를 입력해야 합니다.`), { code: 400 });
+          }
+          operationExtra = {
+            ...operationExtra,
+            replacementApproved: true,
+            replacementConfirmation: expected,
+            replacementStrategy: item.replacementPolicy.strategy,
+          };
+        } else if (body.confirm && String(body.confirm).trim() !== `install ${item.id}`) {
+          throw Object.assign(new Error(`신규 설치 확인 값은 'install ${item.id}'이어야 합니다.`), { code: 400 });
+        }
       }
       const requestedAction = action === 'install' ? 'HISInstallRequested'
         : action === 'upgrade' ? 'HISUpgradeRequested'

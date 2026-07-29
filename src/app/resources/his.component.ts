@@ -523,6 +523,13 @@ type ObservabilityConfigurationMode = 'install' | 'operate';
                      [clrAlertType]="'warning'" [clrAlertClosable]="false">
             <clr-alert-item><span class="alert-text">삭제 후 보존: {{ p.retainedOnDelete.join(', ') }}</span></clr-alert-item>
           </clr-alert>
+          <clr-alert *ngIf="action() === 'install' && p.migration?.required"
+                     [clrAlertType]="'warning'" [clrAlertClosable]="false">
+            <clr-alert-item><span class="alert-text">
+              기존 비-Helm runtime {{ p.migration?.existingResources?.length || 0 }}개를 교체해야 합니다.
+              보존: {{ p.migration?.preserved?.join(', ') || '없음' }}
+            </span></clr-alert-item>
+          </clr-alert>
           <section *ngIf="action() === 'rollback'" class="history-card">
             <h4>Helm revision history</h4>
             <label>롤백 대상 revision
@@ -547,8 +554,8 @@ type ObservabilityConfigurationMode = 'install' | 'operate';
             <label>변경 사유</label>
             <textarea clrTextarea name="reason" [(ngModel)]="reason" required minlength="8" maxlength="500" placeholder="승인 근거와 작업 목적(8자 이상)"></textarea>
           </clr-textarea-container>
-          <clr-input-container *ngIf="action() === 'uninstall' || action() === 'rollback'">
-            <label>{{ action() === 'rollback' ? '롤백 확인' : '삭제 확인' }}</label>
+          <clr-input-container *ngIf="action() === 'uninstall' || action() === 'rollback' || (action() === 'install' && !!plan()?.migration?.required)">
+            <label>{{ action() === 'rollback' ? '롤백 확인' : action() === 'uninstall' ? '삭제 확인' : '교체 설치 확인' }}</label>
             <input clrInput name="confirm" [(ngModel)]="confirm" [placeholder]="confirmationText(item)" autocomplete="off">
             <clr-control-helper>{{ confirmationText(item) }} 를 정확히 입력하십시오.</clr-control-helper>
           </clr-input-container>
@@ -1247,7 +1254,7 @@ export class HisComponent implements OnInit, OnDestroy {
     if (this.operationActive(item.operation)) return false;
     if (this.releaseLifecycle(item) !== 'install') return false;
     if (item.check.state === 'Ready' && item.ownership === 'External') return false;
-    if (item.check.state === 'Degraded' && !item.release?.managed) return false;
+    if (item.check.state === 'Degraded' && !item.release?.managed && !item.replacementPolicy) return false;
     return item.check.state !== 'Ready';
   }
 
@@ -1456,7 +1463,8 @@ export class HisComponent implements OnInit, OnDestroy {
     if (!item || !this.plan() || this.busy() || this.reason.trim().length < 8) return false;
     if (['install', 'upgrade', 'recover'].includes(this.action()) && item.id === 'kube-prometheus-stack' && !this.chartVersionSupported(item)) return false;
     if (this.action() === 'install' && item.id === 'kube-prometheus-stack' && !this.observabilityPlan()?.canApply) return false;
-    if (this.action() === 'install' || this.action() === 'upgrade' || this.action() === 'recover') return true;
+    if (this.action() === 'install') return !this.plan()?.migration?.required || this.confirm === this.plan()?.migration?.confirmation;
+    if (this.action() === 'upgrade' || this.action() === 'recover') return true;
     if (this.action() === 'rollback') return !!this.rollbackRevision && this.confirm === `${item.id}:${this.rollbackRevision}`;
     return this.confirm === item.id;
   }
@@ -1480,7 +1488,9 @@ export class HisComponent implements OnInit, OnDestroy {
   }
 
   confirmationText(item: HisItem): string {
-    return this.action() === 'rollback' ? `${item.id}:${this.rollbackRevision || '<revision>'}` : item.id;
+    if (this.action() === 'rollback') return `${item.id}:${this.rollbackRevision || '<revision>'}`;
+    if (this.action() === 'install' && this.plan()?.migration?.required) return this.plan()?.migration?.confirmation || `replace ${item.id}`;
+    return item.id;
   }
 
   execute(): void {
@@ -1494,6 +1504,7 @@ export class HisComponent implements OnInit, OnDestroy {
         this.reason.trim(),
         item.id === 'kube-prometheus-stack' ? this.configurationRequestConfig() || undefined : undefined,
         item.id === 'kube-prometheus-stack' ? this.observabilityChartVersion.trim() : undefined,
+        this.confirm.trim() || undefined,
       )
       : this.action() === 'upgrade' ? this.his.upgrade(item.id, this.reason.trim(), item.id === 'kube-prometheus-stack' ? this.observabilityChartVersion.trim() : undefined)
         : this.action() === 'recover' ? this.his.recover(item.id, this.reason.trim(), item.id === 'kube-prometheus-stack' ? this.observabilityChartVersion.trim() : undefined)

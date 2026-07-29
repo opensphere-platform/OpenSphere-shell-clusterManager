@@ -101,6 +101,11 @@ export interface HisItem {
   };
   ownership: 'ClusterManager' | 'External' | 'Unmanaged' | 'Unknown';
   retainedOnDelete?: string[];
+  replacementPolicy?: {
+    strategy: string;
+    confirmation: string;
+    preserved: string[];
+  };
   check: HisCheck;
 }
 
@@ -138,6 +143,14 @@ export interface HisPlan {
   release: string;
   clusterVariant: string;
   retainedOnDelete: string[];
+  migration?: {
+    supported: boolean;
+    required: boolean;
+    strategy: string;
+    confirmation: string;
+    existingResources: Array<{ apiVersion: string; kind: string; namespace: string; name: string }>;
+    preserved: string[];
+  };
   summary: {
     workloads: number;
     services: number;
@@ -258,8 +271,8 @@ export class HisService {
   plan(id: string, config?: ObservabilityConfig, chartVersion?: string): Observable<HisPlan> {
     return this.http.post<HisPlan>(this.url('plan'), { id, ...(config ? { config } : {}), ...(chartVersion ? { chartVersion } : {}) });
   }
-  install(id: string, reason: string, config?: ObservabilityConfig, chartVersion?: string): Observable<{ ok: boolean; operation: HisOperation }> {
-    return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('install'), { id, reason, ...(config ? { config } : {}), ...(chartVersion ? { chartVersion } : {}) });
+  install(id: string, reason: string, config?: ObservabilityConfig, chartVersion?: string, confirm?: string): Observable<{ ok: boolean; operation: HisOperation }> {
+    return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('install'), { id, reason, ...(config ? { config } : {}), ...(chartVersion ? { chartVersion } : {}), ...(confirm ? { confirm } : {}) });
   }
   upgrade(id: string, reason: string, chartVersion?: string): Observable<{ ok: boolean; operation: HisOperation }> {
     return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('upgrade'), { id, reason, ...(chartVersion ? { chartVersion } : {}) });

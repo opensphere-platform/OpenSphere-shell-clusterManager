@@ -266,6 +266,10 @@ export class HisService {
   }
 
   private url(path: string): string { return `${this.base()}/api/his/${path}`; }
+  private supportUrl(path: string): string { return `${this.base()}/api/platform-support/${path}`; }
+  private lifecycleUrl(id: string, path: string): string {
+    return id === 'kube-prometheus-stack' ? this.supportUrl(path) : this.url(path);
+  }
 
   status(refresh = false): Observable<HisStatus> {
     return this.http.get<HisStatus>(`${this.url('status')}${refresh ? '?refresh=true' : ''}`);
@@ -274,31 +278,31 @@ export class HisService {
     return this.http.post<HisStatus>(this.url('profiles'), { profile, selected, reason });
   }
   validate(id: 'cluster-network' | 'cluster-dns' | 'kube-prometheus-stack' | 'storage' | 'csi-snapshot', reason: string): Observable<{ ok: boolean; operation: HisOperation }> {
-    return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('validate'), { id, reason });
+    return this.http.post<{ ok: boolean; operation: HisOperation }>(this.lifecycleUrl(id, 'validate'), { id, reason });
   }
   plan(id: string, config?: ObservabilityConfig, chartVersion?: string): Observable<HisPlan> {
-    return this.http.post<HisPlan>(this.url('plan'), { id, ...(config ? { config } : {}), ...(chartVersion ? { chartVersion } : {}) });
+    return this.http.post<HisPlan>(this.lifecycleUrl(id, 'plan'), { id, ...(config ? { config } : {}), ...(chartVersion ? { chartVersion } : {}) });
   }
   install(id: string, reason: string, config?: ObservabilityConfig, chartVersion?: string, confirm?: string): Observable<{ ok: boolean; operation: HisOperation }> {
-    return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('install'), { id, reason, ...(config ? { config } : {}), ...(chartVersion ? { chartVersion } : {}), ...(confirm ? { confirm } : {}) });
+    return this.http.post<{ ok: boolean; operation: HisOperation }>(this.lifecycleUrl(id, 'install'), { id, reason, ...(config ? { config } : {}), ...(chartVersion ? { chartVersion } : {}), ...(confirm ? { confirm } : {}) });
   }
   upgrade(id: string, reason: string, chartVersion?: string): Observable<{ ok: boolean; operation: HisOperation }> {
-    return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('upgrade'), { id, reason, ...(chartVersion ? { chartVersion } : {}) });
+    return this.http.post<{ ok: boolean; operation: HisOperation }>(this.lifecycleUrl(id, 'upgrade'), { id, reason, ...(chartVersion ? { chartVersion } : {}) });
   }
   recover(id: string, reason: string, chartVersion?: string): Observable<{ ok: boolean; operation: HisOperation }> {
-    return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('recover'), { id, reason, ...(chartVersion ? { chartVersion } : {}) });
+    return this.http.post<{ ok: boolean; operation: HisOperation }>(this.lifecycleUrl(id, 'recover'), { id, reason, ...(chartVersion ? { chartVersion } : {}) });
   }
   rollback(id: string, revision: number, reason: string, confirm: string): Observable<{ ok: boolean; operation: HisOperation }> {
-    return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('rollback'), { id, revision, reason, confirm });
+    return this.http.post<{ ok: boolean; operation: HisOperation }>(this.lifecycleUrl(id, 'rollback'), { id, revision, reason, confirm });
   }
   uninstall(id: string, reason: string, confirm: string): Observable<{ ok: boolean; operation: HisOperation }> {
-    return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('uninstall'), { id, reason, confirm });
+    return this.http.post<{ ok: boolean; operation: HisOperation }>(this.lifecycleUrl(id, 'uninstall'), { id, reason, confirm });
   }
   observabilityConfig(): Observable<ObservabilityConfigurationState> {
-    return this.http.get<ObservabilityConfigurationState>(this.url('observability/config'));
+    return this.http.get<ObservabilityConfigurationState>(this.supportUrl('observability/config'));
   }
   observabilityPlan(config: ObservabilityConfig): Observable<ObservabilityConfigurationPlan> {
-    return this.http.post<ObservabilityConfigurationPlan>(this.url('observability/plan'), { id: 'kube-prometheus-stack', config });
+    return this.http.post<ObservabilityConfigurationPlan>(this.supportUrl('observability/plan'), { id: 'kube-prometheus-stack', config });
   }
   configureObservability(
     config: ObservabilityConfig,
@@ -307,7 +311,7 @@ export class HisService {
     resetConfirmation: string,
     publicConfirmation: string,
   ): Observable<{ ok: boolean; operation: HisOperation }> {
-    return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('observability/configure'), {
+    return this.http.post<{ ok: boolean; operation: HisOperation }>(this.supportUrl('observability/configure'), {
       id: 'kube-prometheus-stack', config, reason, resetData, resetConfirmation, publicConfirmation,
     });
   }

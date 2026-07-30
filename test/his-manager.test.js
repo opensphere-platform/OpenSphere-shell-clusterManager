@@ -206,7 +206,7 @@ test('HIS internal projection is cached, authenticated, and separate from the op
   const server = fs.readFileSync(path.resolve(__dirname, '../server.js'), 'utf8');
   assert.match(source, /HIS_STATUS_CACHE_TTL_MS/);
   assert.match(source, /statusInFlight/);
-  assert.match(source, /pathname === '\/api\/his\/internal\/status'/);
+  assert.match(source, /!platformSupportRequest && routePath === '\/api\/his\/internal\/status'/);
   assert.match(source, /await ctx\.verifyHisStatusReader\(ctx\.requestToken\(req\)\)/);
   assert.match(server, /apis\/authentication\.k8s\.io\/v1\/tokenreviews/);
   assert.match(server, /system:serviceaccount:opensphere-console:opensphere-console-dupa-controller/);
@@ -569,7 +569,7 @@ test('Observability installation accepts any existing StorageClass and warns whe
 
 test('OAA Observability owner input is recursively closed and confirmations expose high-risk choices', () => {
   const config = normalizeOaaObservabilityConfig(DEFAULT_OBSERVABILITY_CONFIG);
-  assert.equal(oaaObservabilityConfirmation(config, false), 'configure HIS observability public=false data-reset=false');
+  assert.equal(oaaObservabilityConfirmation(config, false), 'configure platform-support observability public=false data-reset=false');
   assert.throws(() => normalizeOaaObservabilityConfig({ ...DEFAULT_OBSERVABILITY_CONFIG, command: 'kubectl get secrets' }), /허용되지 않은 필드/);
   assert.throws(() => normalizeOaaObservabilityConfig({
     ...DEFAULT_OBSERVABILITY_CONFIG,
@@ -582,7 +582,25 @@ test('OAA Observability owner input is recursively closed and confirmations expo
       exposureMode: 'PublicIngress', hostname: 'grafana.example.com', tlsSecretName: 'grafana-tls', oidcSecretName: 'grafana-oidc',
     },
   });
-  assert.equal(oaaObservabilityConfirmation(publicConfig, true), 'configure HIS observability public=true data-reset=true');
+  assert.equal(oaaObservabilityConfirmation(publicConfig, true), 'configure platform-support observability public=true data-reset=true');
+});
+
+test('Shared Observability uses an SRL-L4 Platform Support authority path and permission boundary', () => {
+  const source = fs.readFileSync(path.resolve(__dirname, '../his-manager.js'), 'utf8');
+  const service = fs.readFileSync(path.resolve(__dirname, '../src/app/core/his.service.ts'), 'utf8');
+  assert.match(source, /OAA_PLATFORM_SUPPORT_READ_PERMISSION = 'console\.platform\.support\.read'/);
+  assert.match(source, /OAA_PLATFORM_SUPPORT_MANAGE_PERMISSION = 'console\.platform\.support\.manage'/);
+  assert.match(source, /pathname === '\/api\/platform-support\/oaa\/capabilities'/);
+  assert.match(source, /apiVersion: 'opensphere\.io\/oaa-platform-support-owner\/v1'/);
+  assert.match(source, /realizationLayer: 'SRL-L4'/);
+  assert.match(source, /'observability-validate'/);
+  assert.match(source, /'observability-lifecycle'/);
+  assert.match(source, /Shared Observability lifecycle은 \/api\/platform-support 경로를 사용해야 합니다/);
+  assert.match(source, /Shared Observability 변경은 AAL2 재인증이 필요합니다/);
+  assert.doesNotMatch(source, /OAAHISObservability/);
+  assert.doesNotMatch(source, /HISObservabilityConfigured/);
+  assert.match(service, /private supportUrl\(path: string\): string \{ return `\$\{this\.base\(\)\}\/api\/platform-support\/\$\{path\}`; \}/);
+  assert.match(service, /this\.lifecycleUrl\(id, 'validate'\)/);
 });
 
 test('private Grafana ingress requires TLS, OIDC references and CIDR restrictions', () => {

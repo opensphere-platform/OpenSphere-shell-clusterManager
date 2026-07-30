@@ -51,12 +51,16 @@ test('HIS and Ceph owner facades accept the canonical Supabase Console admin rol
   }
 });
 
-test('dedicated HIS OAA owner facade double-validates permission and AAL2', () => {
+test('dedicated HIS and Platform Support OAA owner facades double-validate independent permission and AAL2', () => {
   assert.match(hisManagerSource, /console\.his\.read/);
   assert.match(hisManagerSource, /console\.his\.manage/);
+  assert.match(hisManagerSource, /console\.platform\.support\.read/);
+  assert.match(hisManagerSource, /console\.platform\.support\.manage/);
   assert.match(hisManagerSource, /actorForOaaOwner/);
+  assert.match(hisManagerSource, /actorForPlatformSupportOaaOwner/);
   assert.match(hisManagerSource, /AAL2 재인증/);
-  assert.match(hisManagerSource, /\/api\/his\/oaa\/observability\/configure/);
+  assert.match(hisManagerSource, /\/api\/platform-support\/oaa\/observability\/configure/);
+  assert.doesNotMatch(hisManagerSource, /\/api\/his\/oaa\/observability\/configure/);
 });
 
 test('dedicated Ceph OAA owner facade double-validates permission, AAL2, and staged imports', () => {

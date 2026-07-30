@@ -1,4 +1,6 @@
-# OpenSphere HIS Observability profile.
+# OpenSphere SRL-L4 Platform Support Shared Observability profile.
+# This runtime is visible from the Cluster Manager single pane but does not
+# contribute to SRL-L1 HIS readiness.
 # The stack stays cluster-internal and discovers component-owned monitors across namespaces.
 grafana:
   enabled: true

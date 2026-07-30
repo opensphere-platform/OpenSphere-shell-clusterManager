@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { bindingProjection, workloadReady, parseOperation, statusComparable, telemetryPayloads } = require('../his-observability-binding-controller');
 
-test('HIS binding publishes only independently verified capabilities', () => {
+test('Platform Support binding publishes only independently verified capabilities', () => {
   const status = bindingProjection({
     stackPresent: true,
     prometheusReady: true,
@@ -38,7 +38,7 @@ test('HIS binding publishes only independently verified capabilities', () => {
   ]);
 });
 
-test('HIS binding fails closed when the live metrics query is unavailable', () => {
+test('Platform Support binding fails closed when the live metrics query is unavailable', () => {
   const status = bindingProjection({ stackPresent: true, prometheusReady: true, prometheusQueryReady: false });
   assert.equal(status.phase, 'Degraded');
   assert.deepEqual(status.capabilities, []);
@@ -62,7 +62,7 @@ test('telemetry capabilities fail closed unless workload, ingestion and read-bac
 test('OTLP canary payload is deterministic, bounded and contains correlated log and trace evidence', () => {
   const payload = telemetryPayloads('fixed-canary', 1770000000000);
   assert.match(payload.traceId, /^[a-f0-9]{32}$/);
-  assert.equal(payload.logs.resourceLogs[0].resource.attributes[0].value.stringValue, 'opensphere-his-binding-canary');
+  assert.equal(payload.logs.resourceLogs[0].resource.attributes[0].value.stringValue, 'opensphere-platform-support-binding-canary');
   assert.match(payload.logs.resourceLogs[0].scopeLogs[0].logRecords[0].body.stringValue, /fixed-canary/);
   assert.equal(payload.traces.resourceSpans[0].scopeSpans[0].spans[0].traceId, payload.traceId);
   assert.match(payload.traces.resourceSpans[0].scopeSpans[0].spans[0].name, /fixed-canary/);
@@ -85,9 +85,13 @@ test('ObservabilityBinding controller RBAC cannot read Secrets or mutate monitor
   assert.match(manifest, /resources: \[observabilitybindings\/status\]/);
   assert.match(manifest, /resourceNames: \[opensphere-console\]/);
   assert.match(manifest, /scope: Cluster/);
+  assert.match(manifest, /owner: \{ type: string, enum: \[PlatformSupport, HIS, HISS\] \}/);
+  assert.match(manifest, /opensphere\.io\/owner: platform-support/);
+  assert.match(manifest, /opensphere\.io\/realization-layer: srl-l4/);
+  assert.doesNotMatch(manifest, /opensphere\.io\/owner: his/);
 });
 
-test('Cluster Manager and HIS Binding Controller share the GA rebuild release', () => {
+test('Cluster Manager packages the Platform Support Binding Controller in the same GA rebuild release', () => {
   const publish = fs.readFileSync(path.resolve(__dirname, '../.github/workflows/publish-image.yml'), 'utf8');
   assert.equal(fs.existsSync(path.resolve(__dirname, '../.github/workflows/promote-image-channel.yml')), false);
   assert.match(publish, /workflow_dispatch:/);
@@ -109,4 +113,13 @@ test('Cluster Manager and HIS Binding Controller share the GA rebuild release', 
   const deployment = fs.readFileSync(path.resolve(__dirname, '../deploy/observability-binding-controller.yaml'), 'utf8');
   assert.match(deployment, /Local developer profile/);
   assert.match(deployment, /production[\s\S]*rendered manifest/);
+});
+
+test('binding source never assigns HIS lifecycle or admission authority', () => {
+  const source = fs.readFileSync(path.resolve(__dirname, '../his-observability-binding-controller.js'), 'utf8');
+  assert.match(source, /const CONTRACT_OWNER = 'PlatformSupport'/);
+  assert.match(source, /kind: 'PlatformSupportProfile'/);
+  assert.match(source, /capability: 'observability'/);
+  assert.doesNotMatch(source, /owner: 'HIS'/);
+  assert.doesNotMatch(source, /opensphere\.io\/owner': 'his'/);
 });

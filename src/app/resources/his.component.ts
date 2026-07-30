@@ -71,7 +71,7 @@ type ObservabilityConfigurationMode = 'install' | 'operate';
       <clr-dg-column>관리 방식</clr-dg-column>
       <clr-dg-column>상태</clr-dg-column>
       <clr-dg-column>관측값</clr-dg-column>
-      <clr-dg-column>소유권</clr-dg-column>
+      <clr-dg-column>실행 패키지 / 권위</clr-dg-column>
       <clr-dg-column>작업</clr-dg-column>
 
       <clr-dg-row
@@ -104,7 +104,7 @@ type ObservabilityConfigurationMode = 'install' | 'operate';
           <div class="muted" *ngIf="item.check.observedVersion">{{ item.check.observedVersion }}</div>
         </clr-dg-cell>
         <clr-dg-cell>
-          <div>{{ item.ownership }}</div>
+          <div>{{ managementExecutorLabel(item) }}</div>
           <div class="muted" *ngIf="item.lifecycleAuthority">{{ item.lifecycleAuthority }}</div>
           <div class="muted" *ngIf="item.release?.managed">Helm {{ item.release.status }} · revision {{ item.release.revision }}</div>
         </clr-dg-cell>
@@ -1249,6 +1249,12 @@ export class HisComponent implements OnInit, OnDestroy {
           : operation.action === 'rollback' ? '롤백'
             : operation.action === 'configure' ? '운영 구성'
               : operation.action === 'validate' ? '실검증' : '삭제';
+  }
+  managementExecutorLabel(item: HisItem): string {
+    if (item.ownership === 'ClusterManager') return 'Cluster Manager packaged';
+    if (item.ownership === 'External') return 'Host / external provider';
+    if (item.ownership === 'Unmanaged') return 'Not managed';
+    return 'Unknown';
   }
   releaseLifecycle(item: HisItem): HisLifecycleAction {
     if (!item.release?.managed) return 'install';

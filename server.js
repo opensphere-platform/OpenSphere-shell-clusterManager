@@ -256,7 +256,7 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
       return res.end(JSON.stringify({ user: actor.username }));
     }
-    if (p.startsWith('/api/his/')) return hisManager(req, res, p);
+    if (p.startsWith('/api/his/') || p.startsWith('/api/platform-support/')) return hisManager(req, res, p);
     if (p.startsWith('/api/ceph/')) return cephManager(req, res, p);
     if (p.startsWith('/api/k8s/')) return k8sProxy(req, res, req.url);
     if (p === '/api/nodes') {

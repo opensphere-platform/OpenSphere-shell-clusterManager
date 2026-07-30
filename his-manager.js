@@ -34,6 +34,8 @@ const HIS_EVIDENCE_API = '/apis/his.opensphere.io/v1alpha1';
 const HIS_EVIDENCE_RESOURCE = 'hisevidences';
 const OAA_HIS_READ_PERMISSION = 'console.his.read';
 const OAA_HIS_MANAGE_PERMISSION = 'console.his.manage';
+const OAA_PLATFORM_SUPPORT_READ_PERMISSION = 'console.platform.support.read';
+const OAA_PLATFORM_SUPPORT_MANAGE_PERMISSION = 'console.platform.support.manage';
 const LOKI_QUERY_URL = (process.env.HIS_LOKI_URL || 'http://opensphere-his-loki.monitoring.svc:3100').replace(/\/$/, '');
 const TEMPO_QUERY_URL = (process.env.HIS_TEMPO_URL || 'http://opensphere-his-tempo.monitoring.svc:3200').replace(/\/$/, '');
 const OIDC_SECRET_KEYS = Object.freeze([
@@ -221,7 +223,7 @@ function normalizeOaaObservabilityConfig(input) {
 
 function oaaObservabilityConfirmation(config, resetData) {
   const publicExposure = config.grafana.exposureMode === 'PublicIngress';
-  return `configure HIS observability public=${publicExposure} data-reset=${Boolean(resetData)}`;
+  return `configure platform-support observability public=${publicExposure} data-reset=${Boolean(resetData)}`;
 }
 
 function observabilityValues(rawConfig) {
@@ -2190,6 +2192,9 @@ async function setProfileSelection(ctx, actor, body) {
 }
 
 async function auditRequired(ctx, actor, action, item, reason, resultValue) {
+  const authorityTarget = item.id === OBSERVABILITY_ITEM_ID
+    ? 'PlatformSupport/SharedObservability'
+    : `HIS/${item.id}`;
   const response = await fetch(`${ctx.controller}/api/admin/events`, {
     method: 'POST',
     headers: {
@@ -2201,14 +2206,14 @@ async function auditRequired(ctx, actor, action, item, reason, resultValue) {
       source: 'cluster-manager',
       userActor: actor.username,
       action,
-      target: `HIS/${item.id}`,
+      target: authorityTarget,
       result: resultValue,
       reason,
       metadata: { chart: item.chartName, chartVersion: item.chartVersion, release: item.release, namespace: item.namespace },
     }),
   });
   if (!response.ok) {
-    throw Object.assign(new Error(`내구 감사 저장소를 사용할 수 없습니다(HTTP ${response.status}). HIS 변경을 차단했습니다.`), { code: 503 });
+    throw Object.assign(new Error(`내구 감사 저장소를 사용할 수 없습니다(HTTP ${response.status}). 관리 변경을 차단했습니다.`), { code: 503 });
   }
 }
 
@@ -2251,6 +2256,32 @@ async function actorForOaaOwner(ctx, req, mutation) {
   }
   if (mutation && String(actor.assurance || 'aal1').toLowerCase() !== 'aal2') {
     throw Object.assign(new Error('HIS OAA 변경은 AAL2 재인증이 필요합니다.'), { code: 403 });
+  }
+  return actor;
+}
+
+async function actorForPlatformSupportOaaOwner(ctx, req, mutation) {
+  const actor = await ctx.verifyToken(ctx.requestToken(req));
+  const permissions = new Set(Array.isArray(actor.permissions) ? actor.permissions : []);
+  const requiredPermission = mutation ? OAA_PLATFORM_SUPPORT_MANAGE_PERMISSION : OAA_PLATFORM_SUPPORT_READ_PERMISSION;
+  if (!permissions.has(requiredPermission)) {
+    throw Object.assign(new Error(`Platform Support OAA owner API에는 ${requiredPermission} 권한이 필요합니다.`), { code: 403 });
+  }
+  if (mutation && String(actor.assurance || 'aal1').toLowerCase() !== 'aal2') {
+    throw Object.assign(new Error('Platform Support OAA 변경은 AAL2 재인증이 필요합니다.'), { code: 403 });
+  }
+  return actor;
+}
+
+async function actorForPlatformSupport(ctx, req, mutation) {
+  const actor = await actorFor(ctx, req, mutation);
+  const permissions = new Set(Array.isArray(actor.permissions) ? actor.permissions : []);
+  const requiredPermission = mutation ? OAA_PLATFORM_SUPPORT_MANAGE_PERMISSION : OAA_PLATFORM_SUPPORT_READ_PERMISSION;
+  if (!permissions.has(requiredPermission)) {
+    throw Object.assign(new Error(`Shared Observability 관리에는 ${requiredPermission} 권한이 필요합니다.`), { code: 403 });
+  }
+  if (mutation && String(actor.assurance || 'aal1').toLowerCase() !== 'aal2') {
+    throw Object.assign(new Error('Shared Observability 변경은 AAL2 재인증이 필요합니다.'), { code: 403 });
   }
   return actor;
 }
@@ -2985,11 +3016,11 @@ async function executeObservabilityConfiguration(ctx, actor, item, operation, de
       throw Object.assign(new Error(`적용 후 텔레메트리 검증 실패: ${unavailable.join(', ')} workload가 Ready가 아닙니다.`), { code: 502 });
     }
     await writeObservabilityConfig(ctx, actor, desired, operation.reason);
-    await auditRequired(ctx, actor, 'HISObservabilityConfigured', item, operation.reason, `success:${desired.grafana.exposureMode}`);
+    await auditRequired(ctx, actor, 'PlatformSupportObservabilityConfigured', item, operation.reason, `success:${desired.grafana.exposureMode}`);
     await ctx.publishNotify({
       userActor: actor.username,
-      action: 'HISObservabilityConfigured',
-      target: `HIS/${item.id}`,
+      action: 'PlatformSupportObservabilityConfigured',
+      target: 'PlatformSupport/SharedObservability',
       result: 'success',
       reason: `${operation.reason} · exposure=${desired.grafana.exposureMode} · dataReset=${dataReset}`,
     });
@@ -3002,10 +3033,10 @@ async function executeObservabilityConfiguration(ctx, actor, item, operation, de
     });
   } catch (error) {
     const message = safeError(error);
-    try { await auditRequired(ctx, actor, 'HISObservabilityConfigureFailed', item, operation.reason, message); }
+    try { await auditRequired(ctx, actor, 'PlatformSupportObservabilityConfigureFailed', item, operation.reason, message); }
     catch (auditError) { console.error(`[his-operation] configuration failure audit unavailable id=${operation.id}: ${safeError(auditError)}`); }
     try {
-      await ctx.publishNotify({ userActor: actor.username, action: 'HISObservabilityConfigureFailed', target: `HIS/${item.id}`, result: 'error', reason: `${operation.reason} · ${message}` });
+      await ctx.publishNotify({ userActor: actor.username, action: 'PlatformSupportObservabilityConfigureFailed', target: 'PlatformSupport/SharedObservability', result: 'error', reason: `${operation.reason} · ${message}` });
     } catch { /* best effort notification */ }
     await patchOperation(ctx, item, current, { phase: 'Failed', progress: 100, message: 'Observability 운영 구성 적용에 실패했습니다.', error: message });
   }
@@ -3303,28 +3334,48 @@ function createHisManager(ctx) {
     return statusInFlight;
   }
   return async function handle(req, res, pathname) {
-    if (!pathname.startsWith('/api/his/')) return false;
+    const platformSupportRequest = pathname.startsWith('/api/platform-support/');
+    if (!pathname.startsWith('/api/his/') && !platformSupportRequest) return false;
+    const routePath = platformSupportRequest
+      ? pathname.replace('/api/platform-support/', '/api/his/')
+      : pathname;
     try {
-      if (req.method === 'GET' && pathname === '/api/his/oaa/capabilities') {
-        await actorForOaaOwner(ctx, req, false);
+      if (req.method === 'GET' && pathname === '/api/platform-support/oaa/capabilities') {
+        await actorForPlatformSupportOaaOwner(ctx, req, false);
         return ctx.jsonRes(res, 200, {
-          apiVersion: 'opensphere.io/oaa-his-owner/v1',
-          capabilities: ['observability-config-read', 'observability-plan', 'observability-configure'],
+          apiVersion: 'opensphere.io/oaa-platform-support-owner/v1',
+          realizationLayer: 'SRL-L4',
+          capabilities: [
+            'observability-config-read',
+            'observability-plan',
+            'observability-configure',
+            'observability-validate',
+            'observability-lifecycle',
+          ],
           secretInputPolicy: 'SecretRefOnly',
           mutationAssurance: 'aal2',
         }), true;
       }
-      if (req.method === 'GET' && pathname === '/api/his/oaa/observability/config') {
+      if (req.method === 'GET' && pathname === '/api/his/oaa/capabilities') {
         await actorForOaaOwner(ctx, req, false);
+        return ctx.jsonRes(res, 200, {
+          apiVersion: 'opensphere.io/oaa-his-owner/v1',
+          realizationLayer: 'SRL-L1',
+          capabilities: ['preflight-read', 'canary-validate', 'managed-addon-lifecycle'],
+          mutationAssurance: 'aal2',
+        }), true;
+      }
+      if (req.method === 'GET' && pathname === '/api/platform-support/oaa/observability/config') {
+        await actorForPlatformSupportOaaOwner(ctx, req, false);
         return ctx.jsonRes(res, 200, await observabilityConfiguration(ctx)), true;
       }
-      if (req.method === 'POST' && pathname === '/api/his/oaa/observability/plan') {
-        await actorForOaaOwner(ctx, req, false);
+      if (req.method === 'POST' && pathname === '/api/platform-support/oaa/observability/plan') {
+        await actorForPlatformSupportOaaOwner(ctx, req, false);
         const body = requireClosedObject(await readJson(req), ['config'], 'request');
         return ctx.jsonRes(res, 200, await observabilityConfigurationPlan(ctx, normalizeOaaObservabilityConfig(body.config))), true;
       }
-      if (req.method === 'POST' && pathname === '/api/his/oaa/observability/configure') {
-        const actor = await actorForOaaOwner(ctx, req, true);
+      if (req.method === 'POST' && pathname === '/api/platform-support/oaa/observability/configure') {
+        const actor = await actorForPlatformSupportOaaOwner(ctx, req, true);
         const body = requireClosedObject(await readJson(req), ['config', 'resetData', 'confirm', 'reason'], 'request');
         if (typeof body.resetData !== 'boolean') throw Object.assign(new Error('resetData는 boolean이어야 합니다.'), { code: 400 });
         const reason = reasonFrom(body);
@@ -3332,7 +3383,7 @@ function createHisManager(ctx) {
         const configurationPlan = await observabilityConfigurationPlan(ctx, desired);
         const expectedConfirmation = oaaObservabilityConfirmation(desired, body.resetData);
         if (String(body.confirm || '') !== expectedConfirmation) {
-            throw Object.assign(new Error(`HIS observability 변경 확인 값으로 '${expectedConfirmation}'를 입력해야 합니다.`), { code: 400 });
+            throw Object.assign(new Error(`Platform Support observability 변경 확인 값으로 '${expectedConfirmation}'를 입력해야 합니다.`), { code: 400 });
         }
         if (!configurationPlan.live.installed) throw Object.assign(new Error('Shared Observability가 설치되지 않았습니다.'), { code: 409 });
         if (configurationPlan.blockers.length) throw Object.assign(new Error(configurationPlan.blockers.join(' ')), { code: 409 });
@@ -3344,43 +3395,51 @@ function createHisManager(ctx) {
         const item = catalogItem(OBSERVABILITY_ITEM_ID);
         const release = await helmStatus(ctx, item);
         if (!release?.managed) throw Object.assign(new Error('Cluster Manager가 설치한 Shared Observability만 재구성할 수 있습니다.'), { code: 409 });
-        await auditRequired(ctx, actor, 'OAAHISObservabilityConfigureRequested', item, reason, `requested:${desired.grafana.exposureMode}:reset=${body.resetData}`);
+        await auditRequired(ctx, actor, 'OAAPlatformSupportObservabilityConfigureRequested', item, reason, `requested:${desired.grafana.exposureMode}:reset=${body.resetData}`);
         const operation = await createOperation(ctx, item, actor, 'configure', reason);
         ctx.jsonRes(res, 202, { ok: true, operation });
         setImmediate(() => { void executeObservabilityConfiguration(ctx, actor, item, operation, desired, body.resetData); });
         return true;
       }
-      if (req.method === 'GET' && pathname === '/api/his/status') {
+      if (req.method === 'GET' && !platformSupportRequest && routePath === '/api/his/status') {
         await actorFor(ctx, req, false);
         const refresh = new URL(req.url || pathname, 'http://cluster-manager.local').searchParams.get('refresh') === 'true';
         return ctx.jsonRes(res, 200, await statusProjection(refresh)), true;
       }
-      if (req.method === 'GET' && pathname === '/api/his/internal/status') {
+      if (req.method === 'GET' && !platformSupportRequest && routePath === '/api/his/internal/status') {
         if (typeof ctx.verifyHisStatusReader !== 'function') throw Object.assign(new Error('HIS internal status identity verifier is unavailable.'), { code: 503 });
         await ctx.verifyHisStatusReader(ctx.requestToken(req));
         return ctx.jsonRes(res, 200, await statusProjection(false)), true;
       }
-      if (req.method === 'GET' && pathname === '/api/his/observability/config') {
-        await actorFor(ctx, req, false);
+      if (req.method === 'GET' && platformSupportRequest && routePath === '/api/his/observability/config') {
+        await actorForPlatformSupport(ctx, req, false);
         return ctx.jsonRes(res, 200, await observabilityConfiguration(ctx)), true;
       }
-      if (req.method === 'GET' && pathname === '/api/his/observability/logs') {
-        await actorFor(ctx, req, false);
+      if (req.method === 'GET' && platformSupportRequest && routePath === '/api/his/observability/logs') {
+        await actorForPlatformSupport(ctx, req, false);
         return ctx.jsonRes(res, 200, await queryObservabilityLogs(req)), true;
       }
-      if (req.method === 'GET' && pathname === '/api/his/observability/traces') {
-        await actorFor(ctx, req, false);
+      if (req.method === 'GET' && platformSupportRequest && routePath === '/api/his/observability/traces') {
+        await actorForPlatformSupport(ctx, req, false);
         return ctx.jsonRes(res, 200, await queryObservabilityTraces(req)), true;
       }
       if (req.method !== 'POST') throw Object.assign(new Error('method not allowed'), { code: 405 });
       const body = await readJson(req);
-      const actor = await actorFor(ctx, req, true);
-      if (pathname === '/api/his/profiles') {
+      const mutation = routePath !== '/api/his/plan' && routePath !== '/api/his/observability/plan';
+      const actor = platformSupportRequest
+        ? await actorForPlatformSupport(ctx, req, mutation)
+        : await actorFor(ctx, req, mutation);
+      if (!platformSupportRequest && routePath === '/api/his/profiles') {
         return ctx.jsonRes(res, 200, await setProfileSelection(ctx, actor, body)), true;
       }
-      if (pathname === '/api/his/validate') {
+      if (routePath === '/api/his/validate') {
         const item = catalogItem(String(body?.id || ''));
         if (!item || !['cluster-network', 'cluster-dns', OBSERVABILITY_ITEM_ID, 'storage', 'csi-snapshot'].includes(item.id)) throw Object.assign(new Error('실검증을 지원하지 않는 HIS 항목입니다.'), { code: 404 });
+        if (platformSupportRequest !== (item.id === OBSERVABILITY_ITEM_ID)) {
+          throw Object.assign(new Error(item.id === OBSERVABILITY_ITEM_ID
+            ? 'Shared Observability 검증은 /api/platform-support/validate 경로를 사용해야 합니다.'
+            : 'HIS 검증 항목은 /api/his/validate 경로를 사용해야 합니다.'), { code: 409 });
+        }
         const reason = reasonFrom(body);
         await auditRequired(ctx, actor, 'HISCanaryValidationRequested', item, reason, 'requested');
         const operation = await createOperation(ctx, item, actor, 'validate', reason);
@@ -3389,16 +3448,21 @@ function createHisManager(ctx) {
         return true;
       }
       const item = assertManagedItem(body);
+      if (platformSupportRequest !== (item.id === OBSERVABILITY_ITEM_ID)) {
+        throw Object.assign(new Error(item.id === OBSERVABILITY_ITEM_ID
+          ? 'Shared Observability lifecycle은 /api/platform-support 경로를 사용해야 합니다.'
+          : 'HIS lifecycle 항목은 /api/his 경로를 사용해야 합니다.'), { code: 409 });
+      }
 
-      if (pathname === '/api/his/plan') {
+      if (routePath === '/api/his/plan') {
         const planConfig = item.id === OBSERVABILITY_ITEM_ID && body.config ? validateObservabilityConfig(body.config) : null;
         return ctx.jsonRes(res, 200, await plan(ctx, item, planConfig)), true;
       }
-      if (pathname === '/api/his/observability/plan') {
+      if (routePath === '/api/his/observability/plan') {
         if (item.id !== OBSERVABILITY_ITEM_ID) throw Object.assign(new Error('Observability 항목만 운영 구성을 지원합니다.'), { code: 400 });
         return ctx.jsonRes(res, 200, await observabilityConfigurationPlan(ctx, body.config)), true;
       }
-      if (pathname === '/api/his/observability/configure') {
+      if (routePath === '/api/his/observability/configure') {
         if (item.id !== OBSERVABILITY_ITEM_ID) throw Object.assign(new Error('Observability 항목만 운영 구성을 지원합니다.'), { code: 400 });
         const reason = reasonFrom(body);
         const desired = validateObservabilityConfig(body.config);
@@ -3414,7 +3478,7 @@ function createHisManager(ctx) {
         }
         const release = await helmStatus(ctx, item);
         if (!release?.managed) throw Object.assign(new Error('Cluster Manager가 설치한 Shared Observability만 재구성할 수 있습니다.'), { code: 409 });
-        await auditRequired(ctx, actor, 'HISObservabilityConfigureRequested', item, reason, `requested:${desired.grafana.exposureMode}:reset=${dataReset}`);
+        await auditRequired(ctx, actor, 'PlatformSupportObservabilityConfigureRequested', item, reason, `requested:${desired.grafana.exposureMode}:reset=${dataReset}`);
         const operation = await createOperation(ctx, item, actor, 'configure', reason);
         ctx.jsonRes(res, 202, { ok: true, operation });
         setImmediate(() => { void executeObservabilityConfiguration(ctx, actor, item, operation, desired, dataReset); });
@@ -3422,11 +3486,11 @@ function createHisManager(ctx) {
       }
 
       const reason = reasonFrom(body);
-      const action = pathname === '/api/his/install' ? 'install'
-        : pathname === '/api/his/upgrade' ? 'upgrade'
-          : pathname === '/api/his/recover' ? 'recover'
-            : pathname === '/api/his/rollback' ? 'rollback'
-              : pathname === '/api/his/uninstall' ? 'uninstall' : '';
+      const action = routePath === '/api/his/install' ? 'install'
+        : routePath === '/api/his/upgrade' ? 'upgrade'
+          : routePath === '/api/his/recover' ? 'recover'
+            : routePath === '/api/his/rollback' ? 'rollback'
+              : routePath === '/api/his/uninstall' ? 'uninstall' : '';
       if (!action) throw Object.assign(new Error('not found'), { code: 404 });
       let operationExtra = ['install', 'upgrade', 'recover'].includes(action)
         ? { chartVersion: item.chartVersion, appVersion: item.appVersion }

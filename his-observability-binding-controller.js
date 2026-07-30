@@ -22,9 +22,17 @@ const TELEMETRY_CANARY_REFRESH_MS = Math.max(60000, Number(process.env.TELEMETRY
 const GROUP = 'observability.opensphere.io';
 const VERSION = 'v1alpha1';
 const BINDING_PATH = `/apis/${GROUP}/${VERSION}/observabilitybindings/${BINDING_NAME}`;
+const CONTRACT_OWNER = 'PlatformSupport';
+const PROVIDER_REF = Object.freeze({
+  apiVersion: 'platform.opensphere.io/v1alpha1',
+  kind: 'PlatformSupportProfile',
+  name: 'default',
+  capability: 'observability',
+});
 const MANAGED_LABELS = Object.freeze({
   'app.kubernetes.io/managed-by': 'opensphere-cluster-manager',
-  'opensphere.io/owner': 'his',
+  'opensphere.io/owner': 'platform-support',
+  'opensphere.io/realization-layer': 'srl-l4',
   'opensphere.io/consumer': 'opensphere-console',
 });
 const QUERY_TEMPLATES = Object.freeze({
@@ -105,8 +113,8 @@ function bindingProjection(input, now = new Date().toISOString()) {
   };
   const evidenceDigest = `sha256:${createHash('sha256').update(JSON.stringify(evidence)).digest('hex')}`;
   const message = ready
-    ? 'HIS metrics, logs, traces and OTLP paths are independently connected and verified.'
-    : `HIS binding remains fail-closed; unavailable requested capabilities: ${unavailableCapabilities.join(', ') || 'unknown'}.`;
+    ? 'Platform Support metrics, logs, traces and OTLP paths are independently connected and verified.'
+    : `Platform Support binding remains fail-closed; unavailable requested capabilities: ${unavailableCapabilities.join(', ') || 'unknown'}.`;
   return {
     phase,
     observedAt: now,
@@ -177,17 +185,17 @@ function telemetryPayloads(id, now = Date.now()) {
   const start = BigInt(now) * 1000000n;
   const end = start + 1000000n;
   const resource = { attributes: [
-    { key: 'service.name', value: { stringValue: 'opensphere-his-binding-canary' } },
+    { key: 'service.name', value: { stringValue: 'opensphere-platform-support-binding-canary' } },
     { key: 'opensphere.canary.id', value: { stringValue: id } },
   ] };
   return {
     traceId,
-    logs: { resourceLogs: [{ resource, scopeLogs: [{ scope: { name: 'opensphere-his-binding-controller' }, logRecords: [{
-      timeUnixNano: start.toString(), severityNumber: 9, severityText: 'INFO', body: { stringValue: `opensphere-his-binding-log ${id}` },
+    logs: { resourceLogs: [{ resource, scopeLogs: [{ scope: { name: 'opensphere-platform-support-binding-controller' }, logRecords: [{
+      timeUnixNano: start.toString(), severityNumber: 9, severityText: 'INFO', body: { stringValue: `opensphere-platform-support-binding-log ${id}` },
       attributes: [{ key: 'opensphere.canary.id', value: { stringValue: id } }],
     }] }] }] },
-    traces: { resourceSpans: [{ resource, scopeSpans: [{ scope: { name: 'opensphere-his-binding-controller' }, spans: [{
-      traceId, spanId, name: `opensphere-his-binding-trace-${id}`, kind: 1,
+    traces: { resourceSpans: [{ resource, scopeSpans: [{ scope: { name: 'opensphere-platform-support-binding-controller' }, spans: [{
+      traceId, spanId, name: `opensphere-platform-support-binding-trace-${id}`, kind: 1,
       startTimeUnixNano: start.toString(), endTimeUnixNano: end.toString(), status: { code: 1 },
       attributes: [{ key: 'opensphere.canary.id', value: { stringValue: id } }],
     }] }] }] },
@@ -211,7 +219,7 @@ async function telemetryCanary() {
       postJson(`${OTLP_HTTP_URL}/v1/traces`, payloads.traces),
     ]);
     const lokiQuery = new URL(`${LOKI_URL}/loki/api/v1/query_range`);
-    lokiQuery.searchParams.set('query', `{service_name="opensphere-his-binding-canary"} |= "${id}"`);
+    lokiQuery.searchParams.set('query', `{service_name="opensphere-platform-support-binding-canary"} |= "${id}"`);
     lokiQuery.searchParams.set('start', (BigInt(checkedAt - 300000) * 1000000n).toString());
     lokiQuery.searchParams.set('end', (BigInt(checkedAt + 60000) * 1000000n).toString());
     lokiQuery.searchParams.set('limit', '20');
@@ -273,7 +281,8 @@ async function publish(status) {
   const spec = {
     consumerRef: { apiVersion: 'apps/v1', kind: 'Deployment', namespace: CONSOLE_NAMESPACE, name: 'opensphere-console' },
     requestedCapabilities: ['metrics', 'logs', 'traces', 'otlp'],
-    owner: 'HIS',
+    owner: CONTRACT_OWNER,
+    providerRef: PROVIDER_REF,
   };
   if (current.status === 404) {
     const created = await k8s('POST', `/apis/${GROUP}/${VERSION}/observabilitybindings`, {
@@ -291,7 +300,10 @@ async function publish(status) {
     const labelsMatch = Object.entries(MANAGED_LABELS).every(([key, value]) => currentLabels[key] === value);
     const specMatches = JSON.stringify(current.value?.spec || {}) === JSON.stringify(spec);
     if (!labelsMatch || !specMatches) {
-      const patched = await k8s('PATCH', BINDING_PATH, { metadata: { labels: MANAGED_LABELS }, spec });
+      const patched = await k8s('PATCH', BINDING_PATH, {
+        metadata: { labels: MANAGED_LABELS },
+        spec: { ...spec },
+      });
       if (!patched.ok) throw new Error(`ObservabilityBinding spec patch HTTP ${patched.status}: ${patched.value?.message || ''}`);
       current = patched;
     }
@@ -318,7 +330,7 @@ async function reconcileOnce() {
   await publish(status);
   lastSuccessAt = Date.now();
   lastError = '';
-  console.log(`[his-observability-binding] phase=${status.phase} capabilities=${status.capabilities.join(',') || 'none'} evidence=${status.evidence.digest}`);
+  console.log(`[platform-support-observability-binding] phase=${status.phase} capabilities=${status.capabilities.join(',') || 'none'} evidence=${status.evidence.digest}`);
   return status;
 }
 
@@ -326,7 +338,7 @@ async function loop() {
   try { await reconcileOnce(); }
   catch (error) {
     lastError = String(error?.message || error).slice(0, 500);
-    console.error(`[his-observability-binding] reconcile failed: ${lastError}`);
+    console.error(`[platform-support-observability-binding] reconcile failed: ${lastError}`);
   } finally {
     setTimeout(loop, INTERVAL_MS);
   }
@@ -340,7 +352,7 @@ if (require.main === module) {
     res.writeHead(ok ? 200 : 503, { 'content-type': 'application/json' });
     return res.end(JSON.stringify({ ok, ready, lastSuccessAt: lastSuccessAt ? new Date(lastSuccessAt).toISOString() : '', lastError }));
   }).listen(PORT, '0.0.0.0', () => {
-    console.log(`HIS ObservabilityBinding controller listening :${PORT}`);
+    console.log(`Platform Support ObservabilityBinding controller listening :${PORT}`);
     void loop();
   });
 } else {

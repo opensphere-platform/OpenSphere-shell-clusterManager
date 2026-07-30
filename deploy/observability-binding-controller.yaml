@@ -22,11 +22,21 @@ spec:
           properties:
             spec:
               type: object
-              required: [consumerRef, requestedCapabilities, owner]
+              required: [consumerRef, requestedCapabilities, owner, providerRef]
               properties:
-                # HISS is retained only for bindings created before HIS was
-                # restored as the CONSTITUTION-0004 canonical acronym.
-                owner: { type: string, enum: [HIS, HISS] }
+                # HIS/HISS are read-compatible legacy values only.  The active
+                # controller always migrates the contract owner to
+                # PlatformSupport because this CR projects the SRL-L4 shared
+                # observability provider; it is not HIS readiness evidence.
+                owner: { type: string, enum: [PlatformSupport, HIS, HISS] }
+                providerRef:
+                  type: object
+                  required: [apiVersion, kind, name, capability]
+                  properties:
+                    apiVersion: { type: string, enum: [platform.opensphere.io/v1alpha1] }
+                    kind: { type: string, enum: [PlatformSupportProfile] }
+                    name: { type: string, enum: [default] }
+                    capability: { type: string, enum: [observability] }
                 consumerRef:
                   type: object
                   required: [apiVersion, kind, namespace, name]
@@ -108,7 +118,9 @@ metadata:
   namespace: opensphere-console
   labels:
     app: opensphere-his-binding-controller
-    opensphere.io/owner: his
+    opensphere.io/owner: platform-support
+    opensphere.io/realization-layer: srl-l4
+    opensphere.io/packaged-by: cluster-manager
 spec:
   replicas: 1
   strategy: { type: Recreate }
@@ -117,7 +129,9 @@ spec:
     metadata:
       labels:
         app: opensphere-his-binding-controller
-        opensphere.io/owner: his
+        opensphere.io/owner: platform-support
+        opensphere.io/realization-layer: srl-l4
+        opensphere.io/packaged-by: cluster-manager
     spec:
       serviceAccountName: opensphere-his-binding-controller
       automountServiceAccountToken: true

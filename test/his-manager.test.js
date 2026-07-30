@@ -65,6 +65,8 @@ test('HIS catalog keeps PFS/plugin concepts outside the prerequisite catalog', (
   assert.equal(observability.profile, 'Observability');
   assert.equal(observability.chartVersion, '87.19.1');
   assert.equal(observability.appVersion, 'v0.92.1');
+  assert.equal(observability.realizationLayer, 'SRL-L4');
+  assert.equal(observability.contributesToHisReadiness, false);
   assert.deepEqual(observability.availableChartVersions, ['87.19.1', '86.0.1']);
   assert.equal(assertManagedItem({ id: 'kube-prometheus-stack', chartVersion: '87.19.1' }).chart, '/app/his-charts/kube-prometheus-stack-87.19.1.tgz');
   assert.equal(assertManagedItem({ id: 'kube-prometheus-stack', chartVersion: '86.0.1' }).appVersion, 'v0.91.0');
@@ -77,6 +79,8 @@ test('HIS catalog keeps PFS/plugin concepts outside the prerequisite catalog', (
   assert.equal(crossplane.required, false);
   assert.equal(crossplane.profile, 'Platform Delivery');
   assert.equal(crossplane.chartVersion, '2.3.3');
+  assert.equal(crossplane.realizationLayer, 'SRL-L4');
+  assert.equal(crossplane.contributesToHisReadiness, false);
   assert.deepEqual(crossplane.values, ['--values', '/app/his-values/crossplane.yaml']);
   assert.deepEqual(crossplane.kindValues, ['--values', '/app/his-values/crossplane-kind.yaml']);
   assert.equal(crossplane.adoptExisting, true);
@@ -111,6 +115,8 @@ test('HIS catalog keeps PFS/plugin concepts outside the prerequisite catalog', (
   assert.equal(argoCd.profile, 'Platform Delivery');
   assert.equal(argoCd.chartVersion, '9.5.15');
   assert.equal(argoCd.appVersion, 'v3.4.2');
+  assert.equal(argoCd.realizationLayer, 'SRL-L4');
+  assert.equal(argoCd.contributesToHisReadiness, false);
   assert.equal(argoCd.adoptExisting, true);
   assert.equal(argoCd.replacementPolicy.strategy, 'replace-runtime-preserve-declarations');
   assert.equal(argoCd.replacementPolicy.confirmation, 'replace argocd-runtime');
@@ -170,28 +176,52 @@ test('HIS status contract uses the constitution-defined acronym and versioned sc
   assert.doesNotMatch(source, /stack:\s*'HISS'/);
 });
 
-test('optional profiles gate HIS only when explicitly selected or backed by a managed release', () => {
+test('only SRL-L1 profiles gate HIS while delegated SRL-L4 runtimes remain visible', () => {
   const items = [
-    { id: 'kube-prometheus-stack', profile: 'Observability', release: { managed: true }, check: { state: 'Ready' } },
-    { id: 'csi-snapshot', profile: 'Data Protection', release: null, check: { state: 'Degraded' } },
+    { id: 'kube-prometheus-stack', profile: 'Observability', realizationLayer: 'SRL-L4', contributesToHisReadiness: false, release: { managed: true }, check: { state: 'Ready' } },
+    { id: 'csi-snapshot', profile: 'Data Protection', realizationLayer: 'SRL-L1', contributesToHisReadiness: true, release: null, check: { state: 'Degraded' } },
   ];
   const inferred = evaluateProfiles(items, new Set());
-  assert.deepEqual(inferred.find((profile) => profile.name === 'Observability'), {
-    name: 'Observability', selected: true, selectionSource: 'ManagedRelease', state: 'Ready', ready: 1, total: 1, itemIds: ['kube-prometheus-stack'],
-  });
+  assert.equal(inferred.find((profile) => profile.name === 'Observability'), undefined);
   assert.deepEqual(inferred.find((profile) => profile.name === 'Data Protection'), {
     name: 'Data Protection', selected: false, selectionSource: 'None', state: 'NotSelected', ready: 0, total: 1, itemIds: ['csi-snapshot'],
   });
   const selected = evaluateProfiles(items, new Set(['Data Protection']));
   assert.equal(selected.find((profile) => profile.name === 'Data Protection').state, 'Degraded');
   assert.equal(selected.find((profile) => profile.name === 'Data Protection').selectionSource, 'Explicit');
-  const core = [{ id: 'storage', required: true, check: { state: 'Ready' } }, ...items];
+  const core = [{ id: 'storage', required: true, realizationLayer: 'SRL-L1', contributesToHisReadiness: true, check: { state: 'Ready' } }, ...items];
   const baseStack = evaluateStackStatus(core, inferred);
   assert.equal(baseStack.state, 'Ready');
-  assert.equal(baseStack.summary.selectedProfilesReady, 1);
+  assert.equal(baseStack.summary.selectedProfilesReady, 0);
+  assert.equal(baseStack.summary.delegatedSupportReady, 1);
+  assert.equal(baseStack.summary.delegatedSupportTotal, 1);
+  assert.equal(baseStack.items.find((item) => item.id === 'kube-prometheus-stack').effectiveRequired, false);
   const protectedStack = evaluateStackStatus(core, selected);
   assert.equal(protectedStack.state, 'Degraded');
   assert.equal(protectedStack.items.find((item) => item.id === 'csi-snapshot').effectiveRequired, true);
+});
+
+test('HIS internal projection is cached, authenticated, and separate from the operator endpoint', () => {
+  const source = fs.readFileSync(path.resolve(__dirname, '../his-manager.js'), 'utf8');
+  const server = fs.readFileSync(path.resolve(__dirname, '../server.js'), 'utf8');
+  assert.match(source, /HIS_STATUS_CACHE_TTL_MS/);
+  assert.match(source, /statusInFlight/);
+  assert.match(source, /pathname === '\/api\/his\/internal\/status'/);
+  assert.match(source, /await ctx\.verifyHisStatusReader\(ctx\.requestToken\(req\)\)/);
+  assert.match(server, /apis\/authentication\.k8s\.io\/v1\/tokenreviews/);
+  assert.match(server, /system:serviceaccount:opensphere-console:opensphere-console-dupa-controller/);
+});
+
+test('HIS operation evidence is a status-subresource CRD, not a forgeable ConfigMap', () => {
+  const source = fs.readFileSync(path.resolve(__dirname, '../his-manager.js'), 'utf8');
+  const manifest = fs.readFileSync(path.resolve(__dirname, '../deploy/hiss-runtime-owner.yaml'), 'utf8');
+  assert.match(source, /HIS_EVIDENCE_RESOURCE = 'hisevidences'/);
+  assert.match(source, /kind: 'HISEvidence'/);
+  assert.match(source, /`\$\{HIS_EVIDENCE_API\}\/namespaces\/\$\{OPERATION_NAMESPACE\}\/\$\{HIS_EVIDENCE_RESOURCE\}\/\$\{name\}\/status`/);
+  assert.doesNotMatch(source.slice(source.indexOf('async function readOperation'), source.indexOf('async function writeOperation')), /configmaps/);
+  assert.match(manifest, /name: hisevidences\.his\.opensphere\.io/);
+  assert.match(manifest, /subresources:\s*\n\s*status:/);
+  assert.match(manifest, /resources: \[hisevidences\/status\]/);
 });
 
 test('Kubernetes compatibility range is explicit and boundary-safe', () => {
@@ -484,6 +514,12 @@ test('ingress default certificate reference is parsed from the managed controlle
   });
   assert.equal(ingressDefaultCertificateRef({ spec: { template: { spec: { containers: [{ args: ['--default-ssl-certificate=../../secret'] }] } } } }), null);
   assert.equal(ingressDefaultCertificateRef(null), null);
+  const source = fs.readFileSync(path.resolve(__dirname, '../his-manager.js'), 'utf8');
+  assert.match(source, /new X509Certificate/);
+  assert.match(source, /createPublicKey\(privateKey\)/);
+  assert.match(source, /function tlsEndpointProbe/);
+  assert.match(source, /actual === String\(expectedFingerprint\)\.toLowerCase\(\)/);
+  assert.doesNotMatch(source, /const tlsPolicyReady = tlsIngresses > 0/);
 });
 
 test('Grafana persistence profile is repeat-install safe', () => {

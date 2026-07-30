@@ -37,7 +37,7 @@ type ObservabilityConfigurationMode = 'install' | 'operate';
 
     <clr-alert [clrAlertType]="'info'" [clrAlertClosable]="false">
       <clr-alert-item><span class="alert-text">
-        <strong>PFS와의 경계:</strong> PFS는 자체 기능·페이지를 가진 독립 plugin입니다. HIS 항목은 개별 메뉴나 plugin을 만들지 않으며 이 화면 하나에서만 관리합니다.
+        <strong>수직 Layer 경계:</strong> HIS Ready는 SRL-L1 호스트 기반만 판정합니다. Argo CD·Crossplane·Shared Observability는 SRL-L4 지원 runtime이며 기존 위임 lifecycle을 표시하되 HIS Ready 계산에는 포함하지 않습니다. PFSS는 이 기반과 Support Profile을 소비하는 SRL-L5입니다.
       </span></clr-alert-item>
     </clr-alert>
 
@@ -52,6 +52,7 @@ type ObservabilityConfigurationMode = 'install' | 'operate';
       <span class="label" [class.label-success]="s.state === 'Ready'" [class.label-danger]="s.state === 'Blocked'" [class.label-warning]="s.state === 'Degraded'">HIS {{ s.state }}</span>
       <span>Core {{ s.summary.coreReady }}/{{ s.summary.coreTotal }} Ready</span>
       <span>활성 profile {{ s.summary.selectedProfilesReady }}/{{ s.summary.selectedProfilesTotal }} Ready</span>
+      <span>L4 지원 runtime {{ s.summary.delegatedSupportReady }}/{{ s.summary.delegatedSupportTotal }} Ready · HIS 판정 제외</span>
       <span>검사 {{ s.checkedAt | date:'yyyy-MM-dd HH:mm:ss' }}</span>
     </section>
 
@@ -83,13 +84,15 @@ type ObservabilityConfigurationMode = 'install' | 'operate';
         <clr-dg-cell>
           <strong>{{ item.displayName }}</strong>
           <span class="domain-badge" *ngIf="item.domain">{{ item.domain }}</span>
+          <span class="domain-badge" *ngIf="item.realizationLayer">{{ item.realizationLayer }}</span>
           <div class="muted">{{ item.description }}</div>
           <div class="muted" *ngIf="item.chartName">{{ item.chartName }} {{ item.chartVersion }}</div>
         </clr-dg-cell>
         <clr-dg-cell>
           <span class="label" [class.label-info]="item.mode === 'HelmManaged'">{{ item.mode }}</span>
-          <span *ngIf="item.required" class="required">필수</span>
-          <span *ngIf="!item.required && item.profile" class="optional">{{ item.profileSelected ? '활성 profile' : '선택 가능' }} · {{ item.profile }}</span>
+          <span *ngIf="item.contributesToHisReadiness === false" class="optional">위임된 L4 runtime · HIS 판정 제외</span>
+          <span *ngIf="item.contributesToHisReadiness !== false && item.required" class="required">필수</span>
+          <span *ngIf="item.contributesToHisReadiness !== false && !item.required && item.profile" class="optional">{{ item.profileSelected ? '활성 profile' : '선택 가능' }} · {{ item.profile }}</span>
         </clr-dg-cell>
         <clr-dg-cell>
           <span class="label" [class.label-success]="item.check.state === 'Ready'" [class.label-danger]="item.check.state === 'Blocked'" [class.label-warning]="item.check.state === 'Degraded'">{{ item.check.state }}</span>
@@ -102,6 +105,7 @@ type ObservabilityConfigurationMode = 'install' | 'operate';
         </clr-dg-cell>
         <clr-dg-cell>
           <div>{{ item.ownership }}</div>
+          <div class="muted" *ngIf="item.lifecycleAuthority">{{ item.lifecycleAuthority }}</div>
           <div class="muted" *ngIf="item.release?.managed">Helm {{ item.release.status }} · revision {{ item.release.revision }}</div>
         </clr-dg-cell>
         <clr-dg-cell>
@@ -249,7 +253,7 @@ type ObservabilityConfigurationMode = 'install' | 'operate';
         </clr-dg-row-detail>
       </clr-dg-row>
 
-      <clr-dg-footer>{{ s.items.length }}개 HIS capability</clr-dg-footer>
+      <clr-dg-footer>{{ s.summary.coreTotal }}개 HIS core · {{ s.summary.delegatedSupportTotal }}개 위임된 L4 runtime</clr-dg-footer>
     </clr-datagrid>
 
     <clr-modal class="observability-lifecycle-modal" [(clrModalOpen)]="observabilityLifecycleModalOpen" [clrModalClosable]="!busy() && !configurationBusy()" [clrModalSize]="'xl'">
@@ -1101,7 +1105,7 @@ export class HisComponent implements OnInit, OnDestroy {
       this.loading.set(true);
       this.error.set('');
     }
-    this.his.status().subscribe({
+    this.his.status(showLoading).subscribe({
       next: (status) => {
         const prior = new Map((this.status()?.items || []).map((item) => [item.id, item]));
         const items = status.items.map((item) => Object.assign(prior.get(item.id) || {}, item));

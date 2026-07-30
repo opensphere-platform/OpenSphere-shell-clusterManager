@@ -82,6 +82,10 @@ export interface HisItem {
   profile?: string;
   profileSelected?: boolean;
   effectiveRequired?: boolean;
+  realizationLayer?: 'SRL-L1' | 'SRL-L4';
+  stackRole?: 'HISCapability' | 'DelegatedSupportRuntime';
+  contributesToHisReadiness?: boolean;
+  lifecycleAuthority?: string;
   domain?: string;
   compatibility?: HisCompatibility;
   remediation?: HisRemediation;
@@ -121,6 +125,8 @@ export interface HisStatus {
     coreTotal: number;
     selectedProfilesReady: number;
     selectedProfilesTotal: number;
+    delegatedSupportReady: number;
+    delegatedSupportTotal: number;
   };
 }
 
@@ -261,7 +267,9 @@ export class HisService {
 
   private url(path: string): string { return `${this.base()}/api/his/${path}`; }
 
-  status(): Observable<HisStatus> { return this.http.get<HisStatus>(this.url('status')); }
+  status(refresh = false): Observable<HisStatus> {
+    return this.http.get<HisStatus>(`${this.url('status')}${refresh ? '?refresh=true' : ''}`);
+  }
   setProfile(profile: string, selected: boolean, reason: string): Observable<HisStatus> {
     return this.http.post<HisStatus>(this.url('profiles'), { profile, selected, reason });
   }

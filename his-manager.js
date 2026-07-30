@@ -3,9 +3,10 @@
 const fs = require('fs');
 const os = require('os');
 const net = require('net');
+const tls = require('tls');
 const dns = require('dns').promises;
 const path = require('path');
-const { createHash } = require('crypto');
+const { createHash, createPrivateKey, createPublicKey, X509Certificate } = require('crypto');
 const { spawn } = require('child_process');
 const yaml = require('js-yaml');
 const { HIS_CATALOG, catalogItem } = require('./his-catalog');
@@ -21,6 +22,7 @@ const HELM_TIMEOUT_MS = 12 * 60 * 1000;
 const OPERATION_NAMESPACE = process.env.HIS_OPERATION_NAMESPACE || process.env.POD_NAMESPACE || 'opensphere-console';
 const OPERATION_STALE_MS = 60 * 1000;
 const VALIDATION_EVIDENCE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const HIS_STATUS_CACHE_TTL_MS = Math.max(3000, Math.min(Number(process.env.HIS_STATUS_CACHE_TTL_MS || 15000), 60000));
 const ACTIVE_OPERATION_PHASES = new Set(['Queued', 'Recovering', 'Installing', 'Upgrading', 'RollingBack', 'Configuring', 'Migrating', 'Validating', 'Uninstalling']);
 const OBSERVABILITY_ITEM_ID = 'kube-prometheus-stack';
 const OBSERVABILITY_CONFIG_NAME = 'opensphere-his-config-kube-prometheus-stack';
@@ -28,6 +30,8 @@ const PROFILE_SELECTION_CONFIG_NAME = 'opensphere-his-profile-selection';
 const OBSERVABILITY_RESET_CONFIRMATION = 'RESET OBSERVABILITY DATA';
 const OBSERVABILITY_PUBLIC_CONFIRMATION = 'ENABLE PUBLIC GRAFANA';
 const HIS_STATUS_SCHEMA = 'his-status.opensphere.io/v1alpha1';
+const HIS_EVIDENCE_API = '/apis/his.opensphere.io/v1alpha1';
+const HIS_EVIDENCE_RESOURCE = 'hisevidences';
 const OAA_HIS_READ_PERMISSION = 'console.his.read';
 const OAA_HIS_MANAGE_PERMISSION = 'console.his.manage';
 const LOKI_QUERY_URL = (process.env.HIS_LOKI_URL || 'http://opensphere-his-loki.monitoring.svc:3100').replace(/\/$/, '');
@@ -649,15 +653,57 @@ function ingressDefaultCertificateRef(resource) {
   return match ? { namespace: match[1], name: match[3] } : null;
 }
 
-async function tlsSecretReady(ctx, ref) {
-  if (!ref) return false;
+async function tlsSecretEvidence(ctx, ref) {
+  if (!ref) return { ready: false, reason: 'DefaultCertificateNotConfigured', fingerprint256: '' };
   try {
     const secret = await k8s(ctx, `/api/v1/namespaces/${encodeURIComponent(ref.namespace)}/secrets/${encodeURIComponent(ref.name)}`);
-    return secret.type === 'kubernetes.io/tls' && Boolean(secret.data?.['tls.crt']) && Boolean(secret.data?.['tls.key']);
+    if (secret.type !== 'kubernetes.io/tls' || !secret.data?.['tls.crt'] || !secret.data?.['tls.key']) {
+      return { ready: false, reason: 'TlsSecretMaterialMissing', fingerprint256: '' };
+    }
+    const certificate = new X509Certificate(Buffer.from(secret.data['tls.crt'], 'base64'));
+    const privateKey = createPrivateKey(Buffer.from(secret.data['tls.key'], 'base64'));
+    const certificateKey = certificate.publicKey.export({ type: 'spki', format: 'der' });
+    const privatePublicKey = createPublicKey(privateKey).export({ type: 'spki', format: 'der' });
+    const now = Date.now();
+    const valid = Date.parse(certificate.validFrom) <= now && now < Date.parse(certificate.validTo);
+    const keyMatches = Buffer.compare(certificateKey, privatePublicKey) === 0;
+    return {
+      ready: valid && keyMatches,
+      reason: !valid ? 'TlsCertificateExpiredOrNotYetValid' : (!keyMatches ? 'TlsKeyMismatch' : ''),
+      fingerprint256: String(certificate.fingerprint256 || '').toLowerCase(),
+      validTo: certificate.validTo,
+    };
   } catch (error) {
-    if (error.code === 404) return false;
+    if (error.code === 404) return { ready: false, reason: 'TlsSecretMissing', fingerprint256: '' };
+    if (!error.code) return { ready: false, reason: 'TlsSecretInvalid', fingerprint256: '' };
     throw error;
   }
+}
+
+function tlsEndpointProbe(host, port, expectedFingerprint) {
+  if (!host || !port || !expectedFingerprint) {
+    return Promise.resolve({ state: 'Failed', message: 'TLS endpoint 또는 기대 인증서 fingerprint가 없습니다.' });
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(value);
+    };
+    const socket = tls.connect({ host, port, rejectUnauthorized: false });
+    const timer = setTimeout(() => finish({ state: 'Failed', message: 'TLS handshake가 5초 안에 완료되지 않았습니다.' }), 5000);
+    socket.once('secureConnect', () => {
+      const peer = socket.getPeerCertificate();
+      const actual = String(peer?.fingerprint256 || '').toLowerCase();
+      finish(actual && actual === String(expectedFingerprint).toLowerCase()
+        ? { state: 'Passed', message: `${host}:${port}에서 승인된 기본 인증서로 TLS handshake 완료` }
+        : { state: 'Failed', message: `${host}:${port}의 TLS 인증서가 승인된 기본 인증서와 다릅니다.` });
+    });
+    socket.once('error', (error) => finish({ state: 'Failed', message: safeError(error) }));
+  });
 }
 
 function addressOfService(service) {
@@ -840,8 +886,11 @@ async function probe(ctx, name) {
     const readyEndpoints = (endpointSlices.items || []).flatMap((slice) => slice.endpoints || []).filter((endpoint) => endpoint.conditions?.ready !== false).length;
     const tlsIngresses = (ingresses.items || []).filter((item) => (item.spec?.tls || []).length).length;
     const defaultCertificate = ingressDefaultCertificateRef(controller);
-    const defaultCertificateReady = await tlsSecretReady(ctx, defaultCertificate);
-    const tlsPolicyReady = tlsIngresses > 0 || defaultCertificateReady;
+    const defaultCertificateEvidence = await tlsSecretEvidence(ctx, defaultCertificate);
+    const tlsService = controllerServices.find((service) => (service.spec?.ports || []).some((port) => port.name === 'https' || Number(port.port) === 443));
+    const tlsPort = (tlsService?.spec?.ports || []).find((port) => port.name === 'https' || Number(port.port) === 443)?.port;
+    const tlsProbe = await tlsEndpointProbe(tlsService?.spec?.clusterIP, tlsPort, defaultCertificateEvidence.fingerprint256);
+    const tlsPolicyReady = defaultCertificateEvidence.ready && tlsProbe.state === 'Passed';
     const rows = controllerServices.map((service) => ({ name: service.metadata?.name || '', type: service.spec?.type || 'ClusterIP', clusterIP: service.spec?.clusterIP || '', external: addressOfService(service) || 'None', listeners: (service.spec?.ports || []).map((port) => `${port.name || ''}:${port.port}->${port.targetPort}`).join(', ') }));
     const externallyExposed = rows.some((row) => ['LoadBalancer', 'NodePort'].includes(row.type));
     const details = diagnosticDetails({
@@ -850,12 +899,16 @@ async function probe(ctx, name) {
         { label: 'Controller', value: controller ? `${controller.status?.availableReplicas || 0}/${controller.spec?.replicas || 1}` : 'Missing', state: controller && availableDeployment(controller) ? 'Passed' : 'Failed' },
         { label: 'Ready endpoints', value: String(readyEndpoints), state: readyEndpoints ? 'Passed' : 'Failed' },
         { label: 'TLS Ingress references', value: `${tlsIngresses}/${ingresses.items?.length || 0}`, state: 'Info' },
-        { label: 'Default TLS certificate', value: defaultCertificate ? `${defaultCertificate.namespace}/${defaultCertificate.name}` : 'Not configured', state: defaultCertificateReady ? 'Passed' : 'Failed' },
+        { label: 'Default TLS certificate', value: defaultCertificate ? `${defaultCertificate.namespace}/${defaultCertificate.name} · expires ${defaultCertificateEvidence.validTo || 'unknown'}` : 'Not configured', state: defaultCertificateEvidence.ready ? 'Passed' : 'Failed' },
       ],
       tables: [{ title: 'Ingress service exposure', columns: [{ key: 'name', label: 'Service' }, { key: 'type', label: 'Type' }, { key: 'clusterIP', label: 'Cluster IP' }, { key: 'external', label: 'External address' }, { key: 'listeners', label: 'Listeners' }], rows }],
       warnings: externallyExposed && !tlsPolicyReady ? ['외부 listener가 있으나 Ready 상태의 기본 인증서 또는 TLS Ingress 참조가 없습니다.'] : [],
       security: [externallyExposed ? '외부 진입 경로 존재: TLS·OIDC·allowlist 정책을 서비스별로 검증하십시오.' : 'ClusterIP 내부 경로만 발견'],
-      canaries: [{ name: 'Controller endpoint', state: readyEndpoints ? 'Passed' : 'Failed', message: `${readyEndpoints}개 ready endpoint` }, { name: 'TLS policy', state: tlsPolicyReady ? 'Passed' : 'Failed', message: defaultCertificateReady ? `default ${defaultCertificate.namespace}/${defaultCertificate.name}` : `${tlsIngresses} TLS Ingress references` }],
+      canaries: [
+        { name: 'Controller endpoint', state: readyEndpoints ? 'Passed' : 'Failed', message: `${readyEndpoints}개 ready endpoint` },
+        { name: 'TLS handshake', state: tlsProbe.state, message: tlsProbe.message },
+        { name: 'TLS policy', state: tlsPolicyReady ? 'Passed' : 'Failed', message: tlsPolicyReady ? `default ${defaultCertificate.namespace}/${defaultCertificate.name}` : `${defaultCertificateEvidence.reason || 'TlsEndpointProbeFailed'} · ${tlsIngresses} TLS Ingress references` },
+      ],
     });
     if (!classItems.length || !controller || !availableDeployment(controller) || !readyEndpoints) return result('Blocked', 'IngressControlMissing', 'IngressClass·controller·endpoint 계약이 준비되지 않았습니다.', containerImages(controller), details);
     if (externallyExposed && !tlsPolicyReady) return result('Degraded', 'IngressTlsPolicyMissing', 'Controller는 Ready이나 외부 listener에 유효한 TLS 정책이 없습니다.', containerImages(controller), details);
@@ -1382,8 +1435,8 @@ function operationActive(operation) {
 
 async function readOperation(ctx, itemId) {
   try {
-    const cm = await k8s(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/configmaps/${operationResourceName(itemId)}`);
-    return cm.data?.operation ? JSON.parse(cm.data.operation) : null;
+    const evidence = await k8s(ctx, `${HIS_EVIDENCE_API}/namespaces/${OPERATION_NAMESPACE}/${HIS_EVIDENCE_RESOURCE}/${operationResourceName(itemId)}`);
+    return evidence.status?.operation || null;
   } catch (error) {
     if (error.code === 404) return null;
     throw error;
@@ -1392,27 +1445,40 @@ async function readOperation(ctx, itemId) {
 
 async function writeOperation(ctx, item, operation) {
   const name = operationResourceName(item.id);
-  let existing = null;
-  try { existing = await k8s(ctx, `/api/v1/namespaces/${OPERATION_NAMESPACE}/configmaps/${name}`); }
-  catch (error) { if (error.code !== 404) throw error; }
-  const body = {
-    apiVersion: 'v1',
-    kind: 'ConfigMap',
-    metadata: {
-      name,
-      namespace: OPERATION_NAMESPACE,
-      ...(existing?.metadata?.resourceVersion ? { resourceVersion: existing.metadata.resourceVersion } : {}),
-      labels: {
-        'app.kubernetes.io/managed-by': 'opensphere-cluster-manager',
-        'opensphere.io/his-operation': item.id,
+  let existing = await k8sOrNull(ctx, `${HIS_EVIDENCE_API}/namespaces/${OPERATION_NAMESPACE}/${HIS_EVIDENCE_RESOURCE}/${name}`);
+  if (!existing) {
+    await k8sRequest(ctx, `${HIS_EVIDENCE_API}/namespaces/${OPERATION_NAMESPACE}/${HIS_EVIDENCE_RESOURCE}`, {
+      method: 'POST',
+      body: {
+        apiVersion: 'his.opensphere.io/v1alpha1',
+        kind: 'HISEvidence',
+        metadata: {
+          name,
+          namespace: OPERATION_NAMESPACE,
+          labels: {
+            'app.kubernetes.io/managed-by': 'opensphere-cluster-manager',
+            'opensphere.io/his-operation': item.id,
+          },
+        },
+        spec: { itemId: item.id },
       },
+    });
+    existing = await k8s(ctx, `${HIS_EVIDENCE_API}/namespaces/${OPERATION_NAMESPACE}/${HIS_EVIDENCE_RESOURCE}/${name}`);
+  }
+  await k8sRequest(ctx, `${HIS_EVIDENCE_API}/namespaces/${OPERATION_NAMESPACE}/${HIS_EVIDENCE_RESOURCE}/${name}/status`, {
+    method: 'PUT',
+    body: {
+      apiVersion: 'his.opensphere.io/v1alpha1',
+      kind: 'HISEvidence',
+      metadata: {
+        name,
+        namespace: OPERATION_NAMESPACE,
+        resourceVersion: existing.metadata?.resourceVersion,
+      },
+      status: { operation },
     },
-    data: { operation: JSON.stringify(operation) },
-  };
-  const apiPath = existing
-    ? `/api/v1/namespaces/${OPERATION_NAMESPACE}/configmaps/${name}`
-    : `/api/v1/namespaces/${OPERATION_NAMESPACE}/configmaps`;
-  await k8sRequest(ctx, apiPath, { method: existing ? 'PUT' : 'POST', body });
+  });
+  if (typeof ctx.invalidateHisStatus === 'function') ctx.invalidateHisStatus();
   return operation;
 }
 
@@ -1429,7 +1495,10 @@ async function readObservabilityConfig(ctx) {
 }
 
 function knownProfileNames() {
-  return [...new Set(HIS_CATALOG.map((item) => item.profile).filter(Boolean))].sort();
+  return [...new Set(HIS_CATALOG
+    .filter((item) => item.contributesToHisReadiness !== false)
+    .map((item) => item.profile)
+    .filter(Boolean))].sort();
 }
 
 async function readProfileSelection(ctx) {
@@ -1472,6 +1541,7 @@ async function writeProfileSelection(ctx, actor, selectedProfiles, reason) {
     ? `/api/v1/namespaces/${OPERATION_NAMESPACE}/configmaps/${PROFILE_SELECTION_CONFIG_NAME}`
     : `/api/v1/namespaces/${OPERATION_NAMESPACE}/configmaps`;
   await k8sRequest(ctx, apiPath, { method: existing ? 'PUT' : 'POST', body });
+  if (typeof ctx.invalidateHisStatus === 'function') ctx.invalidateHisStatus();
   return new Set(profiles);
 }
 
@@ -1500,6 +1570,7 @@ async function writeObservabilityConfig(ctx, actor, config, reason) {
     ? `/api/v1/namespaces/${OPERATION_NAMESPACE}/configmaps/${OBSERVABILITY_CONFIG_NAME}`
     : `/api/v1/namespaces/${OPERATION_NAMESPACE}/configmaps`;
   await k8sRequest(ctx, apiPath, { method: existing ? 'PUT' : 'POST', body });
+  if (typeof ctx.invalidateHisStatus === 'function') ctx.invalidateHisStatus();
   return body;
 }
 
@@ -2005,8 +2076,10 @@ async function itemStatus(ctx, item) {
 }
 
 function evaluateProfiles(items, explicitProfiles = new Set()) {
-  return knownProfileNames().map((name) => {
-    const profileItems = items.filter((item) => item.profile === name);
+  const hisItems = items.filter((item) => item.contributesToHisReadiness !== false);
+  const hisProfileNames = [...new Set(hisItems.map((item) => item.profile).filter(Boolean))].sort();
+  return hisProfileNames.map((name) => {
+    const profileItems = hisItems.filter((item) => item.profile === name);
     const managedRelease = profileItems.some((item) => item.release?.managed);
     const explicit = explicitProfiles.has(name);
     const selected = explicit || managedRelease;
@@ -2030,15 +2103,24 @@ function evaluateProfiles(items, explicitProfiles = new Set()) {
 function evaluateStackStatus(items, profiles) {
   const profileMap = new Map(profiles.map((profile) => [profile.name, profile]));
   const enrichedItems = items.map((item) => {
-    const profileSelected = Boolean(item.profile && profileMap.get(item.profile)?.selected);
-    return { ...item, profileSelected, effectiveRequired: item.required || profileSelected };
+    const contributesToHisReadiness = item.contributesToHisReadiness !== false;
+    const profileSelected = Boolean(contributesToHisReadiness && item.profile && profileMap.get(item.profile)?.selected);
+    return {
+      ...item,
+      realizationLayer: item.realizationLayer || 'SRL-L1',
+      stackRole: item.stackRole || 'HISCapability',
+      contributesToHisReadiness,
+      profileSelected,
+      effectiveRequired: contributesToHisReadiness && (item.required || profileSelected),
+    };
   });
   const required = enrichedItems.filter((item) => item.effectiveRequired);
   const state = required.some((item) => item.check.state === 'Blocked')
     ? 'Blocked'
     : required.some((item) => item.check.state === 'Degraded') ? 'Degraded' : 'Ready';
-  const core = enrichedItems.filter((item) => item.required);
+  const core = enrichedItems.filter((item) => item.required && item.contributesToHisReadiness);
   const selectedProfiles = profiles.filter((profile) => profile.selected);
+  const delegatedSupport = enrichedItems.filter((item) => !item.contributesToHisReadiness);
   return {
     state,
     items: enrichedItems,
@@ -2047,6 +2129,8 @@ function evaluateStackStatus(items, profiles) {
       coreTotal: core.length,
       selectedProfilesReady: selectedProfiles.filter((profile) => profile.state === 'Ready').length,
       selectedProfilesTotal: selectedProfiles.length,
+      delegatedSupportReady: delegatedSupport.filter((item) => item.check.state === 'Ready').length,
+      delegatedSupportTotal: delegatedSupport.length,
     },
   };
 }
@@ -3189,6 +3273,35 @@ async function queryObservabilityTraces(req) {
 }
 
 function createHisManager(ctx) {
+  let statusCache = null;
+  let statusInFlight = null;
+  let statusGeneration = 0;
+  ctx.invalidateHisStatus = () => {
+    statusCache = null;
+    statusGeneration += 1;
+  };
+  async function statusProjection(force = false) {
+    const now = Date.now();
+    if (!force && statusCache && now < statusCache.expiresAt) return statusCache.value;
+    if (statusInFlight) return statusInFlight;
+    const observedGeneration = statusGeneration;
+    statusInFlight = allStatus(ctx).then((value) => {
+      const checkedAt = Date.parse(value.checkedAt);
+      const expiresAt = (Number.isFinite(checkedAt) ? checkedAt : Date.now()) + HIS_STATUS_CACHE_TTL_MS;
+      const projected = {
+        ...value,
+        projection: {
+          authority: 'Cluster Manager HIS',
+          realizationLayer: 'SRL-L1',
+          cacheMaxAgeSeconds: Math.floor(HIS_STATUS_CACHE_TTL_MS / 1000),
+          expiresAt: new Date(expiresAt).toISOString(),
+        },
+      };
+      if (observedGeneration === statusGeneration) statusCache = { expiresAt, value: projected };
+      return projected;
+    }).finally(() => { statusInFlight = null; });
+    return statusInFlight;
+  }
   return async function handle(req, res, pathname) {
     if (!pathname.startsWith('/api/his/')) return false;
     try {
@@ -3239,7 +3352,13 @@ function createHisManager(ctx) {
       }
       if (req.method === 'GET' && pathname === '/api/his/status') {
         await actorFor(ctx, req, false);
-        return ctx.jsonRes(res, 200, await allStatus(ctx)), true;
+        const refresh = new URL(req.url || pathname, 'http://cluster-manager.local').searchParams.get('refresh') === 'true';
+        return ctx.jsonRes(res, 200, await statusProjection(refresh)), true;
+      }
+      if (req.method === 'GET' && pathname === '/api/his/internal/status') {
+        if (typeof ctx.verifyHisStatusReader !== 'function') throw Object.assign(new Error('HIS internal status identity verifier is unavailable.'), { code: 503 });
+        await ctx.verifyHisStatusReader(ctx.requestToken(req));
+        return ctx.jsonRes(res, 200, await statusProjection(false)), true;
       }
       if (req.method === 'GET' && pathname === '/api/his/observability/config') {
         await actorFor(ctx, req, false);

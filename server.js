@@ -53,6 +53,36 @@ async function verifySupabaseToken(rawToken, identityFetch = fetch) {
 async function verifyToken(rawToken) {
   return verifySupabaseToken(rawToken);
 }
+const HIS_STATUS_READER_SERVICE_ACCOUNTS = new Set([
+  'system:serviceaccount:opensphere-console:opensphere-console-dupa-controller',
+]);
+async function verifyHisStatusReader(rawToken, tokenReviewFetch = fetch) {
+  if (!rawToken) throw { code: 401, msg: 'workload bearer token required' };
+  let response;
+  try {
+    response = await tokenReviewFetch(`${APISERVER}/apis/authentication.k8s.io/v1/tokenreviews`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${tok()}`,
+        accept: 'application/json',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        apiVersion: 'authentication.k8s.io/v1',
+        kind: 'TokenReview',
+        spec: { token: rawToken },
+      }),
+      signal: AbortSignal.timeout(3000),
+    });
+  } catch {
+    throw { code: 503, msg: 'Kubernetes workload identity authority unavailable' };
+  }
+  const review = await response.json().catch(() => ({}));
+  if (!response.ok || review?.status?.authenticated !== true) throw { code: 401, msg: 'workload token rejected' };
+  const username = String(review.status?.user?.username || '');
+  if (!HIS_STATUS_READER_SERVICE_ACCOUNTS.has(username)) throw { code: 403, msg: 'workload is not an approved HIS status consumer' };
+  return { username, groups: review.status?.user?.groups || [], provider: 'kubernetes-tokenreview' };
+}
 const jsonRes = (res, code, obj) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
 
 const MIME = {
@@ -103,6 +133,7 @@ async function publishNotify(ev) {
 }
 const hisManager = createHisManager({
   verifyToken,
+  verifyHisStatusReader,
   requestToken,
   jsonRes,
   token: tok,

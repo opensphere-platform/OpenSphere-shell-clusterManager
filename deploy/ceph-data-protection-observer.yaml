@@ -1,0 +1,38 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: opensphere-ceph-data-protection-observer
+  namespace: opensphere-foundation
+  labels:
+    app.kubernetes.io/managed-by: opensphere-platform
+    opensphere.io/authority: ceph-data-protection-observer
+rules:
+  - apiGroups: [postgresql.cnpg.io]
+    resources: [clusters, backups, scheduledbackups, poolers, databases]
+    verbs: [get, list, watch]
+  - apiGroups: [monitoring.coreos.com]
+    resources: [podmonitors]
+    verbs: [get, list, watch]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [pods, events, persistentvolumeclaims]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: opensphere-ceph-data-protection-observer
+  namespace: opensphere-foundation
+  labels:
+    app.kubernetes.io/managed-by: opensphere-platform
+    opensphere.io/authority: ceph-data-protection-observer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: opensphere-ceph-data-protection-observer
+subjects:
+  - kind: ServiceAccount
+    name: opensphere-cluster-manager
+    namespace: opensphere-console

@@ -52,6 +52,9 @@ export interface ColumnDef {
       </div>
     </div>
 
+    <!-- 리소스 종류별 운영 요약. 기본 목록은 그대로 유지하고 필요한 화면만 진단 보드를 투영한다. -->
+    <ng-content></ng-content>
+
     <!-- 다중선택 패싯 필터 — OpenSphere 표준 Clarity dropdown으로 키보드·포커스·닫힘 동작을 통일한다. -->
     <div class="os-facets" *ngIf="(namespaced && nsOptions().length) || facetCols().length">
       <clr-dropdown *ngIf="namespaced && nsOptions().length">

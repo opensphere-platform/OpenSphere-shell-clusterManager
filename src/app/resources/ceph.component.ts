@@ -1,9 +1,11 @@
 import { CommonModule } from '@angular/common';
-import { Component, OnDestroy, OnInit, inject, signal } from '@angular/core';
+import { AfterViewInit, Component, OnDestroy, OnInit, QueryList, ViewChildren, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { ClarityModule } from '@clr/angular';
+import { ClarityModule, ClrTabLink } from '@clr/angular';
 import { CEPH_DEFAULT_MONITORING_URL, CEPH_PROVIDER_GUIDE, CephConnectionInput, CephFsConfigurationInput, CephInsights, CephPlan, CephPrerequisiteRequest, CephProviderGuide, CephService, CephStatus, CephStorageService } from '../core/ceph.service';
 import { CephInsightsComponent } from './ceph-insights.component';
+
+type CephTab = 'connection' | 'insights' | 'services';
 
 @Component({
   selector: 'app-res-ceph',
@@ -27,21 +29,24 @@ import { CephInsightsComponent } from './ceph-insights.component';
 
     <clr-tabs aria-label="Ceph 관리 화면">
       <clr-tab>
-        <button clrTabLink type="button" (click)="selectTab('connection')">연결 및 설정</button>
+        <a clrTabLink role="tab" [class.active]="activeTab() === 'connection'" [attr.aria-selected]="activeTab() === 'connection'"
+          [href]="tabHref('connection')" (click)="selectTab('connection', $event)">연결 및 설정</a>
         <clr-tab-content *clrIfActive></clr-tab-content>
       </clr-tab>
       <clr-tab>
-        <button clrTabLink type="button" (click)="selectTab('insights')">클러스터 현황
+        <a clrTabLink role="tab" [class.active]="activeTab() === 'insights'" [attr.aria-selected]="activeTab() === 'insights'"
+          [href]="tabHref('insights')" (click)="selectTab('insights', $event)">클러스터 현황
           <span *ngIf="status()?.connection" class="label"
                 [class.label-warning]="status()?.rook?.cephCluster?.health !== 'HEALTH_OK'">{{ status()?.rook?.cephCluster?.health || '연결됨' }}</span>
-        </button>
+        </a>
         <clr-tab-content *clrIfActive></clr-tab-content>
       </clr-tab>
       <clr-tab>
-        <button clrTabLink type="button" (click)="selectTab('services')">스토리지 서비스
+        <a clrTabLink role="tab" [class.active]="activeTab() === 'services'" [attr.aria-selected]="activeTab() === 'services'"
+          [href]="tabHref('services')" (click)="selectTab('services', $event)">스토리지 서비스
           <span *ngIf="status()?.csi?.serviceCoverage as coverage" class="label"
-                [class.label-warning]="coverage.needsConfiguration > 0 || coverage.verified < coverage.configured">{{ coverage.configured }}/{{ coverage.installed }} 구성 · {{ coverage.verified ? coverage.verified + ' 검증' : '실제 검증 없음' }}</span>
-        </button>
+                [class.label-warning]="coverage.needsConfiguration > 0 || coverage.verified < coverage.configured">{{ coverage.configured }}/{{ coverage.installed }} 구성 · {{ coverage.verified }}/{{ coverage.configured }} 데이터 경로 검증</span>
+        </a>
         <clr-tab-content *clrIfActive></clr-tab-content>
       </clr-tab>
     </clr-tabs>
@@ -142,13 +147,14 @@ import { CephInsightsComponent } from './ceph-insights.component';
             <div class="request-tracker-head">
               <div>
                 <small>플랫폼 상태 변경 요청</small>
-                <strong>{{ request.requestId || '요청 상태 확인 불가' }}</strong>
+                <strong>{{ request.requestId || '변경 이력 조회 실패' }}</strong>
               </div>
               <span class="label" [class.label-info]="requestActive(request)" [class.label-success]="request.phase === 'Completed'"
                 [class.label-danger]="request.phase === 'Failed' || request.phase === 'NeedsAttention'"
                 [class.label-warning]="request.phase === 'Unavailable'">{{ prerequisitePhaseLabel(request) }}</span>
             </div>
-            <p>{{ request.message || prerequisitePhaseMessage(request) }}</p>
+            <p>{{ request.phase === 'Unavailable' ? prerequisitePhaseMessage(request) : (request.message || prerequisitePhaseMessage(request)) }}</p>
+            <small *ngIf="request.phase === 'Unavailable' && request.message" class="request-error">기술 상세: {{ request.message }}</small>
             <dl *ngIf="request.trackingAvailable !== false">
               <dt>신청 시각</dt><dd>{{ request.requestedAt ? (request.requestedAt | date:'yyyy-MM-dd HH:mm:ss') : '확인 중' }}</dd>
               <dt>승인</dt><dd>{{ request.approvalCount || 0 }}건 · {{ request.pullRequest?.number ? 'PR #' + request.pullRequest.number : 'PR 준비 중' }}</dd>
@@ -221,6 +227,11 @@ import { CephInsightsComponent } from './ceph-insights.component';
           <h2>Ceph 스토리지 서비스 준비도</h2>
           <p>드라이버·StorageClass 참조 구성과 실제 PVC 데이터 경로 검증을 분리해 표시합니다. 구성 완료만으로 실사용 검증 완료로 계산하지 않습니다.</p>
         </div>
+      </div>
+
+      <div *ngIf="coverage.verified < coverage.configured" class="service-verification-warning" role="alert">
+        <strong>구성 완료와 사용 검증은 다릅니다.</strong>
+        <span>{{ coverage.configured }}종의 CSI·StorageClass 참조가 구성됐지만, 실제 PVC 생성·마운트·쓰기·읽기까지 확인된 데이터 경로는 {{ coverage.verified }}종입니다. 미검증은 정상 완료가 아니며 운영 Ready로 판정하지 않습니다.</span>
       </div>
 
       <div *ngIf="coverage.needsConfiguration > 0" class="service-warning" role="alert">
@@ -738,17 +749,17 @@ import { CephInsightsComponent } from './ceph-insights.component';
     }
     .cm-ceph-page-head__copy { min-width: 0; }
     .cm-ceph-title { display: flex; align-items: center; gap: 0.7rem; }
-    .cm-ceph-title__logo { display: grid; width: 3rem; height: 3rem; flex: 0 0 3rem; place-items: center; border: 1px solid var(--os-border); border-radius: 50%; background: var(--os-bg); box-shadow: var(--os-shadow-sm); }
-    .cm-ceph-title__logo img { display: block; max-width: 2.25rem; max-height: 2.25rem; object-fit: contain; }
+    .cm-ceph-title__logo { display: flex; width: 2.5rem; height: 2.5rem; flex: 0 0 2.5rem; align-items: center; justify-content: center; }
+    .cm-ceph-title__logo img { display: block; width: 2.5rem; height: 2.5rem; object-fit: contain; }
     .cm-ceph-page-head h1 { margin: 0.15rem 0 0.35rem; color: var(--os-text); font-size: 1.45rem; font-weight: 400; line-height: 1.25; }
     .cm-ceph-summary { margin: 0; max-width: 63rem; color: var(--os-text-sec); font-size: var(--ceph-body-font-size); line-height: 1.5; }
     .cm-ceph-eyebrow { margin: 0; color: var(--os-brand-500); font-size: 0.65rem; font-weight: 600; line-height: 1.5; letter-spacing: 0.06em; text-transform: uppercase; }
     .cm-ceph-page-head__actions { display: flex; gap: 0.35rem; flex: 0 0 auto; }
     .cm-ceph-tabs { display: flex; gap: 0; margin: 0 0 0.9rem; border-bottom: 1px solid var(--os-border); }
-    .cm-ceph-tabs button { display: inline-flex; min-height: 2.45rem; align-items: center; gap: 0.45rem; padding: 0 0.85rem; border: 0; border-bottom: 3px solid transparent; background: transparent; color: var(--os-text-dim); font: inherit; font-size: 0.78rem; font-weight: 600; cursor: pointer; }
-    .cm-ceph-tabs button:hover { background: var(--os-bg-subtle); color: var(--os-ink); }
-    .cm-ceph-tabs button.active { border-bottom-color: var(--os-brand-500); background: var(--os-active-bg); color: var(--os-brand-700); }
-    .cm-ceph-tabs button:focus-visible { outline: 3px solid var(--os-brand-500); outline-offset: 2px; }
+    .cm-ceph-tabs a { display: inline-flex; min-height: 2.45rem; align-items: center; gap: 0.45rem; padding: 0 0.85rem; border: 0; border-bottom: 3px solid transparent; background: transparent; color: var(--os-text-dim); font: inherit; font-size: 0.78rem; font-weight: 600; cursor: pointer; text-decoration: none; }
+    .cm-ceph-tabs a:hover { background: var(--os-bg-subtle); color: var(--os-ink); }
+    .cm-ceph-tabs a.active { border-bottom-color: var(--os-brand-500); background: var(--os-active-bg); color: var(--os-brand-700); }
+    .cm-ceph-tabs a:focus-visible { outline: 3px solid var(--os-brand-500); outline-offset: 2px; }
     .tab-status { padding: 0.08rem 0.4rem; border-radius: 0.8rem; background: var(--os-success-bg); color: var(--os-success); font-size: 0.58rem; }
     .tab-status.warn { background: var(--os-warn-bg); color: var(--os-warn); }
     .insights-placeholder { display: grid; min-height: 16rem; place-items: center; border: 1px dashed var(--os-border); background: var(--os-bg-subtle); color: var(--os-text-dim); }
@@ -826,6 +837,7 @@ import { CephInsightsComponent } from './ceph-insights.component';
     .service-coverage-head p:not(.section-kicker) { margin: 0.18rem 0 0; max-width: 55rem; color: var(--os-text-sec); line-height: 1.45; }
     .section-kicker { margin: 0 0 0.15rem; color: var(--os-brand-500); font-size: 0.6rem; font-weight: 700; letter-spacing: 0.08em; }
     .service-warning { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.65rem; margin-top: 0.8rem; padding: 0.6rem 0.7rem; border-left: 3px solid var(--os-warn-border); background: var(--os-warn-bg); color: var(--os-warn); }
+    .service-verification-warning { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.65rem; margin-top: 0.8rem; padding: 0.6rem 0.7rem; border-left: 3px solid var(--os-warn-border); background: var(--os-warn-bg); color: var(--os-warn); }
     .service-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; gap: 0; margin-top: 0.8rem; border: 1px solid var(--os-border); }
     .service-card { min-width: 0; padding: 0.9rem; border: 0; background: var(--os-bg); }
     .service-card + .service-card { border-left: 1px solid var(--os-border); }
@@ -928,7 +940,8 @@ import { CephInsightsComponent } from './ceph-insights.component';
     }
   `],
 })
-export class CephClustersComponent implements OnInit, OnDestroy {
+export class CephClustersComponent implements OnInit, AfterViewInit, OnDestroy {
+  @ViewChildren(ClrTabLink) private tabLinks!: QueryList<ClrTabLink>;
   private ceph = inject(CephService);
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
   private insightsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -944,9 +957,12 @@ export class CephClustersComponent implements OnInit, OnDestroy {
     this.load(true);
     this.scheduleInsightsPoll(2_000);
   };
+  private readonly popstateHandler = (): void => {
+    this.activateTab(this.tabFromLocation(), false);
+  };
   readonly cephLogo = 'https://cdn.statically.io/gh/openplatform-labs/images@b20a671aa820dace36907acb7cf95b540c0c4f81/logos/ceph.svg';
   readonly kubernetesLogo = 'https://cdn.statically.io/gh/openplatform-labs/images@95aeaf7781b9a5753762811521131c06df328c87/logos/kubernetes-2-icon.svg';
-  readonly activeTab = signal<'connection' | 'insights' | 'services'>('connection');
+  readonly activeTab = signal<CephTab>('connection');
   readonly status = signal<CephStatus | null>(null);
   readonly insights = signal<CephInsights | null>(null);
   readonly insightsLoading = signal(false);
@@ -1010,12 +1026,21 @@ export class CephClustersComponent implements OnInit, OnDestroy {
   disconnectConfirm = '';
 
   ngOnInit(): void {
+    const initialTab = this.tabFromLocation();
+    this.activeTab.set(initialTab);
+    this.writeTabUrl(initialTab, true);
+    window.addEventListener('popstate', this.popstateHandler);
     document.addEventListener('visibilitychange', this.visibilityHandler);
     this.load();
     this.scheduleInsightsPoll(60_000);
   }
 
+  ngAfterViewInit(): void {
+    queueMicrotask(() => this.activateClarityTab(this.activeTab()));
+  }
+
   ngOnDestroy(): void {
+    window.removeEventListener('popstate', this.popstateHandler);
     document.removeEventListener('visibilitychange', this.visibilityHandler);
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
     if (this.insightsRefreshTimer) clearTimeout(this.insightsRefreshTimer);
@@ -1037,6 +1062,9 @@ export class CephClustersComponent implements OnInit, OnDestroy {
         if (!status.connection) {
           this.insights.set(null);
           this.insightsError.set('');
+        }
+        if (this.activeTab() === 'insights' && status.connection && !this.insights() && !this.insightsLoading()) {
+          this.loadInsights();
         }
         if (status.ownerPrerequisites && Object.prototype.hasOwnProperty.call(status.ownerPrerequisites, 'installationRequest')) {
           this.prerequisiteRequest.set(status.ownerPrerequisites.installationRequest || null);
@@ -1077,11 +1105,42 @@ export class CephClustersComponent implements OnInit, OnDestroy {
     }, jitter);
   }
 
-  selectTab(tab: 'connection' | 'insights' | 'services'): void {
+  tabHref(tab: CephTab): string {
+    const url = new URL(window.location.href);
+    url.searchParams.set('tab', tab);
+    return `${url.pathname}${url.search}${url.hash}`;
+  }
+
+  selectTab(tab: CephTab, event?: Event): void {
+    event?.preventDefault();
+    this.activateTab(tab, true);
+  }
+
+  private activateTab(tab: CephTab, updateUrl: boolean): void {
     this.activeTab.set(tab);
+    this.activateClarityTab(tab);
+    if (updateUrl) this.writeTabUrl(tab, false);
     if (tab === 'insights' && this.status()?.connection && !this.insights() && !this.insightsLoading()) {
       this.loadInsights();
     }
+  }
+
+  private tabFromLocation(): CephTab {
+    const tab = new URL(window.location.href).searchParams.get('tab');
+    return tab === 'insights' || tab === 'services' ? tab : 'connection';
+  }
+
+  private activateClarityTab(tab: CephTab): void {
+    const index = ({ connection: 0, insights: 1, services: 2 } as const)[tab];
+    this.tabLinks?.get(index)?.activate();
+  }
+
+  private writeTabUrl(tab: CephTab, replace: boolean): void {
+    const href = this.tabHref(tab);
+    const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (current === href) return;
+    if (replace) window.history.replaceState(window.history.state, '', href);
+    else window.history.pushState(window.history.state, '', href);
   }
 
   loadInsights(refresh = false): void {
@@ -1197,12 +1256,17 @@ export class CephClustersComponent implements OnInit, OnDestroy {
       Completed: '적용 완료',
       Failed: '실패',
       NeedsAttention: '확인 필요',
-      Unavailable: '상태 확인 불가',
+      Unavailable: '변경 이력 조회 실패',
     };
     return labels[String(request?.phase || '')] || '요청됨';
   }
 
   prerequisitePhaseMessage(request: CephPrerequisiteRequest | null | undefined): string {
+    if (request?.phase === 'Unavailable') {
+      return this.status()?.ownerPrerequisites?.ready
+        ? '변경 요청 이력 API 조회에 실패했습니다. 현재 Consumer 선행요소는 실측 Ready이며, 이 오류는 Ceph 연결 실패가 아닙니다. 감사 이력은 상태 변경 관리에서 확인하십시오.'
+        : '변경 요청 이력 API 조회에 실패했습니다. 신청 완료 여부를 확정할 수 없으므로 중복 요청을 만들지 말고 상태 변경 관리에서 확인하십시오.';
+    }
     const messages: Record<string, string> = {
       Creating: '변경 요청과 서명된 상태 선언을 준비하고 있습니다.',
       AwaitingApproval: '요청이 접수되어 두 번째 운영자의 승인을 기다리고 있습니다.',
@@ -1211,7 +1275,6 @@ export class CephClustersComponent implements OnInit, OnDestroy {
       Completed: '설치와 검증이 완료되었습니다. 준비상태를 다시 검사하십시오.',
       Failed: '설치 또는 검증에 실패했습니다. 오류를 확인한 뒤 재요청할 수 있습니다.',
       NeedsAttention: '변경 결과 또는 선언과 실측 상태를 운영자가 확인해야 합니다.',
-      Unavailable: '변경 체인에 연결할 수 없어 신청 상태를 확인할 수 없습니다. 중복 요청을 만들지 말고 변경 요청 화면을 확인하십시오.',
     };
     return messages[String(request?.phase || '')] || '변경 요청의 현재 상태를 조회하고 있습니다.';
   }
@@ -1226,7 +1289,7 @@ export class CephClustersComponent implements OnInit, OnDestroy {
     if (!request) return defaultLabel;
     if (request.phase === 'Completed') return '적용 완료 · 다시 검사';
     if (request.phase === 'Failed' || request.phase === 'NeedsAttention') return '요청 실패 · 상세';
-    if (request.phase === 'Unavailable') return '요청 상태 확인 불가';
+    if (request.phase === 'Unavailable') return '이력 조회 실패 · 상세';
     return `${this.prerequisitePhaseLabel(request)} · 상태 보기`;
   }
 
@@ -1246,7 +1309,7 @@ export class CephClustersComponent implements OnInit, OnDestroy {
 
   serviceStateLabel(service: CephStorageService): string {
     if (service.verified) return '데이터 경로 검증됨';
-    if (service.configured) return '구성 완료 · 미검증';
+    if (service.configured) return '구성됨 · 데이터 경로 미검증';
     if (service.driverInstalled) return '정보·구성 필요';
     return '미설치';
   }

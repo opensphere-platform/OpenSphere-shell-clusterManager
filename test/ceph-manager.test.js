@@ -353,7 +353,7 @@ test('Ceph UI reports every installed storage service and provides actionable pr
   assert.match(component, /\.provider-request \{[^}]*background: transparent/);
   assert.match(component, /\.service-blockers \{[^}]*var\(--os-warn-border\)/);
   assert.match(component, /구성 완료만으로 실사용 검증 완료로 계산하지 않습니다/);
-  assert.match(component, /구성 완료 · 미검증/);
+  assert.match(component, /구성됨 · 데이터 경로 미검증/);
   assert.match(component, /Ceph 관리자에게 요청할 정보/);
   assert.match(component, /요청 문구 복사/);
   assert.match(component, /CephFS 구성 추가/);

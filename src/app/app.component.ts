@@ -51,11 +51,14 @@ import { K8sService } from './core/k8s.service';
     .cm-brand strong { font-size: 0.78rem; font-weight: 600; }
     .cm-brand .label { font-size: 0.58rem; }
 
-    /* 관리 관점 = Clarity Select(clr-select-wrapper + clr-select). 항상 노출, 풀폭. */
+    /* 관리 관점 = Clarity Select container 하나만 사용. 항상 노출, 풀폭. */
     .cm-scope { padding: 0.5rem 0.9rem 0.45rem; }
     .cm-scope-label { display: block; margin-bottom: 0.2rem; color: var(--os-text-dim); font-size: 0.58rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
-    .cm-scope .clr-select-wrapper { width: 100%; }
-    .cm-scope .clr-select { width: 100%; }
+    .cm-scope-control,
+    .cm-scope-control .clr-control-container,
+    .cm-scope-control .clr-select-wrapper,
+    .cm-scope-control .clr-select { width: 100%; }
+    .cm-scope-control.clr-form-control { margin-top: 0; }
 
     /* 페이지 경로 — AI Hub 표준: 상단 회색 박스 바(좌우 풀폭). negative margin = .os-content 패딩(1.1rem 1.4rem)과 동일. */
     .cc-crumbs {
@@ -80,13 +83,13 @@ import { K8sService } from './core/k8s.service';
         <!-- 최상위 관리 관점: K8s / Ceph / HIS. 설치 여부와 무관하게 항상 진입 가능. -->
         <div class="cm-scope">
           <label class="cm-scope-label" for="cm-management-view">Management view</label>
-          <div class="clr-select-wrapper">
+          <clr-select-container class="cm-scope-control">
             <select id="cm-management-view" clrSelect aria-label="관리 관점 선택" [value]="viewScope()" (change)="setScope($any($event.target).value)">
               <option value="k8s">Kubernetes</option>
               <option value="ceph">Ceph Storage</option>
               <option value="his">HIS</option>
             </select>
-          </div>
+          </clr-select-container>
         </div>
 
         <!-- Kubernetes 개요(인덱스). Ceph/HIS는 각 전문 화면을 기본 진입점으로 사용한다. -->

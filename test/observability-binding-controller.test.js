@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { bindingProjection, workloadReady, parseOperation, statusComparable, telemetryPayloads } = require('../his-observability-binding-controller');
+const { bindingProjection, workloadReady, parseOperation, currentCanary, statusComparable, telemetryPayloads } = require('../his-observability-binding-controller');
 
 test('HIS binding publishes only independently verified capabilities', () => {
   const status = bindingProjection({
@@ -45,9 +45,34 @@ test('HIS binding fails closed when the live metrics query is unavailable', () =
   assert.equal(status.conditions[0].status, 'False');
 });
 
+test('metrics capability requires a fresh completed synthetic validation', () => {
+  const base = {
+    stackPresent: true,
+    prometheusReady: true,
+    prometheusQueryReady: true,
+    canaryReady: false,
+  };
+  const stale = bindingProjection(base);
+  assert.equal(stale.capabilities.includes('metrics'), false);
+  assert.equal(stale.evidence.metricsSyntheticCanary, 'NotCurrent');
+
+  const operation = {
+    action: 'validate',
+    phase: 'Ready',
+    validationFingerprint: 'verified-fingerprint',
+    finishedAt: '2026-08-07T06:27:25.871Z',
+  };
+  assert.deepEqual(currentCanary(operation, Date.parse('2026-08-07T07:27:25.871Z')), {
+    ready: true,
+    observedAt: '2026-08-07T06:27:25.871Z',
+  });
+  assert.equal(currentCanary(operation, Date.parse('2026-08-08T06:27:25.872Z')).ready, false);
+});
+
 test('telemetry capabilities fail closed unless workload, ingestion and read-back all pass', () => {
   const status = bindingProjection({
     stackPresent: true, prometheusReady: true, prometheusQueryReady: true,
+    canaryReady: true,
     lokiReady: true, lokiQueryReady: true, tempoReady: true, tempoQueryReady: false,
     collectorReady: true, collectorHttpReady: true, telemetryCanaryReady: true,
   });

@@ -19,6 +19,7 @@ const TEMPO_URL = (process.env.TEMPO_URL || 'http://opensphere-his-tempo.monitor
 const OTLP_HTTP_URL = (process.env.OTLP_HTTP_URL || 'http://opensphere-his-otel-collector.monitoring.svc:4318').replace(/\/$/, '');
 const OTLP_HEALTH_URL = (process.env.OTLP_HEALTH_URL || 'http://opensphere-his-otel-collector.monitoring.svc:13133').replace(/\/$/, '');
 const TELEMETRY_CANARY_REFRESH_MS = Math.max(60000, Number(process.env.TELEMETRY_CANARY_REFRESH_MS || 300000));
+const METRICS_CANARY_MAX_AGE_MS = Math.max(60 * 60 * 1000, Number(process.env.METRICS_CANARY_MAX_AGE_MS || 24 * 60 * 60 * 1000));
 const GROUP = 'observability.opensphere.io';
 const VERSION = 'v1alpha1';
 const BINDING_PATH = `/apis/${GROUP}/${VERSION}/observabilitybindings/${BINDING_NAME}`;
@@ -73,8 +74,17 @@ function parseOperation(resource) {
   try { return JSON.parse(resource?.data?.operation || '{}'); } catch { return {}; }
 }
 
+function currentCanary(operation, now = Date.now()) {
+  if (operation?.action !== 'validate' || operation.phase !== 'Ready' || !operation.validationFingerprint) {
+    return { ready: false, observedAt: '' };
+  }
+  const observedAt = Date.parse(operation.finishedAt || operation.updatedAt || '');
+  const ready = Number.isFinite(observedAt) && observedAt <= now && now - observedAt <= METRICS_CANARY_MAX_AGE_MS;
+  return { ready, observedAt: Number.isFinite(observedAt) ? new Date(observedAt).toISOString() : '' };
+}
+
 function bindingProjection(input, now = new Date().toISOString()) {
-  const metrics = input.prometheusReady === true && input.prometheusQueryReady === true;
+  const metrics = input.prometheusReady === true && input.prometheusQueryReady === true && input.canaryReady === true;
   const alerting = input.alertmanagerReady === true;
   const dashboards = input.grafanaReady === true;
   const logs = input.lokiReady === true && input.lokiQueryReady === true && input.telemetryCanaryReady === true;
@@ -241,6 +251,7 @@ async function observe() {
     telemetryCanary(),
   ]);
   const canary = parseOperation(operation.ok ? operation.value : null);
+  const canaryEvidence = currentCanary(canary);
   return {
     stackPresent: service.ok || prometheus.ok || alertmanager.ok || grafana.ok || loki.ok || tempo.ok || collector.ok,
     prometheusReady: prometheus.ok && service.ok && workloadReady(prometheus.value),
@@ -256,8 +267,8 @@ async function observe() {
     telemetryCanaryReady: telemetry.ready,
     telemetryCanaryAt: telemetry.observedAt,
     telemetryCanaryError: telemetry.error,
-    canaryReady: canary.action === 'validate' && canary.phase === 'Ready' && Boolean(canary.validationFingerprint),
-    canaryAt: canary.finishedAt || canary.updatedAt || '',
+    canaryReady: canaryEvidence.ready,
+    canaryAt: canaryEvidence.observedAt,
   };
 }
 
@@ -344,5 +355,5 @@ if (require.main === module) {
     void loop();
   });
 } else {
-  module.exports = { bindingProjection, workloadReady, parseOperation, statusComparable, telemetryPayloads };
+  module.exports = { bindingProjection, workloadReady, parseOperation, currentCanary, statusComparable, telemetryPayloads };
 }

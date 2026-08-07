@@ -139,6 +139,7 @@ spec:
             - { name: RECONCILE_INTERVAL_MS, value: "30000" }
             - { name: EVIDENCE_REFRESH_MS, value: "60000" }
             - { name: TELEMETRY_CANARY_REFRESH_MS, value: "300000" }
+            - { name: METRICS_CANARY_MAX_AGE_MS, value: "86400000" }
           ports: [{ name: health, containerPort: 8080 }]
           readinessProbe:
             httpGet: { path: /readyz, port: health }

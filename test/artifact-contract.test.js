@@ -28,3 +28,14 @@ test('package and runtime manifest agree on the global navigation band', () => {
   assert.match(pkg, /band:\s*["']?운영 Operate/);
   assert.equal(manifest.nav.band, '운영 Operate');
 });
+
+test('all package inputs use the same compatibility version', () => {
+  const pkg = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'));
+  const manifest = JSON.parse(readFileSync(resolve(root, 'ui-shell/ui-shell.manifest.json'), 'utf8'));
+  const pluginPackage = readFileSync(resolve(root, 'uipluginpackage.yaml'), 'utf8');
+  const dockerfile = readFileSync(resolve(root, 'Dockerfile'), 'utf8');
+
+  assert.equal(manifest.version, pkg.version);
+  assert.match(pluginPackage, new RegExp(`version:\\s*${pkg.version.replaceAll('.', '\\.')}(?:\\s|$)`));
+  assert.match(dockerfile, new RegExp(`io\\.opensphere\\.compatibility-version="${pkg.version.replaceAll('.', '\\.')}"`));
+});

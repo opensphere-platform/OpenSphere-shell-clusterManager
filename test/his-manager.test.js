@@ -39,6 +39,7 @@ const {
   validateObservabilityConfig,
   normalizeOaaObservabilityConfig,
   oaaObservabilityConfirmation,
+  actorForInternalStatus,
   observabilityValues,
   observabilityRead,
   observabilityPvcComponent,
@@ -46,6 +47,7 @@ const {
   projectLokiResponse,
   projectTempoTrace,
   HIS_STATUS_SCHEMA,
+  HIS_INTERNAL_STATUS_CALLERS,
   DEFAULT_OBSERVABILITY_CONFIG,
 } = require('../his-manager');
 
@@ -83,6 +85,50 @@ test('HIS status contract uses the constitution-defined acronym and versioned sc
   const source = fs.readFileSync(path.resolve(__dirname, '../his-manager.js'), 'utf8');
   assert.match(source, /schema:\s*HIS_STATUS_SCHEMA,\s*\r?\n\s*stack:\s*'HIS'/);
   assert.doesNotMatch(source, /stack:\s*'HISS'/);
+});
+
+test('internal HIS status authenticates only the canonical DUPA controller service account', async () => {
+  const originalFetch = global.fetch;
+  let reviewedToken = '';
+  global.fetch = async (_url, options) => {
+    reviewedToken = JSON.parse(options.body).spec.token;
+    return {
+      ok: true,
+      text: async () => JSON.stringify({
+        status: {
+          authenticated: true,
+          user: { username: 'system:serviceaccount:opensphere-console:opensphere-console-dupa-controller' },
+        },
+      }),
+    };
+  };
+  try {
+    const actor = await actorForInternalStatus({
+      requestToken: () => 'dupa-workload-token', token: () => 'cluster-manager-token', apiServer: 'https://kubernetes.default.svc',
+    }, {});
+    assert.equal(reviewedToken, 'dupa-workload-token');
+    assert.equal(actor.username, 'system:serviceaccount:opensphere-console:opensphere-console-dupa-controller');
+    assert.ok(HIS_INTERNAL_STATUS_CALLERS.has(actor.username));
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('internal HIS status rejects authenticated but unapproved service accounts', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({
+    ok: true,
+    text: async () => JSON.stringify({
+      status: { authenticated: true, user: { username: 'system:serviceaccount:default:unexpected' } },
+    }),
+  });
+  try {
+    await assert.rejects(() => actorForInternalStatus({
+      requestToken: () => 'unexpected-token', token: () => 'cluster-manager-token', apiServer: 'https://kubernetes.default.svc',
+    }, {}), (error) => error.code === 403 && /not authorized/.test(error.message));
+  } finally {
+    global.fetch = originalFetch;
+  }
 });
 
 test('optional profiles gate HIS only when explicitly selected or backed by a managed release', () => {

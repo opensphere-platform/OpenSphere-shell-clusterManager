@@ -29,6 +29,11 @@ const OBSERVABILITY_PUBLIC_CONFIRMATION = 'ENABLE PUBLIC GRAFANA';
 const HIS_STATUS_SCHEMA = 'his-status.opensphere.io/v1alpha1';
 const OAA_HIS_READ_PERMISSION = 'console.his.read';
 const OAA_HIS_MANAGE_PERMISSION = 'console.his.manage';
+const HIS_INTERNAL_STATUS_CALLERS = new Set(
+  String(process.env.HIS_INTERNAL_STATUS_CALLERS
+    || 'system:serviceaccount:opensphere-console:opensphere-console-dupa-controller')
+    .split(',').map((value) => value.trim()).filter(Boolean),
+);
 const LOKI_QUERY_URL = (process.env.HIS_LOKI_URL || 'http://opensphere-his-loki.monitoring.svc:3100').replace(/\/$/, '');
 const TEMPO_QUERY_URL = (process.env.HIS_TEMPO_URL || 'http://opensphere-his-tempo.monitoring.svc:3200').replace(/\/$/, '');
 const OIDC_SECRET_KEYS = Object.freeze([
@@ -1899,6 +1904,25 @@ async function actorForOaaOwner(ctx, req, mutation) {
   return actor;
 }
 
+async function actorForInternalStatus(ctx, req) {
+  const callerToken = String(ctx.requestToken(req) || '');
+  if (!callerToken) throw Object.assign(new Error('HIS internal status requires a bearer token.'), { code: 401 });
+  const review = await k8sRequest(ctx, '/apis/authentication.k8s.io/v1/tokenreviews', {
+    method: 'POST',
+    body: {
+      apiVersion: 'authentication.k8s.io/v1',
+      kind: 'TokenReview',
+      spec: { token: callerToken },
+    },
+  });
+  const authenticated = review?.status?.authenticated === true;
+  const username = String(review?.status?.user?.username || '');
+  if (!authenticated || !HIS_INTERNAL_STATUS_CALLERS.has(username)) {
+    throw Object.assign(new Error('HIS internal status caller is not authorized.'), { code: 403 });
+  }
+  return { username, groups: Array.isArray(review?.status?.user?.groups) ? review.status.user.groups : [] };
+}
+
 function renderedResources(rendered, defaultNamespace) {
   const clusterScopedKinds = new Set(['CustomResourceDefinition', 'ClusterRole', 'ClusterRoleBinding', 'Namespace', 'APIService', 'IngressClass', 'StorageClass', 'ValidatingWebhookConfiguration', 'MutatingWebhookConfiguration']);
   const resources = [];
@@ -2801,6 +2825,10 @@ function createHisManager(ctx) {
         setImmediate(() => { void executeObservabilityConfiguration(ctx, actor, item, operation, desired, body.resetData); });
         return true;
       }
+      if (req.method === 'GET' && pathname === '/api/his/internal/status') {
+        await actorForInternalStatus(ctx, req);
+        return ctx.jsonRes(res, 200, await allStatus(ctx)), true;
+      }
       if (req.method === 'GET' && pathname === '/api/his/status') {
         await actorFor(ctx, req, false);
         return ctx.jsonRes(res, 200, await allStatus(ctx)), true;
@@ -2972,6 +3000,7 @@ module.exports = {
   validateObservabilityConfig,
   normalizeOaaObservabilityConfig,
   oaaObservabilityConfirmation,
+  actorForInternalStatus,
   observabilityValues,
   observabilityRead,
   observabilityPvcComponent,
@@ -2980,6 +3009,7 @@ module.exports = {
   projectTempoTrace,
   flattenConfiguration,
   HIS_STATUS_SCHEMA,
+  HIS_INTERNAL_STATUS_CALLERS,
   DEFAULT_OBSERVABILITY_CONFIG,
   OBSERVABILITY_RESET_CONFIRMATION,
   OBSERVABILITY_PUBLIC_CONFIRMATION,

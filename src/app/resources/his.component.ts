@@ -76,6 +76,7 @@ type ObservabilityConfigurationMode = 'install' | 'operate';
       <clr-dg-row
         *clrDgItems="let item of s.items"
         [clrDgItem]="item"
+        [attr.data-his-item]="item.id"
         [clrDgExpanded]="isExpanded(item.id)"
         (clrDgExpandedChange)="setExpanded(item.id, $event)"
       >
@@ -1069,8 +1070,14 @@ export class HisComponent implements OnInit, OnDestroy {
   observabilityChartVersion = '87.19.1';
   private configurationFingerprint = '';
   private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private focusItemId = '';
+  private focusApplied = false;
 
   ngOnInit(): void {
+    try {
+      const requested = new URLSearchParams(window.location.search).get('focus') || '';
+      this.focusItemId = /^[a-z0-9-]{1,80}$/.test(requested) ? requested : '';
+    } catch { /* standalone/test environment */ }
     this.load();
     this.pollTimer = setInterval(() => this.load(false), 3000);
   }
@@ -1089,9 +1096,19 @@ export class HisComponent implements OnInit, OnDestroy {
         const prior = new Map((this.status()?.items || []).map((item) => [item.id, item]));
         const items = status.items.map((item) => Object.assign(prior.get(item.id) || {}, item));
         this.status.set({ ...status, items });
+        this.applyRequestedFocus(items);
         this.loading.set(false);
       },
       error: (error) => { if (showLoading) this.error.set(this.message(error)); this.loading.set(false); },
+    });
+  }
+
+  private applyRequestedFocus(items: HisItem[]): void {
+    if (this.focusApplied || !this.focusItemId || !items.some((item) => item.id === this.focusItemId)) return;
+    this.focusApplied = true;
+    this.setExpanded(this.focusItemId, true);
+    setTimeout(() => {
+      document.querySelector(`[data-his-item="${this.focusItemId}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
     });
   }
 

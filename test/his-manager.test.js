@@ -67,6 +67,15 @@ test('HIS catalog keeps PFS/plugin concepts outside the prerequisite catalog', (
   const dockerfile = fs.readFileSync(path.resolve(__dirname, '../Dockerfile'), 'utf8');
   assert.match(dockerfile, /kube-prometheus-stack --version 87\.19\.1/);
   assert.match(dockerfile, /87893c23e84ad7f4282b816541a7e571a128c6c0dd2ac9ffff2527d3d54ee6b1/);
+  const crossplane = catalogItem('crossplane-core');
+  assert.equal(crossplane.mode, 'HelmManaged');
+  assert.equal(crossplane.required, false);
+  assert.equal(crossplane.profile, 'Platform Delivery');
+  assert.equal(crossplane.chartVersion, '2.3.3');
+  assert.match(crossplane.values.join(' '), /provider-helm@sha256:97e4d1e72f3fefcc3d101eaa3058e1849ed995f87b48193fc446064874edb63d/);
+  assert.match(crossplane.values.join(' '), /image\.tag=v2\.3\.3@sha256:f1c88a98f113a5cb78d75c7e94e2a7fefdf86ffb3353c63f01697dc5ad855b19/);
+  assert.match(dockerfile, /crossplane --repo https:\/\/charts\.crossplane\.io\/stable --version 2\.3\.3/);
+  assert.match(dockerfile, /327cadea168633b9dcaa71da1852fb308d837dd3f9c8a53410c155257df206c8/);
   const dataProtection = catalogItem('csi-snapshot');
   assert.equal(dataProtection.required, false);
   assert.equal(dataProtection.profile, 'Data Protection');
@@ -499,9 +508,10 @@ test('signed HIS owner release includes bounded lifecycle RBAC for fixed namespa
   const bindings = documents.filter((document) => document.kind === 'RoleBinding' && document.metadata?.name === 'opensphere-hiss-release-editor');
   assert.ok(clusterRole);
   assert.ok(editorRole);
-  assert.deepEqual(bindings.map((binding) => binding.metadata.namespace).sort(), ['cert-manager', 'ingress-nginx', 'kube-system', 'monitoring', 'opensphere-console']);
+  assert.deepEqual(bindings.map((binding) => binding.metadata.namespace).sort(), ['cert-manager', 'crossplane-system', 'ingress-nginx', 'kube-system', 'monitoring', 'opensphere-console']);
   assert.doesNotMatch(manifest, /resources:\s*\[\*\]|verbs:\s*\[\*\]/);
   assert.match(manifest, /resources: \[secrets, configmaps/);
+  assert.match(manifest, /apiGroups: \[pkg\.crossplane\.io\]/);
   assert.match(manifest, /resources: \[apiservices\]/);
   const namespaceRbacRule = editorRole.rules.find((rule) => rule.apiGroups?.includes('rbac.authorization.k8s.io'));
   assert.deepEqual(namespaceRbacRule.resources, ['roles', 'rolebindings']);

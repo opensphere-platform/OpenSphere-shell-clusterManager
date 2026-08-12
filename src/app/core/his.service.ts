@@ -247,18 +247,36 @@ export class HisService {
   }
 
   private url(path: string): string { return `${this.base()}/api/his/${path}`; }
+  private moduleUrl(path: string): string { return `${this.base()}/api/module-lifecycle/${path}`; }
 
   status(): Observable<HisStatus> { return this.http.get<HisStatus>(this.url('status')); }
   setProfile(profile: string, selected: boolean, reason: string): Observable<HisStatus> {
     return this.http.post<HisStatus>(this.url('profiles'), { profile, selected, reason });
   }
   validate(id: 'cluster-network' | 'cluster-dns' | 'kube-prometheus-stack' | 'storage' | 'csi-snapshot', reason: string): Observable<{ ok: boolean; operation: HisOperation }> {
+    if (id === 'kube-prometheus-stack') {
+      return this.http.post<{ ok: boolean; operation: HisOperation }>(
+        this.moduleUrl('modules/shared-observability/verify'),
+        { reason },
+      );
+    }
     return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('validate'), { id, reason });
   }
   plan(id: string, config?: ObservabilityConfig, chartVersion?: string): Observable<HisPlan> {
     return this.http.post<HisPlan>(this.url('plan'), { id, ...(config ? { config } : {}), ...(chartVersion ? { chartVersion } : {}) });
   }
   install(id: string, reason: string, config?: ObservabilityConfig, chartVersion?: string): Observable<{ ok: boolean; operation: HisOperation }> {
+    if (id === 'kube-prometheus-stack') {
+      return this.http.post<{ ok: boolean; operation: HisOperation }>(
+        this.moduleUrl('modules/shared-observability/operations'),
+        {
+          action: 'install',
+          reason,
+          ...(config ? { config } : {}),
+          ...(chartVersion ? { chartVersion } : {}),
+        },
+      );
+    }
     return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('install'), { id, reason, ...(config ? { config } : {}), ...(chartVersion ? { chartVersion } : {}) });
   }
   upgrade(id: string, reason: string, chartVersion?: string): Observable<{ ok: boolean; operation: HisOperation }> {
@@ -271,6 +289,12 @@ export class HisService {
     return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('rollback'), { id, revision, reason, confirm });
   }
   uninstall(id: string, reason: string, confirm: string): Observable<{ ok: boolean; operation: HisOperation }> {
+    if (id === 'kube-prometheus-stack') {
+      return this.http.post<{ ok: boolean; operation: HisOperation }>(
+        this.moduleUrl('modules/shared-observability/operations'),
+        { action: 'delete-runtime', reason, confirm },
+      );
+    }
     return this.http.post<{ ok: boolean; operation: HisOperation }>(this.url('uninstall'), { id, reason, confirm });
   }
   observabilityConfig(): Observable<ObservabilityConfigurationState> {

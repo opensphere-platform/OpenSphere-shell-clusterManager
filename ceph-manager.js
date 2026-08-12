@@ -20,6 +20,11 @@ const ADMIN_GROUPS = new Set(
 );
 const NAMESPACE = 'rook-ceph';
 const IMPORT_NAMESPACE = 'opensphere-ceph-imports';
+const VERIFICATION_NAMESPACE = 'opensphere-ceph-verification';
+const VERIFICATION_CONFIGMAP = 'opensphere-ceph-data-path-verification';
+const VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
+const VERIFICATION_HISTORY_LIMIT = 40;
+const VERIFICATION_OPERATION_TIMEOUT_MS = 15 * 60 * 1000;
 const OPERATOR_RELEASE = 'rook-ceph';
 const CLUSTER_RELEASE = 'rook-ceph-external';
 const CONNECTION_CONFIGMAP = 'opensphere-ceph-connection';
@@ -73,6 +78,10 @@ const importCleanupHealth = {
   lastFailureAt: null,
   lastSuccessAt: null,
   lastError: null,
+};
+const verificationRuntimeCache = {
+  expiresAt: 0,
+  value: null,
 };
 
 const MANAGED_LABELS = Object.freeze({
@@ -152,7 +161,124 @@ function providerGuide() {
   return structuredClone(PROVIDER_GUIDE);
 }
 
-function cephStorageServiceDiagnostics(csiDrivers, storageClasses, secretResources) {
+function storageClassVerificationFingerprint(storageClass, secretResources = []) {
+  const parameters = storageClass?.parameters || {};
+  const secretNames = [...new Set(Object.entries(parameters)
+    .filter(([key]) => key.endsWith('-secret-name'))
+    .map(([, value]) => String(value || '').trim())
+    .filter(Boolean))];
+  const secretVersions = Object.fromEntries(secretNames.sort().map((name) => {
+    const secret = (secretResources || []).find((item) => item?.metadata?.name === name);
+    return [name, {
+      uid: String(secret?.metadata?.uid || ''),
+      resourceVersion: String(secret?.metadata?.resourceVersion || ''),
+    }];
+  }));
+  const payload = {
+    name: String(storageClass?.metadata?.name || ''),
+    uid: String(storageClass?.metadata?.uid || ''),
+    provisioner: String(storageClass?.provisioner || ''),
+    parameters: Object.fromEntries(Object.entries(parameters)
+      .sort(([left], [right]) => left.localeCompare(right))),
+    secretVersions,
+  };
+  return crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+}
+
+function verificationEvidenceFor(storageClass, secretResources, verificationHistory, now = Date.now()) {
+  const storageClassName = String(storageClass?.metadata?.name || '');
+  const history = (verificationHistory || [])
+    .filter((item) => item?.storageClassName === storageClassName)
+    .sort((left, right) => String(right.updatedAt || right.startedAt || '').localeCompare(String(left.updatedAt || left.startedAt || '')));
+  let latest = history[0] || null;
+  const fingerprint = storageClassVerificationFingerprint(storageClass, secretResources);
+  if (!latest) {
+    return {
+      fingerprint,
+      state: 'NotVerified',
+      verified: false,
+      verifiedAt: null,
+      ready: false,
+      latest: null,
+    };
+  }
+  if (['Queued', 'Running', 'Cleaning'].includes(latest.phase)) {
+    const heartbeatAt = Date.parse(String(latest.updatedAt || latest.startedAt || ''));
+    if (!Number.isFinite(heartbeatAt) || heartbeatAt + VERIFICATION_OPERATION_TIMEOUT_MS <= now) {
+      latest = {
+        ...latest,
+        phase: 'Failed',
+        error: '검증 worker의 진행 기록이 제한 시간을 초과해 중단된 작업으로 판정했습니다.',
+        message: '검증 작업이 제한 시간 안에 완료되지 않았습니다.',
+      };
+      return {
+        fingerprint,
+        state: latest.cleanup?.state === 'Required' ? 'VerificationFailedCleanupRequired' : 'VerificationFailed',
+        verified: false,
+        verifiedAt: null,
+        ready: false,
+        latest,
+      };
+    }
+    return {
+      fingerprint,
+      state: 'VerificationRunning',
+      verified: false,
+      verifiedAt: null,
+      ready: false,
+      latest,
+    };
+  }
+  if (latest.phase === 'Failed') {
+    return {
+      fingerprint,
+      state: latest.cleanup?.state === 'Required' ? 'VerificationFailedCleanupRequired' : 'VerificationFailed',
+      verified: false,
+      verifiedAt: null,
+      ready: false,
+      latest,
+    };
+  }
+  if (latest.configurationFingerprint !== fingerprint) {
+    return {
+      fingerprint,
+      state: 'VerificationStale',
+      verified: false,
+      verifiedAt: latest.verifiedAt || null,
+      ready: false,
+      latest,
+    };
+  }
+  const expiresAt = Date.parse(String(latest.expiresAt || ''));
+  if (!Number.isFinite(expiresAt) || expiresAt <= now) {
+    return {
+      fingerprint,
+      state: 'VerificationExpired',
+      verified: false,
+      verifiedAt: latest.verifiedAt || null,
+      ready: false,
+      latest,
+    };
+  }
+  const cleanupRequired = latest.cleanup?.state !== 'Clean';
+  return {
+    fingerprint,
+    state: cleanupRequired ? 'CleanupRequired' : 'Verified',
+    verified: true,
+    verifiedAt: latest.verifiedAt || null,
+    ready: !cleanupRequired,
+    latest,
+  };
+}
+
+function isManagedConsumerStorageClass(storageClass) {
+  const labels = storageClass?.metadata?.labels || {};
+  return labels['app.kubernetes.io/managed-by'] === MANAGED_LABELS['app.kubernetes.io/managed-by']
+    && labels['opensphere.io/ceph-connection'] === MANAGED_LABELS['opensphere.io/ceph-connection']
+    && !labels['opensphere.io/ceph-verification'];
+}
+
+function cephStorageServiceDiagnostics(csiDrivers, storageClasses, secretResources, verificationHistory = []) {
   const driverNames = new Set((csiDrivers || []).map((item) => String(item?.metadata?.name || item || '')));
   const secrets = new Map((secretResources || []).map((item) => {
     if (typeof item === 'string') return [item, null];
@@ -167,10 +293,18 @@ function cephStorageServiceDiagnostics(csiDrivers, storageClasses, secretResourc
       const parameters = item?.parameters || {};
       const requiredParameters = profile.id === 'cephfs' ? ['fsName', 'pool'] : ['pool'];
       const missingParameters = requiredParameters.filter((name) => !String(parameters[name] || '').trim());
-      const secretRefs = [
-        parameters['csi.storage.k8s.io/provisioner-secret-name'],
-        parameters['csi.storage.k8s.io/node-stage-secret-name'],
-      ].map((value) => String(value || '').trim()).filter(Boolean);
+      const secretReferenceEntries = Object.entries(parameters)
+        .filter(([key]) => key.endsWith('-secret-name'))
+        .map(([key, value]) => ({
+          key,
+          name: String(value || '').trim(),
+          namespace: String(parameters[key.replace(/-name$/, '-namespace')] || '').trim(),
+        }))
+        .filter((item) => item.name);
+      const secretRefs = [...new Set(secretReferenceEntries.map((item) => item.name))];
+      const invalidSecretNamespaces = secretReferenceEntries
+        .filter((item) => item.namespace !== NAMESPACE)
+        .map((item) => `${item.key.replace(/-name$/, '-namespace')}=${item.namespace || '(empty)'}`);
       const missingSecrets = secretRefs.filter((name) => !secrets.has(name));
       const missingSecretFields = secretRefs.flatMap((name) => {
         const fields = secrets.get(name);
@@ -182,9 +316,11 @@ function cephStorageServiceDiagnostics(csiDrivers, storageClasses, secretResourc
       const configurationReady = (
         missingParameters.length === 0
         && secretRefs.length >= 2
+        && invalidSecretNamespaces.length === 0
         && missingSecrets.length === 0
         && missingSecretFields.length === 0
       );
+      const evidence = verificationEvidenceFor(item, secretResources, verificationHistory);
       return {
         name: String(item?.metadata?.name || ''),
         provisioner: String(item?.provisioner || ''),
@@ -193,12 +329,16 @@ function cephStorageServiceDiagnostics(csiDrivers, storageClasses, secretResourc
         pool: String(parameters.pool || ''),
         filesystem: String(parameters.fsName || ''),
         missingParameters,
+        invalidSecretNamespaces,
         missingSecrets,
         missingSecretFields,
         configurationReady,
-        verified: false,
-        verifiedAt: null,
-        ready: false,
+        configurationFingerprint: evidence.fingerprint,
+        verificationState: evidence.state,
+        latestVerification: evidence.latest,
+        verified: evidence.verified,
+        verifiedAt: evidence.verifiedAt,
+        ready: evidence.ready,
       };
     });
     const configuredClasses = storageClassDetails.filter((item) => item.configurationReady);
@@ -207,10 +347,26 @@ function cephStorageServiceDiagnostics(csiDrivers, storageClasses, secretResourc
     if (driverInstalled && !matchedClasses.length) blockers.push('이 드라이버를 사용하는 StorageClass가 없습니다.');
     for (const item of storageClassDetails) {
       if (item.missingParameters.length) blockers.push(`StorageClass/${item.name}: ${item.missingParameters.join(', ')} 값이 없습니다.`);
+      if (item.invalidSecretNamespaces.length) blockers.push(`StorageClass/${item.name}: CSI Secret namespace는 ${NAMESPACE}여야 합니다 (${item.invalidSecretNamespaces.join(', ')}).`);
       if (item.missingSecrets.length) blockers.push(`StorageClass/${item.name}: Secret ${item.missingSecrets.join(', ')}을 찾지 못했습니다.`);
       if (item.missingSecretFields.length) blockers.push(`StorageClass/${item.name}: Secret 필드 ${item.missingSecretFields.join(', ')}을 찾지 못했습니다.`);
     }
     const configured = driverInstalled && configuredClasses.length > 0;
+    const verifiedClasses = configuredClasses.filter((item) => item.verified);
+    const readyClasses = configuredClasses.filter((item) => item.ready);
+    const latestVerification = storageClassDetails
+      .map((item) => item.latestVerification)
+      .filter(Boolean)
+      .sort((left, right) => String(right.updatedAt || right.startedAt || '').localeCompare(String(left.updatedAt || left.startedAt || '')))[0] || null;
+    const verificationState = !driverInstalled ? 'NotInstalled'
+      : !configured ? 'NeedsConfiguration'
+        : storageClassDetails.some((item) => item.verificationState === 'VerificationRunning') ? 'VerificationRunning'
+          : readyClasses.length ? 'Verified'
+            : verifiedClasses.length ? 'CleanupRequired'
+              : latestVerification?.phase === 'Failed' ? 'VerificationFailed'
+                : storageClassDetails.some((item) => item.verificationState === 'VerificationExpired') ? 'VerificationExpired'
+                  : storageClassDetails.some((item) => item.verificationState === 'VerificationStale') ? 'VerificationStale'
+                    : 'ConfiguredUnverified';
     return {
       id: profile.id,
       name: profile.name,
@@ -218,17 +374,28 @@ function cephStorageServiceDiagnostics(csiDrivers, storageClasses, secretResourc
       driver,
       driverInstalled,
       configured,
-      verified: false,
-      verifiedAt: null,
-      ready: false,
-      state: !driverInstalled ? 'NotInstalled' : configured ? 'ConfiguredUnverified' : 'NeedsConfiguration',
+      verified: verifiedClasses.length > 0,
+      verifiedAt: verifiedClasses
+        .map((item) => item.verifiedAt)
+        .filter(Boolean)
+        .sort()
+        .at(-1) || null,
+      ready: readyClasses.length > 0,
+      state: verificationState,
+      latestVerification,
       storageClasses: storageClassDetails,
       blockers,
       providerRequirements: structuredClone(profile.providerRequirements),
       nextAction: !driverInstalled
         ? '서명된 플랫폼 변경으로 CSI 드라이버를 설치하십시오.'
         : configured
-          ? '구성 참조는 확인되었습니다. 승인된 테스트 PVC 또는 업무 PVC의 실제 생성·마운트 결과로 데이터 경로를 별도 검증하십시오.'
+          ? verificationState === 'VerificationRunning'
+            ? '격리된 임시 PVC로 데이터 경로를 검증하고 있습니다.'
+            : verificationState === 'CleanupRequired'
+              ? '데이터 경로는 검증되었지만 테스트 리소스 정리가 완료되지 않았습니다. 상세 이력을 확인하십시오.'
+              : verificationState === 'Verified'
+                ? '최근 데이터 경로 검증이 유효합니다.'
+                : '승인된 데이터 경로 검증을 실행해 PVC 생성·마운트·읽기·쓰기를 확인하십시오.'
           : profile.id === 'cephfs'
             ? 'Ceph 관리자에게 아래 정보를 요청한 뒤 CephFS 구성을 추가하십시오.'
             : '누락된 pool·CephX 자격 증명과 StorageClass 구성을 보완하십시오.',
@@ -237,14 +404,20 @@ function cephStorageServiceDiagnostics(csiDrivers, storageClasses, secretResourc
   const installed = services.filter((item) => item.driverInstalled);
   const configured = installed.filter((item) => item.configured);
   const verified = installed.filter((item) => item.verified);
+  const ready = installed.filter((item) => item.ready);
   return {
     scope: 'CSI persistent volume services',
     installed: installed.length,
     configured: configured.length,
     verified: verified.length,
-    ready: verified.length,
+    ready: ready.length,
     needsConfiguration: installed.length - configured.length,
-    state: installed.length > 0 && installed.length === configured.length ? 'ConfiguredUnverified' : 'NeedsConfiguration',
+    state: installed.length === 0 || installed.length !== configured.length ? 'NeedsConfiguration'
+      : ready.length === installed.length ? 'Verified'
+        : verified.length > ready.length ? 'CleanupRequired'
+          : services.some((item) => item.state === 'VerificationRunning') ? 'VerificationRunning'
+            : services.some((item) => item.state === 'VerificationFailed') ? 'VerificationFailed'
+              : 'ConfiguredUnverified',
     services,
   };
 }
@@ -752,15 +925,24 @@ function importNameFromRef(value) {
 }
 
 async function kube(ctx, method, apiPath, body) {
-  const response = await fetch(`${ctx.apiServer}${apiPath}`, {
-    method,
-    headers: {
-      authorization: `Bearer ${ctx.token()}`,
-      accept: 'application/json',
-      ...(body ? { 'content-type': 'application/json' } : {}),
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  let response;
+  try {
+    response = await fetch(`${ctx.apiServer}${apiPath}`, {
+      method,
+      headers: {
+        authorization: `Bearer ${ctx.token()}`,
+        accept: 'application/json',
+        ...(body ? { 'content-type': 'application/json' } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(30000),
+    });
+  } catch (failure) {
+    if (failure?.name === 'TimeoutError' || failure?.name === 'AbortError') {
+      throw error(`Kubernetes API 요청 제한 시간(30초)을 초과했습니다: ${method} ${apiPath}`, 504);
+    }
+    throw failure;
+  }
   const text = await response.text();
   let value = {};
   try { value = text ? JSON.parse(text) : {}; } catch { value = { message: text }; }
@@ -774,6 +956,423 @@ async function kube(ctx, method, apiPath, body) {
 
 async function optionalKube(ctx, apiPath) {
   try { return await kube(ctx, 'GET', apiPath); } catch (e) { if (e.apiStatus === 404) return null; throw e; }
+}
+
+function parseVerificationHistory(configMap) {
+  try {
+    const value = JSON.parse(String(configMap?.data?.history || '[]'));
+    if (!Array.isArray(value)) return [];
+    return value
+      .filter((item) => item && typeof item === 'object' && typeof item.id === 'string')
+      .map((item) => {
+        if (!['Queued', 'Running', 'Cleaning'].includes(item.phase)) return item;
+        const heartbeatAt = Date.parse(String(item.updatedAt || item.startedAt || ''));
+        if (Number.isFinite(heartbeatAt) && heartbeatAt + VERIFICATION_OPERATION_TIMEOUT_MS > Date.now()) return item;
+        return {
+          ...item,
+          phase: 'Failed',
+          progress: 100,
+          message: '검증 작업이 제한 시간 안에 완료되지 않았습니다.',
+          error: '검증 worker의 진행 기록이 제한 시간을 초과했습니다.',
+          cleanup: {
+            ...(item.cleanup || {}),
+            state: 'Required',
+            checkedAt: item.cleanup?.checkedAt || null,
+            errors: item.cleanup?.errors?.length
+              ? item.cleanup.errors
+              : ['중단된 검증 리소스의 정리 여부를 아직 확인하지 못했습니다.'],
+          },
+        };
+      })
+      .slice(0, VERIFICATION_HISTORY_LIMIT);
+  } catch {
+    return [];
+  }
+}
+
+async function readVerificationStore(ctx) {
+  try {
+    const namespace = await optionalKube(ctx, `/api/v1/namespaces/${VERIFICATION_NAMESPACE}`);
+    if (!namespace) {
+      return {
+        available: false,
+        reason: 'VerificationRuntimeNotInstalled',
+        message: `Namespace/${VERIFICATION_NAMESPACE}가 설치되지 않았습니다.`,
+        history: [],
+      };
+    }
+    const configMap = await optionalKube(
+      ctx,
+      `/api/v1/namespaces/${VERIFICATION_NAMESPACE}/configmaps/${VERIFICATION_CONFIGMAP}`,
+    );
+    return {
+      available: true,
+      reason: 'VerificationRuntimeReady',
+      message: '데이터 경로 검증 이력 저장소를 사용할 수 있습니다.',
+      history: parseVerificationHistory(configMap),
+    };
+  } catch (failure) {
+    return {
+      available: false,
+      reason: failure.apiStatus === 403 ? 'VerificationRuntimeAccessDenied' : 'VerificationRuntimeUnavailable',
+      message: safeError(failure),
+      history: [],
+    };
+  }
+}
+
+async function writeVerificationRecord(ctx, record) {
+  const collection = `/api/v1/namespaces/${VERIFICATION_NAMESPACE}/configmaps`;
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    try {
+      const current = await optionalKube(ctx, `${collection}/${VERIFICATION_CONFIGMAP}`);
+      const history = parseVerificationHistory(current)
+        .filter((item) => item.id !== record.id);
+      history.unshift(record);
+      const retained = history
+        .sort((left, right) => String(right.updatedAt || right.startedAt || '').localeCompare(String(left.updatedAt || left.startedAt || '')))
+        .slice(0, VERIFICATION_HISTORY_LIMIT);
+      const manifest = {
+        apiVersion: 'v1',
+        kind: 'ConfigMap',
+        metadata: {
+          name: VERIFICATION_CONFIGMAP,
+          namespace: VERIFICATION_NAMESPACE,
+          labels: {
+            ...MANAGED_LABELS,
+            'opensphere.io/ceph-verification': 'history',
+          },
+        },
+        data: { history: JSON.stringify(retained) },
+      };
+      if (current) {
+        manifest.metadata.resourceVersion = current.metadata.resourceVersion;
+        await kube(ctx, 'PUT', `${collection}/${VERIFICATION_CONFIGMAP}`, manifest);
+      } else {
+        await kube(ctx, 'POST', collection, manifest);
+      }
+      return record;
+    } catch (failure) {
+      if (failure.apiStatus !== 409 || attempt === 4) throw failure;
+    }
+  }
+  return record;
+}
+
+function verificationResourceName(serviceId, id) {
+  const suffix = crypto.createHash('sha256').update(String(id)).digest('hex').slice(0, 10);
+  return `${serviceId === 'rbd' ? 'ceph-rbd' : 'cephfs'}-verify-${suffix}`;
+}
+
+function verificationLockName(storageClassName) {
+  const suffix = crypto.createHash('sha256').update(String(storageClassName)).digest('hex').slice(0, 12);
+  return `opensphere-ceph-verify-lock-${suffix}`;
+}
+
+function verificationResources(record) {
+  const base = verificationResourceName(record.serviceId, record.id);
+  return {
+    temporaryStorageClassName: base,
+    pvcName: `${base}-pvc`.slice(0, 63),
+    writerPod: `${base}-writer`.slice(0, 63),
+    readerPod: record.serviceId === 'cephfs' ? `${base}-reader`.slice(0, 63) : '',
+    pvName: '',
+  };
+}
+
+async function recoverStaleVerification(ctx, lock) {
+  const operationId = String(lock?.metadata?.annotations?.['opensphere.io/operation-id'] || '');
+  const serviceId = String(lock?.data?.serviceId || '');
+  if (!operationId || !['rbd', 'cephfs'].includes(serviceId)) {
+    throw error('만료된 검증 잠금의 작업 식별 정보가 손상되어 자동 정리할 수 없습니다.', 409);
+  }
+  const record = { id: operationId, serviceId };
+  const resources = verificationResources(record);
+  const store = await readVerificationStore(ctx);
+  const staleRecord = store.history.find((item) => item.id === operationId);
+  const pvc = await optionalKube(
+    ctx,
+    `/api/v1/namespaces/${VERIFICATION_NAMESPACE}/persistentvolumeclaims/${encodeURIComponent(resources.pvcName)}`,
+  );
+  resources.pvName = String(pvc?.spec?.volumeName || staleRecord?.pvName || lock?.data?.pvName || '');
+  const cleanup = await cleanupVerificationResources(ctx, resources);
+  if (staleRecord) {
+    const finishedAt = new Date().toISOString();
+    await writeVerificationRecord(ctx, {
+      ...staleRecord,
+      phase: 'Failed',
+      progress: 100,
+      message: '중단된 검증 작업을 감지해 잔여 리소스 정리를 실행했습니다.',
+      error: '검증 worker의 진행 기록이 제한 시간을 초과했습니다.',
+      cleanup,
+      updatedAt: finishedAt,
+      finishedAt,
+    });
+  }
+  if (cleanup.state !== 'Clean') {
+    throw error(`이전 검증 작업의 리소스 정리가 완료되지 않았습니다: ${cleanup.errors.join(' · ')}`, 409);
+  }
+}
+
+async function acquireVerificationLock(ctx, record) {
+  const name = verificationLockName(record.storageClassName);
+  const collection = `/api/v1/namespaces/${VERIFICATION_NAMESPACE}/configmaps`;
+  const manifest = {
+    apiVersion: 'v1',
+    kind: 'ConfigMap',
+    metadata: {
+      name,
+      namespace: VERIFICATION_NAMESPACE,
+      labels: {
+        ...MANAGED_LABELS,
+        'opensphere.io/ceph-verification': 'lock',
+      },
+      annotations: {
+        'opensphere.io/operation-id': record.id,
+        'opensphere.io/expires-at': new Date(Date.now() + VERIFICATION_OPERATION_TIMEOUT_MS).toISOString(),
+      },
+    },
+    data: { storageClassName: record.storageClassName, serviceId: record.serviceId },
+  };
+  try {
+    await kube(ctx, 'POST', collection, manifest);
+    return name;
+  } catch (failure) {
+    if (failure.apiStatus !== 409) throw failure;
+  }
+  const current = await optionalKube(ctx, `${collection}/${name}`);
+  const expiresAt = Date.parse(String(current?.metadata?.annotations?.['opensphere.io/expires-at'] || ''));
+  if (Number.isFinite(expiresAt) && expiresAt > Date.now()) {
+    throw error(`StorageClass/${record.storageClassName} 데이터 경로 검증이 이미 진행 중입니다.`, 409);
+  }
+  await recoverStaleVerification(ctx, current);
+  await remove(ctx, `${collection}/${name}`);
+  await kube(ctx, 'POST', collection, manifest);
+  return name;
+}
+
+function verificationTemporaryStorageClass(source, record) {
+  const name = verificationResourceName(record.serviceId, record.id);
+  return {
+    apiVersion: 'storage.k8s.io/v1',
+    kind: 'StorageClass',
+    metadata: {
+      name,
+      labels: {
+        ...MANAGED_LABELS,
+        'opensphere.io/ceph-verification': record.id,
+      },
+      annotations: {
+        'opensphere.io/source-storage-class': record.storageClassName,
+      },
+    },
+    provisioner: source.provisioner,
+    parameters: structuredClone(source.parameters || {}),
+    reclaimPolicy: 'Delete',
+    allowVolumeExpansion: false,
+    volumeBindingMode: 'WaitForFirstConsumer',
+    ...(Array.isArray(source.mountOptions) && source.mountOptions.length
+      ? { mountOptions: [...source.mountOptions] }
+      : {}),
+  };
+}
+
+function verificationPvc(record, temporaryStorageClassName) {
+  const name = `${verificationResourceName(record.serviceId, record.id)}-pvc`.slice(0, 63);
+  return {
+    apiVersion: 'v1',
+    kind: 'PersistentVolumeClaim',
+    metadata: {
+      name,
+      namespace: VERIFICATION_NAMESPACE,
+      labels: {
+        'app.kubernetes.io/managed-by': 'opensphere-cluster-manager',
+        'opensphere.io/ceph-verification': record.id,
+        'opensphere.io/ceph-service': record.serviceId,
+      },
+    },
+    spec: {
+      accessModes: [record.serviceId === 'cephfs' ? 'ReadWriteMany' : 'ReadWriteOnce'],
+      storageClassName: temporaryStorageClassName,
+      volumeMode: 'Filesystem',
+      resources: { requests: { storage: '64Mi' } },
+    },
+  };
+}
+
+function verificationPod(record, pvcName, image, role, checksum, payload = '', nodeName = '') {
+  const name = `${verificationResourceName(record.serviceId, record.id)}-${role}`.slice(0, 63);
+  const mountPath = '/verification';
+  const keepRunning = record.serviceId === 'cephfs' && role === 'writer';
+  const script = role === 'writer'
+    ? `const fs=require('fs'),crypto=require('crypto');const p=${JSON.stringify(payload)};const f='${mountPath}/probe';fs.writeFileSync(f,p,{mode:0o600});const fd=fs.openSync(f,'r');fs.fsyncSync(fd);fs.closeSync(fd);const actual=crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex');if(actual!==${JSON.stringify(checksum)})throw new Error('write/read checksum mismatch');${keepRunning ? 'setInterval(()=>{},2147483647);' : ''}`
+    : `const fs=require('fs'),crypto=require('crypto');const actual=crypto.createHash('sha256').update(fs.readFileSync('${mountPath}/probe')).digest('hex');if(actual!==${JSON.stringify(checksum)})throw new Error('cross-node checksum mismatch');`;
+  return {
+    apiVersion: 'v1',
+    kind: 'Pod',
+    metadata: {
+      name,
+      namespace: VERIFICATION_NAMESPACE,
+      labels: {
+        'app.kubernetes.io/managed-by': 'opensphere-cluster-manager',
+        'opensphere.io/ceph-verification': record.id,
+        'opensphere.io/ceph-service': record.serviceId,
+        'opensphere.io/verification-role': role,
+      },
+    },
+    spec: {
+      restartPolicy: 'Never',
+      automountServiceAccountToken: false,
+      enableServiceLinks: false,
+      securityContext: {
+        seccompProfile: { type: 'RuntimeDefault' },
+        fsGroup: 1000,
+        fsGroupChangePolicy: 'OnRootMismatch',
+      },
+      ...(nodeName ? { nodeSelector: { 'kubernetes.io/hostname': nodeName } } : {}),
+      containers: [{
+        name: 'probe',
+        image,
+        imagePullPolicy: 'IfNotPresent',
+        command: ['node', '-e'],
+        args: [script],
+        securityContext: {
+          allowPrivilegeEscalation: false,
+          readOnlyRootFilesystem: true,
+          runAsNonRoot: true,
+          runAsUser: 1000,
+          runAsGroup: 1000,
+          capabilities: { drop: ['ALL'] },
+        },
+        resources: {
+          requests: { cpu: '5m', memory: '12Mi' },
+          limits: { cpu: '100m', memory: '64Mi' },
+        },
+        volumeMounts: [{ name: 'data', mountPath }],
+        ...(keepRunning ? {
+          readinessProbe: {
+            exec: { command: ['node', '-e', `require('fs').accessSync('${mountPath}/probe')`] },
+            periodSeconds: 1,
+            timeoutSeconds: 1,
+            failureThreshold: 120,
+          },
+        } : {}),
+      }],
+      volumes: [{ name: 'data', persistentVolumeClaim: { claimName: pvcName } }],
+    },
+  };
+}
+
+function podCondition(pod, type) {
+  return (pod?.status?.conditions || []).find((item) => item.type === type);
+}
+
+async function waitForVerificationPod(ctx, name, readyOnly = false, timeoutMs = 180000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const pod = await optionalKube(ctx, `/api/v1/namespaces/${VERIFICATION_NAMESPACE}/pods/${encodeURIComponent(name)}`);
+    if (pod?.status?.phase === 'Failed') {
+      const terminated = pod.status?.containerStatuses?.[0]?.state?.terminated;
+      throw error(
+        `검증 Pod/${name} 실패(exit ${terminated?.exitCode ?? 'unknown'}): ${terminated?.message || pod.status?.message || pod.status?.reason || '원인 미확인'}`,
+        502,
+      );
+    }
+    if (readyOnly && pod?.status?.phase === 'Running' && podCondition(pod, 'Ready')?.status === 'True') return pod;
+    if (!readyOnly && pod?.status?.phase === 'Succeeded') return pod;
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  throw error(`검증 Pod/${name} 완료 대기 시간이 초과되었습니다.`, 504);
+}
+
+async function waitForVerificationPvc(ctx, name, timeoutMs = 180000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const pvc = await optionalKube(ctx, `/api/v1/namespaces/${VERIFICATION_NAMESPACE}/persistentvolumeclaims/${encodeURIComponent(name)}`);
+    if (pvc?.status?.phase === 'Bound') return pvc;
+    if (pvc?.status?.phase === 'Lost') throw error(`검증 PVC/${name}이 Lost 상태입니다.`, 502);
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  throw error(`검증 PVC/${name} 바인딩 대기 시간이 초과되었습니다.`, 504);
+}
+
+async function waitUntilRemoved(ctx, apiPath, timeoutMs = 90000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!await optionalKube(ctx, apiPath)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  return false;
+}
+
+async function currentClusterManagerImage(ctx) {
+  const podName = String(process.env.HOSTNAME || '');
+  const namespace = String(process.env.POD_NAMESPACE || 'opensphere-console');
+  if (!podName) throw error('검증 Pod에 사용할 현재 Cluster Manager image를 확인할 수 없습니다.', 500);
+  const pod = await kube(ctx, 'GET', `/api/v1/namespaces/${namespace}/pods/${encodeURIComponent(podName)}`);
+  const image = (pod.spec?.containers || [])
+    .find((item) => ['cluster-manager', 'plugin'].includes(item.name))?.image;
+  if (!image) throw error('현재 Cluster Manager image 참조가 없습니다.', 500);
+  if (!/@sha256:[0-9a-f]{64}$/i.test(image)) {
+    throw error('현재 Cluster Manager image가 immutable digest로 고정되지 않아 검증 Pod 실행을 차단했습니다.', 409);
+  }
+  return image;
+}
+
+async function readySchedulableNodes(ctx) {
+  const list = await kube(ctx, 'GET', '/api/v1/nodes');
+  return (list.items || []).filter((node) => (
+    !node.spec?.unschedulable
+    && node.metadata?.labels?.['kubernetes.io/os'] === 'linux'
+    && !(node.spec?.taints || []).some((taint) => ['NoSchedule', 'NoExecute'].includes(taint.effect))
+    && (node.status?.conditions || []).some((condition) => condition.type === 'Ready' && condition.status === 'True')
+  ));
+}
+
+async function cleanupVerificationResources(ctx, resources) {
+  const errors = [];
+  for (const name of [resources.readerPod, resources.writerPod].filter(Boolean)) {
+    try {
+      await remove(ctx, `/api/v1/namespaces/${VERIFICATION_NAMESPACE}/pods/${encodeURIComponent(name)}`);
+    } catch (failure) {
+      errors.push(`Pod/${name}: ${safeError(failure)}`);
+    }
+  }
+  if (resources.pvcName) {
+    const pvcPath = `/api/v1/namespaces/${VERIFICATION_NAMESPACE}/persistentvolumeclaims/${encodeURIComponent(resources.pvcName)}`;
+    try {
+      await remove(ctx, pvcPath);
+      if (!await waitUntilRemoved(ctx, pvcPath)) errors.push(`PVC/${resources.pvcName}: 삭제 대기 시간 초과`);
+    } catch (failure) {
+      errors.push(`PVC/${resources.pvcName}: ${safeError(failure)}`);
+    }
+  }
+  if (resources.pvName) {
+    const pvPath = `/api/v1/persistentvolumes/${encodeURIComponent(resources.pvName)}`;
+    try {
+      if (!await waitUntilRemoved(ctx, pvPath, 120000)) errors.push(`PV/${resources.pvName}: CSI 볼륨 삭제 대기 시간 초과`);
+    } catch (failure) {
+      errors.push(`PV/${resources.pvName}: ${safeError(failure)}`);
+    }
+  }
+  if (resources.temporaryStorageClassName) {
+    try {
+      await remove(ctx, `/apis/storage.k8s.io/v1/storageclasses/${encodeURIComponent(resources.temporaryStorageClassName)}`);
+    } catch (failure) {
+      errors.push(`StorageClass/${resources.temporaryStorageClassName}: ${safeError(failure)}`);
+    }
+  }
+  return {
+    state: errors.length ? 'Required' : 'Clean',
+    checkedAt: new Date().toISOString(),
+    errors,
+    resources: {
+      storageClass: resources.temporaryStorageClassName || '',
+      pvc: resources.pvcName || '',
+      pv: resources.pvName || '',
+      pods: [resources.writerPod, resources.readerPod].filter(Boolean),
+    },
+  };
 }
 
 async function selfCanI(ctx, verb, group, resource, namespace = '', name = '') {
@@ -790,6 +1389,57 @@ async function selfCanI(ctx, verb, group, resource, namespace = '', name = '') {
     });
     return Boolean(review.status?.allowed);
   } catch { return false; }
+}
+
+async function verificationRuntimePrerequisites(ctx, force = false) {
+  if (!force && verificationRuntimeCache.value && verificationRuntimeCache.expiresAt > Date.now()) {
+    return verificationRuntimeCache.value;
+  }
+  let namespace = null;
+  let namespaceError = '';
+  try {
+    namespace = await optionalKube(ctx, `/api/v1/namespaces/${VERIFICATION_NAMESPACE}`);
+  } catch (failure) {
+    namespaceError = safeError(failure);
+  }
+  const consoleNamespace = String(process.env.POD_NAMESPACE || 'opensphere-console');
+  const specs = [
+    ...['get', 'create', 'update', 'delete'].map((verb) => [verb, '', 'configmaps', VERIFICATION_NAMESPACE]),
+    ...['get', 'create', 'delete'].flatMap((verb) => [
+      [verb, '', 'pods', VERIFICATION_NAMESPACE],
+      [verb, '', 'persistentvolumeclaims', VERIFICATION_NAMESPACE],
+    ]),
+    ['get', '', 'pods', consoleNamespace],
+    ['list', '', 'nodes', ''],
+    ['get', '', 'persistentvolumes', ''],
+    ...['get', 'create', 'delete'].map((verb) => [verb, 'storage.k8s.io', 'storageclasses', '']),
+  ];
+  const permissions = await Promise.all(specs.map(async ([verb, group, resource, targetNamespace]) => ({
+    verb,
+    group,
+    resource,
+    namespace: targetNamespace,
+    allowed: await selfCanI(ctx, verb, group, resource, targetNamespace),
+  })));
+  const missingPermissions = permissions
+    .filter((item) => !item.allowed)
+    .map((item) => `${item.verb} ${item.group || 'core'}/${item.resource}${item.namespace ? ` namespace=${item.namespace}` : ''}`);
+  const blockers = [];
+  if (!namespace) {
+    blockers.push(namespaceError
+      ? `Namespace/${VERIFICATION_NAMESPACE} readiness check failed: ${namespaceError}`
+      : `Namespace/${VERIFICATION_NAMESPACE} is not installed`);
+  }
+  if (missingPermissions.length) blockers.push(`verification RBAC is incomplete: ${missingPermissions.join('; ')}`);
+  const value = {
+    ready: blockers.length === 0,
+    namespace: Boolean(namespace),
+    missingPermissions,
+    blockers,
+  };
+  verificationRuntimeCache.value = value;
+  verificationRuntimeCache.expiresAt = Date.now() + 5 * 60 * 1000;
+  return value;
 }
 
 async function cephOwnerPrerequisites(ctx) {
@@ -1171,7 +1821,7 @@ async function cephStatus(ctx) {
     return { state: 'Blocked', reason: 'KubernetesUnavailable', checkedAt: new Date().toISOString(), kubernetes: { ready: false }, connection: null, providerGuide: providerGuide(), message: safeError(e) };
   }
 
-  const [metadataConfig, monitorConfig, cephCluster, storageClasses, csiDrivers, cephSecrets, operator, cluster] = await Promise.all([
+  const [metadataConfig, monitorConfig, cephCluster, storageClasses, csiDrivers, cephSecrets, operator, cluster, verificationStore, verificationRuntime] = await Promise.all([
     optionalKube(ctx, `/api/v1/namespaces/${NAMESPACE}/configmaps/${CONNECTION_CONFIGMAP}`),
     optionalKube(ctx, `/api/v1/namespaces/${NAMESPACE}/configmaps/rook-ceph-mon-endpoints`),
     optionalKube(ctx, `/apis/ceph.rook.io/v1/namespaces/${NAMESPACE}/cephclusters/${NAMESPACE}`),
@@ -1180,6 +1830,8 @@ async function cephStatus(ctx) {
     kube(ctx, 'GET', `/api/v1/namespaces/${NAMESPACE}/secrets`),
     helmStatus(ctx, OPERATOR_RELEASE, NAMESPACE, true),
     helmStatus(ctx, CLUSTER_RELEASE, NAMESPACE, true),
+    readVerificationStore(ctx),
+    verificationRuntimePrerequisites(ctx),
   ]);
   const metadata = parseMetadata(metadataConfig);
   const wantedClasses = new Set(metadata?.storageClasses || []);
@@ -1189,8 +1841,9 @@ async function cephStatus(ctx) {
   const drivers = driverItems.map((item) => item.metadata.name);
   const serviceCoverage = cephStorageServiceDiagnostics(
     driverItems,
-    allClasses,
+    allClasses.filter(isManagedConsumerStorageClass),
     cephSecrets.items || [],
+    verificationStore.history,
   );
   const conditionReady = (cephCluster?.status?.conditions || []).some((condition) => condition.type === 'Ready' && condition.status === 'True');
   const connected = conditionReady || cephCluster?.status?.state === 'Connected' || cephCluster?.status?.phase === 'Connected';
@@ -1203,7 +1856,7 @@ async function cephStatus(ctx) {
     if (connected && drivers.length && classes.length === wantedClasses.size) {
       state = 'Ready'; reason = 'ExternalCephConnected';
       message = serviceCoverage.needsConfiguration === 0
-        ? `외부 Ceph 연결은 정상이며 CSI 스토리지 ${serviceCoverage.configured}/${serviceCoverage.installed}종의 구성 참조가 확인되었습니다. 실제 PVC 데이터 경로 검증은 별도 기록이 필요합니다.`
+        ? `외부 Ceph 연결은 정상이며 CSI 스토리지 ${serviceCoverage.configured}/${serviceCoverage.installed}종이 구성되었습니다. 최근 실제 PVC 데이터 경로 검증은 ${serviceCoverage.ready}/${serviceCoverage.installed}종이 사용 가능 상태입니다.`
         : `외부 Ceph 연결은 정상이며 CSI 스토리지 ${serviceCoverage.configured}/${serviceCoverage.installed}종이 구성되었습니다. 미구성 서비스를 확인하십시오.`;
     } else {
       state = 'Degraded'; reason = 'ExternalCephNotReady'; message = '외부 Ceph 연결 리소스가 존재하지만 CephCluster/CSI가 아직 Ready가 아닙니다.';
@@ -1214,6 +1867,14 @@ async function cephStatus(ctx) {
     connection: statusConnectionProjection(metadata, monitorConfig, allClasses, cephSecrets.items || []),
     rook: { operator, cluster, cephCluster: cephCluster ? { state: cephCluster.status?.state || cephCluster.status?.phase || 'Unknown', health: cephCluster.status?.ceph?.health || 'Unknown' } : null },
     csi: { drivers, storageClasses: classes, serviceCoverage },
+    dataPathVerification: {
+      available: verificationStore.available && verificationRuntime.ready,
+      reason: !verificationRuntime.ready ? 'VerificationRuntimePrerequisitesMissing' : verificationStore.reason,
+      message: !verificationRuntime.ready ? verificationRuntime.blockers.join(' · ') : verificationStore.message,
+      ttlHours: VERIFICATION_TTL_MS / (60 * 60 * 1000),
+      history: verificationStore.history,
+      runtime: verificationRuntime,
+    },
     importCleanup: { ...importCleanupHealth },
   };
 }
@@ -1418,6 +2079,349 @@ async function auditedChange(ctx, actor, action, reason, metadata, correlationId
   }
   await auditTerminal(ctx, actor, action, terminalResult, reason, metadata, correlationId);
   return value;
+}
+
+async function executeCephDataPathVerification(ctx, actor, record, sourceStorageClass, lockName) {
+  const resources = verificationResources(record);
+  let functionalFailure = null;
+  let outcomeMessage = '';
+  let nodes = [];
+  const payload = `opensphere-ceph-${record.serviceId}-${crypto.randomUUID()}`;
+  const checksum = crypto.createHash('sha256').update(payload).digest('hex');
+  try {
+    record = {
+      ...record,
+      phase: 'Running',
+      progress: 10,
+      message: 'Delete 정책의 격리된 임시 StorageClass와 PVC를 준비하고 있습니다.',
+      updatedAt: new Date().toISOString(),
+      checksum,
+    };
+    await writeVerificationRecord(ctx, record);
+    const image = await currentClusterManagerImage(ctx);
+    if (record.serviceId === 'cephfs') {
+      nodes = await readySchedulableNodes(ctx);
+      if (nodes.length < 2) {
+        throw error('CephFS RWX 검증에는 서로 다른 Ready·schedulable Kubernetes 노드가 2개 이상 필요합니다.', 409);
+      }
+    }
+    await kube(
+      ctx,
+      'POST',
+      '/apis/storage.k8s.io/v1/storageclasses',
+      verificationTemporaryStorageClass(sourceStorageClass, record),
+    );
+    await kube(
+      ctx,
+      'POST',
+      `/api/v1/namespaces/${VERIFICATION_NAMESPACE}/persistentvolumeclaims`,
+      verificationPvc(record, resources.temporaryStorageClassName),
+    );
+    const writer = verificationPod(
+      record,
+      resources.pvcName,
+      image,
+      'writer',
+      checksum,
+      payload,
+      nodes[0]?.metadata?.name || '',
+    );
+    await kube(ctx, 'POST', `/api/v1/namespaces/${VERIFICATION_NAMESPACE}/pods`, writer);
+    record = {
+      ...record,
+      progress: 35,
+      message: record.serviceId === 'cephfs'
+        ? '첫 번째 노드에서 CephFS PVC를 마운트하고 검증 데이터를 쓰고 있습니다.'
+        : 'RBD PVC를 동적 생성·마운트하고 검증 데이터를 읽고 쓰고 있습니다.',
+      updatedAt: new Date().toISOString(),
+    };
+    await writeVerificationRecord(ctx, record);
+    const writerResult = await waitForVerificationPod(
+      ctx,
+      resources.writerPod,
+      record.serviceId === 'cephfs',
+    );
+    const pvc = await waitForVerificationPvc(ctx, resources.pvcName);
+    resources.pvName = String(pvc.spec?.volumeName || '');
+    const writerNode = String(writerResult.spec?.nodeName || nodes[0]?.metadata?.name || '');
+    if (record.serviceId === 'cephfs') {
+      const readerNode = String(nodes.find((node) => node.metadata?.name !== writerNode)?.metadata?.name || '');
+      if (!readerNode) throw error('CephFS reader를 실행할 두 번째 Kubernetes 노드를 선택하지 못했습니다.', 409);
+      const reader = verificationPod(
+        record,
+        resources.pvcName,
+        image,
+        'reader',
+        checksum,
+        '',
+        readerNode,
+      );
+      await kube(ctx, 'POST', `/api/v1/namespaces/${VERIFICATION_NAMESPACE}/pods`, reader);
+      record = {
+        ...record,
+        progress: 70,
+        message: `서로 다른 노드 ${writerNode} → ${readerNode}에서 CephFS RWX 데이터 무결성을 확인하고 있습니다.`,
+        updatedAt: new Date().toISOString(),
+      };
+      await writeVerificationRecord(ctx, record);
+      await waitForVerificationPod(ctx, resources.readerPod);
+      nodes = [writerNode, readerNode];
+      outcomeMessage = `CephFS PVC ${resources.pvName || resources.pvcName}를 ${writerNode}·${readerNode} 두 노드에 동시에 마운트해 RWX 쓰기·읽기와 SHA-256 무결성을 확인했습니다.`;
+    } else {
+      nodes = [writerNode].filter(Boolean);
+      outcomeMessage = `RBD PVC ${resources.pvName || resources.pvcName}의 동적 provision·마운트·쓰기·읽기와 SHA-256 무결성을 확인했습니다.`;
+    }
+  } catch (failure) {
+    functionalFailure = failure;
+  }
+
+  record = {
+    ...record,
+    phase: 'Cleaning',
+    progress: 90,
+    message: '검증 Pod·PVC·PV와 Delete 정책의 임시 StorageClass를 정리하고 있습니다.',
+    updatedAt: new Date().toISOString(),
+  };
+  try { await writeVerificationRecord(ctx, record); }
+  catch (failure) { console.warn(`[ceph-verification] cleaning state not stored id=${record.id}: ${safeError(failure)}`); }
+
+  const cleanup = await cleanupVerificationResources(ctx, resources);
+  const finishedAt = new Date().toISOString();
+  const passed = !functionalFailure;
+  record = {
+    ...record,
+    phase: passed ? 'Passed' : 'Failed',
+    progress: 100,
+    message: passed ? outcomeMessage : '실제 PVC 데이터 경로 검증에 실패했습니다.',
+    error: passed ? '' : safeError(functionalFailure),
+    nodes,
+    pvName: resources.pvName,
+    verifiedAt: passed ? finishedAt : null,
+    expiresAt: passed ? new Date(Date.now() + VERIFICATION_TTL_MS).toISOString() : null,
+    cleanup,
+    updatedAt: finishedAt,
+    finishedAt,
+  };
+
+  let recordStored = true;
+  try {
+    await writeVerificationRecord(ctx, record);
+  } catch (failure) {
+    recordStored = false;
+    console.error(`[ceph-verification] terminal state not stored id=${record.id}: ${safeError(failure)}`);
+  }
+  const result = passed ? (cleanup.state === 'Clean' ? 'succeeded' : 'cleanup-required') : 'failed';
+  const terminalMetadata = {
+    serviceId: record.serviceId,
+    storageClassName: record.storageClassName,
+    verificationId: record.id,
+    configurationFingerprint: record.configurationFingerprint,
+    nodes,
+    pvName: resources.pvName,
+    cleanupState: cleanup.state,
+    recordStored,
+    ...(functionalFailure ? { error: safeError(functionalFailure) } : {}),
+  };
+  try {
+    await recordDurableOperation(
+      ctx,
+      actor,
+      'CephDataPathVerification',
+      result,
+      record.reason,
+      terminalMetadata,
+      record.correlationId,
+    );
+  } catch (failure) {
+    console.warn(`[ceph-verification] durable terminal mirror unavailable id=${record.id}: ${safeError(failure)}`);
+  }
+  await auditTerminal(
+    ctx,
+    actor,
+    'CephDataPathVerification',
+    result,
+    record.reason,
+    terminalMetadata,
+    record.correlationId,
+  );
+  try {
+    await ctx.publishNotify({
+      userActor: actor.username,
+      action: 'CephDataPathVerification',
+      target: `StorageClass/${record.storageClassName}`,
+      result,
+      reason: passed
+        ? `${record.reason} · ${outcomeMessage}${cleanup.state === 'Clean' ? '' : ` · 정리 필요: ${cleanup.errors.join('; ')}`}`
+        : `${record.reason} · ${safeError(functionalFailure)}`,
+    });
+  } catch { /* best effort notification */ }
+  const lockPath = `/api/v1/namespaces/${VERIFICATION_NAMESPACE}/configmaps/${encodeURIComponent(lockName)}`;
+  if (cleanup.state === 'Clean') {
+    try {
+      await remove(ctx, lockPath);
+    } catch (failure) {
+      console.warn(`[ceph-verification] lock cleanup failed id=${record.id}: ${safeError(failure)}`);
+    }
+  } else {
+    try {
+      const lock = await optionalKube(ctx, lockPath);
+      if (lock) {
+        lock.metadata.annotations = {
+          ...(lock.metadata.annotations || {}),
+          'opensphere.io/expires-at': new Date(0).toISOString(),
+        };
+        lock.data = { ...(lock.data || {}), pvName: resources.pvName || '' };
+        await kube(ctx, 'PUT', lockPath, lock);
+      }
+    } catch (failure) {
+      console.warn(`[ceph-verification] cleanup-required lock state not stored id=${record.id}: ${safeError(failure)}`);
+    }
+  }
+  return record;
+}
+
+async function startCephDataPathVerification(ctx, req, actor, input) {
+  const body = requireClosedObject(
+    input,
+    ['serviceId', 'storageClassName', 'confirm', 'reason'],
+    'request',
+  );
+  const serviceId = String(body.serviceId || '').trim();
+  if (!['rbd', 'cephfs'].includes(serviceId)) throw error('serviceId는 rbd 또는 cephfs여야 합니다.');
+  const storageClassName = managedStorageClassName(
+    body.storageClassName,
+    serviceId === 'rbd' ? 'ceph-rbd' : 'cephfs',
+    '검증 StorageClass 이름',
+  );
+  const expectedConfirm = `verify Ceph ${serviceId} data path using StorageClass/${storageClassName}`;
+  if (String(body.confirm || '') !== expectedConfirm) {
+    throw error(`데이터 경로 검증 확인 값으로 '${expectedConfirm}'를 입력해야 합니다.`);
+  }
+  const reason = reasonFrom(body);
+  const [store, runtime] = await Promise.all([
+    readVerificationStore(ctx),
+    verificationRuntimePrerequisites(ctx, true),
+  ]);
+  if (!store.available || !runtime.ready) {
+    throw error(`Ceph 데이터 경로 검증 runtime을 사용할 수 없습니다: ${[store.message, ...runtime.blockers].filter(Boolean).join(' · ')}`, 409);
+  }
+  const [sourceStorageClass, csiDrivers, cephSecrets] = await Promise.all([
+    optionalKube(ctx, `/apis/storage.k8s.io/v1/storageclasses/${encodeURIComponent(storageClassName)}`),
+    kube(ctx, 'GET', '/apis/storage.k8s.io/v1/csidrivers'),
+    kube(ctx, 'GET', `/api/v1/namespaces/${NAMESPACE}/secrets`),
+  ]);
+  if (!sourceStorageClass) throw error(`StorageClass/${storageClassName}을 찾지 못했습니다.`, 404);
+  if (!isManagedConsumerStorageClass(sourceStorageClass)) {
+    throw error(`StorageClass/${storageClassName}은 OpenSphere가 소유한 외부 Ceph consumer StorageClass가 아닙니다.`, 409);
+  }
+  const coverage = cephStorageServiceDiagnostics(
+    csiDrivers.items || [],
+    [sourceStorageClass],
+    cephSecrets.items || [],
+    store.history,
+  );
+  const service = coverage.services.find((item) => item.id === serviceId);
+  const storage = service?.storageClasses?.find((item) => item.name === storageClassName);
+  if (!service?.driverInstalled || !storage?.configurationReady) {
+    throw error(`StorageClass/${storageClassName}의 CSI 드라이버·Secret·필수 parameter 구성이 완료되지 않았습니다.`, 409);
+  }
+  const id = crypto.randomUUID();
+  const correlationId = correlationFrom(req);
+  const now = new Date().toISOString();
+  const record = {
+    schemaVersion: 1,
+    id,
+    correlationId,
+    serviceId,
+    storageClassName,
+    configurationFingerprint: storage.configurationFingerprint,
+    phase: 'Queued',
+    progress: 5,
+    message: '데이터 경로 검증 작업이 대기열에 등록되었습니다.',
+    error: '',
+    actor: actor.username,
+    reason,
+    nodes: [],
+    pvName: '',
+    checksum: '',
+    verifiedAt: null,
+    expiresAt: null,
+    cleanup: { state: 'Pending', checkedAt: null, errors: [], resources: {} },
+    startedAt: now,
+    updatedAt: now,
+    finishedAt: null,
+  };
+  const auditMetadata = {
+    serviceId,
+    storageClassName,
+    verificationId: id,
+    configurationFingerprint: record.configurationFingerprint,
+    mode: serviceId === 'cephfs' ? 'RWXCrossNode' : 'RWOReadWrite',
+  };
+  await auditRequired(
+    ctx,
+    actor,
+    'CephDataPathVerification',
+    reason,
+    auditMetadata,
+    correlationId,
+  );
+  await recordDurableOperation(
+    ctx,
+    actor,
+    'CephDataPathVerification',
+    'requested',
+    reason,
+    auditMetadata,
+    correlationId,
+  );
+  let lockName = '';
+  try {
+    lockName = await acquireVerificationLock(ctx, record);
+    await writeVerificationRecord(ctx, record);
+  } catch (failure) {
+    if (lockName) {
+      await remove(
+        ctx,
+        `/api/v1/namespaces/${VERIFICATION_NAMESPACE}/configmaps/${encodeURIComponent(lockName)}`,
+      ).catch(() => null);
+    }
+    try {
+      await recordDurableOperation(
+        ctx,
+        actor,
+        'CephDataPathVerification',
+        'failed',
+        reason,
+        { ...auditMetadata, error: safeError(failure) },
+        correlationId,
+      );
+    } catch { /* terminal audit below remains authoritative */ }
+    await auditTerminal(
+      ctx,
+      actor,
+      'CephDataPathVerification',
+      'failed',
+      reason,
+      { ...auditMetadata, error: safeError(failure) },
+      correlationId,
+    );
+    throw failure;
+  }
+  void executeCephDataPathVerification(
+    ctx,
+    actor,
+    record,
+    sourceStorageClass,
+    lockName,
+  ).catch((failure) => {
+    console.error(`[ceph-verification] unhandled execution failure id=${id}: ${safeError(failure)}`);
+  });
+  return {
+    accepted: true,
+    operation: record,
+    pollPath: '/api/ceph/oaa/status',
+  };
 }
 
 async function installConnection(ctx, connection, actor) {
@@ -1870,13 +2874,34 @@ function createCephManager(ctx) {
     try {
       if (req.method === 'GET' && pathname === '/api/ceph/oaa/capabilities') {
         await actorForOaaOwner(ctx, req, false);
-        const prerequisites = await cephOwnerPrerequisites(ctx);
+        const [prerequisites, verificationStore, verificationRuntime] = await Promise.all([
+          cephOwnerPrerequisites(ctx),
+          readVerificationStore(ctx),
+          verificationRuntimePrerequisites(ctx),
+        ]);
         const capabilities = ['status-read'];
         if (prerequisites.ready) capabilities.push('import-stage', 'plan-from-import', 'connect-from-import', 'monitoring-update', 'disconnect');
+        if (verificationStore.available && verificationRuntime.ready) capabilities.push('data-path-verify');
         ctx.jsonRes(res, 200, {
           apiVersion: 'opensphere.io/oaa-ceph-owner/v1', capabilities,
           secretInputPolicy: 'StagedSecretRefOnly', mutationAssurance: 'aal2', prerequisites,
+          dataPathVerification: {
+            ...verificationStore,
+            available: verificationStore.available && verificationRuntime.ready,
+            runtime: verificationRuntime,
+          },
         });
+        return true;
+      }
+      if (req.method === 'POST' && pathname === '/api/ceph/oaa/verifications') {
+        const actor = await actorForOaaOwner(ctx, req, true);
+        const accepted = await startCephDataPathVerification(
+          ctx,
+          req,
+          actor,
+          await readJson(req),
+        );
+        ctx.jsonRes(res, 202, accepted);
         return true;
       }
       if (req.method === 'GET' && pathname === '/api/ceph/oaa/status') {
@@ -2081,6 +3106,12 @@ module.exports = {
   validateMonitoringUrl,
   validateCephFsInput,
   cephStorageServiceDiagnostics,
+  storageClassVerificationFingerprint,
+  verificationEvidenceFor,
+  verificationTemporaryStorageClass,
+  verificationPvc,
+  verificationPod,
+  parseVerificationHistory,
   planFor,
   storageClassManifest,
   snapshotClassManifest,

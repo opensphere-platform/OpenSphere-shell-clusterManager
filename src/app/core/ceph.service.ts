@@ -62,6 +62,19 @@ export interface CephStatus {
     storageClasses: Array<{ name: string; provisioner: string; reclaimPolicy: string }>;
     serviceCoverage?: CephServiceCoverage;
   };
+  dataPathVerification?: {
+    available: boolean;
+    reason: string;
+    message: string;
+    ttlHours: number;
+    history: CephDataPathVerificationRecord[];
+    runtime?: {
+      ready: boolean;
+      namespace: boolean;
+      missingPermissions: string[];
+      blockers: string[];
+    };
+  };
   importCleanup?: {
     totalFailures: number;
     consecutiveFailures: number;
@@ -82,6 +95,51 @@ export interface CephStatus {
   };
 }
 
+export type CephVerificationPhase = 'Queued' | 'Running' | 'Cleaning' | 'Passed' | 'Failed';
+export type CephVerificationState =
+  | 'NotVerified'
+  | 'VerificationRunning'
+  | 'Verified'
+  | 'CleanupRequired'
+  | 'VerificationFailed'
+  | 'VerificationFailedCleanupRequired'
+  | 'VerificationExpired'
+  | 'VerificationStale';
+
+export interface CephDataPathVerificationRecord {
+  schemaVersion: number;
+  id: string;
+  correlationId: string;
+  serviceId: 'rbd' | 'cephfs';
+  storageClassName: string;
+  configurationFingerprint: string;
+  phase: CephVerificationPhase;
+  progress: number;
+  message: string;
+  error: string;
+  actor: string;
+  reason: string;
+  nodes: string[];
+  pvName: string;
+  checksum: string;
+  verifiedAt: string | null;
+  expiresAt: string | null;
+  cleanup: {
+    state: 'Pending' | 'Clean' | 'Required';
+    checkedAt: string | null;
+    errors: string[];
+    resources: {
+      storageClass?: string;
+      pvc?: string;
+      pv?: string;
+      pods?: string[];
+    };
+  };
+  startedAt: string;
+  updatedAt: string;
+  finishedAt: string | null;
+}
+
 export interface CephStorageService {
   id: 'rbd' | 'cephfs';
   name: string;
@@ -92,7 +150,17 @@ export interface CephStorageService {
   verified: boolean;
   verifiedAt: string | null;
   ready: boolean;
-  state: 'ConfiguredUnverified' | 'NeedsConfiguration' | 'NotInstalled';
+  state:
+    | 'ConfiguredUnverified'
+    | 'NeedsConfiguration'
+    | 'NotInstalled'
+    | 'VerificationRunning'
+    | 'Verified'
+    | 'CleanupRequired'
+    | 'VerificationFailed'
+    | 'VerificationExpired'
+    | 'VerificationStale';
+  latestVerification: CephDataPathVerificationRecord | null;
   storageClasses: Array<{
     name: string;
     provisioner: string;
@@ -104,6 +172,9 @@ export interface CephStorageService {
     missingSecrets: string[];
     missingSecretFields: string[];
     configurationReady: boolean;
+    configurationFingerprint: string;
+    verificationState: CephVerificationState;
+    latestVerification: CephDataPathVerificationRecord | null;
     verified: boolean;
     verifiedAt: string | null;
     ready: boolean;
@@ -120,7 +191,13 @@ export interface CephServiceCoverage {
   verified: number;
   ready: number;
   needsConfiguration: number;
-  state: 'ConfiguredUnverified' | 'NeedsConfiguration';
+  state:
+    | 'ConfiguredUnverified'
+    | 'NeedsConfiguration'
+    | 'VerificationRunning'
+    | 'Verified'
+    | 'CleanupRequired'
+    | 'VerificationFailed';
   services: CephStorageService[];
 }
 
@@ -344,6 +421,17 @@ export class CephService {
       reason,
       confirm: 'configure CephFS storage service',
     });
+  }
+  verifyDataPath(
+    serviceId: 'rbd' | 'cephfs',
+    storageClassName: string,
+    reason: string,
+  ): Observable<{ accepted: boolean; operation: CephDataPathVerificationRecord; pollPath: string }> {
+    const confirm = `verify Ceph ${serviceId} data path using StorageClass/${storageClassName}`;
+    return this.http.post<{ accepted: boolean; operation: CephDataPathVerificationRecord; pollPath: string }>(
+      this.url('oaa/verifications'),
+      { serviceId, storageClassName, reason, confirm },
+    );
   }
   updateMonitoringUrl(monitoringUrl: string, reason: string): Observable<{ ok: boolean; status: CephStatus; correlationId: string }> {
     return this.http.post<{ ok: boolean; status: CephStatus; correlationId: string }>(this.url('oaa/monitoring'), {

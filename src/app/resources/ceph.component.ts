@@ -2,7 +2,7 @@ import { CommonModule } from '@angular/common';
 import { Component, OnDestroy, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ClarityModule } from '@clr/angular';
-import { CEPH_DEFAULT_MONITORING_URL, CEPH_PROVIDER_GUIDE, CephConnectionInput, CephFsConfigurationInput, CephInsights, CephPlan, CephPrerequisiteRequest, CephProviderGuide, CephService, CephStatus, CephStorageService } from '../core/ceph.service';
+import { CEPH_DEFAULT_MONITORING_URL, CEPH_PROVIDER_GUIDE, CephConnectionInput, CephDataPathVerificationRecord, CephFsConfigurationInput, CephInsights, CephPlan, CephPrerequisiteRequest, CephProviderGuide, CephService, CephStatus, CephStorageService } from '../core/ceph.service';
 import { CephInsightsComponent } from './ceph-insights.component';
 
 @Component({
@@ -40,7 +40,7 @@ import { CephInsightsComponent } from './ceph-insights.component';
       <clr-tab>
         <button clrTabLink type="button" (click)="selectTab('services')">스토리지 서비스
           <span *ngIf="status()?.csi?.serviceCoverage as coverage" class="label"
-                [class.label-warning]="coverage.needsConfiguration > 0 || coverage.verified < coverage.configured">{{ coverage.configured }}/{{ coverage.installed }} 구성 · {{ coverage.verified ? coverage.verified + ' 검증' : '실제 검증 없음' }}</span>
+                [class.label-warning]="coverage.needsConfiguration > 0 || coverage.ready < coverage.configured">{{ coverage.configured }}/{{ coverage.installed }} 구성 · {{ coverage.ready }}/{{ coverage.installed }} 사용 가능</span>
         </button>
         <clr-tab-content *clrIfActive></clr-tab-content>
       </clr-tab>
@@ -50,6 +50,12 @@ import { CephInsightsComponent } from './ceph-insights.component';
     </clr-alert>
 
     <ng-container *ngIf="activeTab() === 'connection' || activeTab() === 'services'">
+    <clr-alert *ngIf="activeTab() === 'services' && error()" [clrAlertType]="'danger'" [clrAlertClosable]="false">
+      <clr-alert-item><span class="alert-text">{{ error() }}</span></clr-alert-item>
+    </clr-alert>
+    <clr-alert *ngIf="activeTab() === 'services' && notice()" [clrAlertType]="'success'" [clrAlertClosable]="true" (clrAlertClosedChange)="notice.set('')">
+      <clr-alert-item><span class="alert-text">{{ notice() }}</span></clr-alert-item>
+    </clr-alert>
     <ng-container *ngIf="activeTab() === 'connection'">
     <clr-alert *ngIf="error()" [clrAlertType]="'danger'" [clrAlertClosable]="false">
       <clr-alert-item><span class="alert-text">{{ error() }}</span></clr-alert-item>
@@ -227,15 +233,22 @@ import { CephInsightsComponent } from './ceph-insights.component';
         <strong>구성 보완 필요</strong>
         <span>설치된 서비스 {{ coverage.installed }}종 중 {{ coverage.needsConfiguration }}종은 Ceph 제공 정보 또는 Kubernetes 구성이 없어 아직 사용할 수 없습니다.</span>
       </div>
+      <div *ngIf="status()?.dataPathVerification?.available === false" class="service-warning" role="alert">
+        <strong>검증 실행기 준비 필요</strong>
+        <div>
+          <span>{{ status()?.dataPathVerification?.message }} 보안 업데이트된 Ceph runtime chart를 적용한 뒤 다시 검사하십시오.</span>
+          <button class="btn btn-sm btn-outline" type="button" (click)="openPrerequisiteInstall('data-path-verification-runtime')">검증 실행기 설치 요청</button>
+        </div>
+      </div>
 
       <div class="service-grid">
-        <article *ngFor="let service of coverage.services" class="service-card" [class.service-ready]="service.verified" [class.service-gap]="service.driverInstalled && !service.configured">
+        <article *ngFor="let service of coverage.services" class="service-card" [class.service-ready]="service.ready" [class.service-gap]="service.driverInstalled && !service.configured">
           <div class="storage-service-header">
             <div class="service-identity">
               <img [src]="cephLogo" alt="" width="30" height="30" />
               <div><h3>{{ service.name }}</h3><p>{{ service.description }}</p></div>
             </div>
-            <span class="service-state" [class.ready]="service.verified" [class.gap]="service.driverInstalled && !service.configured">
+            <span class="service-state" [class.ready]="service.ready" [class.gap]="service.driverInstalled && (!service.configured || service.state === 'CleanupRequired' || service.state === 'VerificationFailed')">
               {{ serviceStateLabel(service) }}
             </span>
           </div>
@@ -243,7 +256,7 @@ import { CephInsightsComponent } from './ceph-insights.component';
           <ol class="service-checkpoints" aria-label="서비스 준비 단계">
             <li [class.complete]="service.driverInstalled"><span>1</span><strong>CSI 드라이버</strong><small>{{ service.driverInstalled ? '설치됨' : '미설치' }}</small></li>
             <li [class.complete]="service.configured"><span>2</span><strong>StorageClass</strong><small>{{ service.configured ? '구성됨' : '미구성' }}</small></li>
-            <li [class.complete]="service.verified"><span>3</span><strong>데이터 경로 검증</strong><small>{{ service.verified ? '검증 기록 있음' : '미검증' }}</small></li>
+            <li [class.complete]="service.ready"><span>3</span><strong>데이터 경로 검증</strong><small>{{ verificationCheckpointLabel(service) }}</small></li>
           </ol>
 
           <div *ngIf="service.storageClasses.length" class="service-class-list">
@@ -256,6 +269,23 @@ import { CephInsightsComponent } from './ceph-insights.component';
           <div *ngIf="service.blockers.length" class="service-blockers">
             <strong>현재 부족한 구성</strong>
             <ul><li *ngFor="let blocker of service.blockers">{{ blocker }}</li></ul>
+          </div>
+
+          <div *ngIf="service.configured" class="service-verification">
+            <dl *ngIf="service.latestVerification as verification">
+              <dt>최근 실행</dt><dd>{{ verification.updatedAt | date:'yyyy-MM-dd HH:mm:ss' }}</dd>
+              <dt>결과</dt><dd>{{ verificationPhaseLabel(verification) }}</dd>
+              <dt *ngIf="verification.nodes.length">노드</dt><dd *ngIf="verification.nodes.length">{{ verification.nodes.join(' → ') }}</dd>
+              <dt *ngIf="verification.error">실패 원인</dt><dd *ngIf="verification.error" class="verification-error">{{ verification.error }}</dd>
+              <dt *ngIf="verification.cleanup.state === 'Required'">정리 상태</dt>
+              <dd *ngIf="verification.cleanup.state === 'Required'" class="verification-error">{{ verification.cleanup.errors.join(' · ') }}</dd>
+            </dl>
+            <p *ngIf="!service.latestVerification">아직 실제 PVC를 생성·마운트한 검증 이력이 없습니다.</p>
+            <button class="btn btn-sm btn-primary" type="button"
+              [disabled]="busy() || service.state === 'VerificationRunning' || status()?.dataPathVerification?.available !== true"
+              (click)="openDataPathVerification(service)">
+              {{ service.state === 'VerificationRunning' ? '검증 진행 중' : '데이터 경로 검증' }}
+            </button>
           </div>
 
           <section *ngIf="service.driverInstalled && !service.configured" class="provider-request">
@@ -289,7 +319,28 @@ import { CephInsightsComponent } from './ceph-insights.component';
           <p class="service-next"><strong>다음 조치:</strong> {{ service.nextAction }}</p>
         </article>
       </div>
-      <p class="verification-note"><strong>판정 범위:</strong> CSI 드라이버 등록, StorageClass 필수 값과 참조 Secret을 확인합니다. 실제 읽기·쓰기 mount 검증은 테스트 PVC 또는 업무 PVC를 생성한 시점에 별도 이력으로 남겨야 합니다.</p>
+      <section *ngIf="verificationHistory().length" class="verification-history">
+        <div class="verification-history-head">
+          <div><h3>데이터 경로 검증 이력</h3><p>최근 {{ status()?.dataPathVerification?.ttlHours || 24 }}시간 안에 성공했고 현재 구성 지문과 일치하는 결과만 사용 가능으로 판정합니다.</p></div>
+        </div>
+        <clr-datagrid>
+          <clr-dg-column>서비스</clr-dg-column>
+          <clr-dg-column>StorageClass</clr-dg-column>
+          <clr-dg-column>결과</clr-dg-column>
+          <clr-dg-column>검증 시각</clr-dg-column>
+          <clr-dg-column>노드·PV</clr-dg-column>
+          <clr-dg-column>정리</clr-dg-column>
+          <clr-dg-row *ngFor="let verification of verificationHistory()">
+            <clr-dg-cell><strong>{{ verification.serviceId === 'cephfs' ? 'CephFS' : 'RBD' }}</strong></clr-dg-cell>
+            <clr-dg-cell>{{ verification.storageClassName }}</clr-dg-cell>
+            <clr-dg-cell>{{ verificationPhaseLabel(verification) }}</clr-dg-cell>
+            <clr-dg-cell>{{ verification.verifiedAt ? (verification.verifiedAt | date:'yyyy-MM-dd HH:mm:ss') : (verification.updatedAt | date:'yyyy-MM-dd HH:mm:ss') }}</clr-dg-cell>
+            <clr-dg-cell>{{ verification.nodes.join(' → ') || '할당 전' }}<br><small>{{ verification.pvName || 'PV 미확정' }}</small></clr-dg-cell>
+            <clr-dg-cell [class.verification-error]="verification.cleanup.state === 'Required'">{{ verification.cleanup.state === 'Clean' ? '완료' : verification.cleanup.state === 'Required' ? '정리 필요' : '진행 중' }}</clr-dg-cell>
+          </clr-dg-row>
+        </clr-datagrid>
+      </section>
+      <p class="verification-note"><strong>판정 범위:</strong> 실제 읽기·쓰기 mount 검증으로 RBD의 동적 provision·mount·read/write와 CephFS의 서로 다른 두 노드 RWX mount·write/read·SHA-256 무결성을 확인합니다. 검증에는 동일 CSI 설정을 복제한 일회성 Delete StorageClass를 사용하며 기존 Retain StorageClass와 업무 데이터는 변경하지 않습니다.</p>
     </section>
 
     <section class="empty-state" *ngIf="activeTab() === 'services' && !status()?.connection">
@@ -374,9 +425,9 @@ import { CephInsightsComponent } from './ceph-insights.component';
         </clr-alert>
         <h4>한 번에 설치되는 Consumer 구성</h4>
         <ul class="install-scope">
-          <li><code>rook-ceph</code>·<code>opensphere-ceph-imports</code> namespace</li>
+          <li><code>rook-ceph</code>·<code>opensphere-ceph-imports</code>·<code>opensphere-ceph-verification</code> namespace</li>
           <li>CephCluster CRD와 Rook operator/CSI</li>
-          <li>Cluster Manager 전용 최소 권한 RBAC</li>
+          <li>Cluster Manager 전용 최소 권한 RBAC와 검증 namespace 기본 deny NetworkPolicy</li>
           <li>CRD Established·operator Ready 검증 및 변경 영수증</li>
           <li class="scope-elevated">
             <strong>모든 워커 노드</strong>에 호스트 권한 DaemonSet(<code>opensphere-ceph-nbd-preparer</code>) 배치 —
@@ -691,6 +742,48 @@ import { CephInsightsComponent } from './ceph-insights.component';
       </div>
     </clr-modal>
 
+    <clr-modal [(clrModalOpen)]="verificationOpen" [clrModalClosable]="!busy()">
+      <h3 class="modal-title">Ceph 데이터 경로 검증</h3>
+      <div class="modal-body">
+        <clr-alert *ngIf="verificationError()" aria-live="assertive" [clrAlertType]="'danger'" [clrAlertClosable]="false">
+          <clr-alert-item><span class="alert-text"><strong>검증을 시작하지 못했습니다.</strong><br>{{ verificationError() }}</span></clr-alert-item>
+        </clr-alert>
+        <clr-alert [clrAlertType]="'info'" [clrAlertClosable]="false">
+          <clr-alert-item><span class="alert-text">
+            기존 Retain StorageClass와 업무 데이터는 변경하지 않습니다. 같은 CSI parameter를 복제한 일회성 Delete StorageClass에서 64Mi PVC와 제한된 검증 Pod를 생성하고, 완료 후 PVC·PV까지 삭제됐는지 확인합니다.
+          </span></clr-alert-item>
+        </clr-alert>
+        <form clrForm clrLayout="vertical" *ngIf="verificationService as service">
+          <dl class="verification-plan">
+            <dt>서비스</dt><dd>{{ service.name }}</dd>
+            <dt>검증 방식</dt><dd>{{ service.id === 'cephfs' ? '서로 다른 두 노드의 RWX 쓰기·읽기' : 'RWO 동적 생성·마운트·쓰기·읽기' }}</dd>
+            <dt>유효 기간</dt><dd>{{ status()?.dataPathVerification?.ttlHours || 24 }}시간 · 구성 변경 시 즉시 만료</dd>
+          </dl>
+          <clr-select-container>
+            <label>검증할 StorageClass</label>
+            <select clrSelect name="verificationStorageClass" [(ngModel)]="verificationStorageClassName" required>
+              <option *ngFor="let storage of service.storageClasses" [value]="storage.name" [disabled]="!storage.configurationReady">{{ storage.name }}</option>
+            </select>
+          </clr-select-container>
+          <clr-textarea-container>
+            <label>검증 사유</label>
+            <textarea clrTextarea name="verificationReason" [(ngModel)]="verificationReason" required minlength="8" maxlength="500" placeholder="정기 검증, 구성 변경 후 확인 등"></textarea>
+            <clr-control-helper>8자 이상 입력하며 감사 이력에 남습니다.</clr-control-helper>
+          </clr-textarea-container>
+          <label class="scope-consent">
+            <input clrCheckbox type="checkbox" name="verificationAcknowledged" [(ngModel)]="verificationAcknowledged">
+            <span>격리된 임시 PVC·PV와 테스트 데이터가 생성·삭제되며, 정리 실패 시 별도 운영 조치가 필요함을 확인했습니다.</span>
+          </label>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" type="button" [disabled]="busy()" (click)="closeDataPathVerification()">취소</button>
+        <button class="btn btn-primary" type="button"
+          [disabled]="busy() || !verificationStorageClassName || verificationReason.trim().length < 8 || !verificationAcknowledged"
+          (click)="startDataPathVerification()">검증 시작</button>
+      </div>
+    </clr-modal>
+
     <clr-modal [(clrModalOpen)]="disconnectOpen" [clrModalClosable]="!busy()">
       <h3 class="modal-title">외부 Ceph 연결 해제</h3>
       <div class="modal-body">
@@ -826,6 +919,8 @@ import { CephInsightsComponent } from './ceph-insights.component';
     .service-coverage-head p:not(.section-kicker) { margin: 0.18rem 0 0; max-width: 55rem; color: var(--os-text-sec); line-height: 1.45; }
     .section-kicker { margin: 0 0 0.15rem; color: var(--os-brand-500); font-size: 0.6rem; font-weight: 700; letter-spacing: 0.08em; }
     .service-warning { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.65rem; margin-top: 0.8rem; padding: 0.6rem 0.7rem; border-left: 3px solid var(--os-warn-border); background: var(--os-warn-bg); color: var(--os-warn); }
+    .service-warning > div { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.4rem 0.7rem; }
+    .service-warning .btn { margin: 0; }
     .service-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; gap: 0; margin-top: 0.8rem; border: 1px solid var(--os-border); }
     .service-card { min-width: 0; padding: 0.9rem; border: 0; background: var(--os-bg); }
     .service-card + .service-card { border-left: 1px solid var(--os-border); }
@@ -849,6 +944,20 @@ import { CephInsightsComponent } from './ceph-insights.component';
     .service-class-list span { color: var(--os-text-sec); }
     .service-blockers { margin-top: 0.7rem; padding: 0.5rem 0.6rem; border-left: 3px solid var(--os-warn-border); background: var(--os-warn-bg); color: var(--os-warn); }
     .service-blockers ul { margin: 0.3rem 0 0 1rem; padding: 0; }
+    .service-verification { margin-top: 0.7rem; padding-top: 0.65rem; border-top: 1px solid var(--os-border); }
+    .service-verification dl { display: grid; grid-template-columns: 5rem minmax(0, 1fr); gap: 0.22rem 0.55rem; margin: 0 0 0.55rem; }
+    .service-verification dt { color: var(--os-text-dim); font-weight: 600; }
+    .service-verification dd { min-width: 0; overflow-wrap: anywhere; color: var(--os-text-sec); }
+    .service-verification p { margin: 0 0 0.55rem; color: var(--os-text-sec); }
+    .service-verification .btn { margin: 0; }
+    .verification-error { color: var(--os-danger) !important; }
+    .verification-history { margin-top: 0.8rem; padding-top: 0.75rem; border-top: 1px solid var(--os-border); }
+    .verification-history-head h3 { margin: 0; color: var(--os-ink); font-size: 0.86rem; }
+    .verification-history-head p { margin: 0.15rem 0 0.5rem; color: var(--os-text-sec); }
+    .verification-history small { color: var(--os-text-dim); }
+    .verification-plan { display: grid; grid-template-columns: 6rem minmax(0, 1fr); gap: 0.3rem 0.65rem; margin: 0.6rem 0; padding: 0.6rem 0; border-top: 1px solid var(--os-border); border-bottom: 1px solid var(--os-border); }
+    .verification-plan dt { color: var(--os-text-dim); font-weight: 600; }
+    .verification-plan dd { color: var(--os-text-sec); }
     .provider-request { margin-top: 0.7rem; padding-top: 0.7rem; border-top: 1px solid var(--os-border); background: transparent; }
     .provider-request-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.6rem; }
     .provider-request-head > div { display: flex; flex-direction: column; gap: 0.08rem; }
@@ -925,6 +1034,7 @@ import { CephInsightsComponent } from './ceph-insights.component';
       .provider-request-head { flex-direction: column; }
       .provider-request dl { grid-template-columns: 1fr; }
       .service-warning { grid-template-columns: 1fr; }
+      .service-verification dl, .verification-plan { grid-template-columns: 1fr; }
     }
   `],
 })
@@ -969,6 +1079,7 @@ export class CephClustersComponent implements OnInit, OnDestroy {
   readonly monitoringError = signal('');
   readonly monitoringNotice = signal('');
   readonly monitoringCompleted = signal(false);
+  readonly verificationError = signal('');
   readonly step = signal(1);
   readonly prerequisiteRequest = signal<CephPrerequisiteRequest | null>(null);
   readonly prerequisiteError = signal('');
@@ -976,7 +1087,12 @@ export class CephClustersComponent implements OnInit, OnDestroy {
   connectOpen = false;
   cephFsOpen = false;
   monitoringOpen = false;
+  verificationOpen = false;
   disconnectOpen = false;
+  verificationService: CephStorageService | null = null;
+  verificationStorageClassName = '';
+  verificationReason = '';
+  verificationAcknowledged = false;
   prerequisiteReason = '';
   prerequisiteSource = '';
   /** 호스트 권한 DaemonSet 배치에 대한 명시적 동의. 설치 요청 생성의 선행 조건이다. */
@@ -1245,10 +1361,88 @@ export class CephClustersComponent implements OnInit, OnDestroy {
   }
 
   serviceStateLabel(service: CephStorageService): string {
-    if (service.verified) return '데이터 경로 검증됨';
+    if (service.state === 'VerificationRunning') return '검증 진행 중';
+    if (service.state === 'CleanupRequired') return '검증됨 · 정리 필요';
+    if (service.state === 'VerificationFailed') return '검증 실패';
+    if (service.state === 'VerificationExpired') return '검증 만료';
+    if (service.state === 'VerificationStale') return '구성 변경 · 재검증 필요';
+    if (service.ready) return '데이터 경로 검증됨';
     if (service.configured) return '구성 완료 · 미검증';
     if (service.driverInstalled) return '정보·구성 필요';
     return '미설치';
+  }
+
+  verificationCheckpointLabel(service: CephStorageService): string {
+    if (service.state === 'VerificationRunning') return `${service.latestVerification?.progress || 0}% 진행`;
+    if (service.state === 'CleanupRequired') return '경로 정상 · 정리 필요';
+    if (service.state === 'VerificationFailed') return '실패';
+    if (service.state === 'VerificationExpired') return '유효 기간 만료';
+    if (service.state === 'VerificationStale') return '구성 변경됨';
+    if (service.ready) return '검증됨';
+    return '미검증';
+  }
+
+  verificationPhaseLabel(verification: CephDataPathVerificationRecord): string {
+    const labels: Record<string, string> = {
+      Queued: '대기',
+      Running: `${verification.progress || 0}% 진행`,
+      Cleaning: '테스트 리소스 정리 중',
+      Passed: verification.cleanup.state === 'Required' ? '경로 정상 · 정리 필요' : '검증 성공',
+      Failed: verification.cleanup.state === 'Required' ? '검증 실패 · 정리 필요' : '검증 실패',
+    };
+    return labels[verification.phase] || verification.phase;
+  }
+
+  verificationHistory(): CephDataPathVerificationRecord[] {
+    return (this.status()?.dataPathVerification?.history || []).slice(0, 12);
+  }
+
+  openDataPathVerification(service: CephStorageService): void {
+    const storage = service.storageClasses.find((item) => item.configurationReady);
+    if (!storage) {
+      this.error.set(`${service.name}에서 검증 가능한 StorageClass를 찾지 못했습니다.`);
+      return;
+    }
+    this.verificationService = service;
+    this.verificationStorageClassName = storage.name;
+    this.verificationReason = '';
+    this.verificationAcknowledged = false;
+    this.verificationError.set('');
+    this.verificationOpen = true;
+  }
+
+  closeDataPathVerification(): void {
+    this.verificationOpen = false;
+    this.verificationService = null;
+    this.verificationStorageClassName = '';
+    this.verificationReason = '';
+    this.verificationAcknowledged = false;
+    this.verificationError.set('');
+  }
+
+  startDataPathVerification(): void {
+    const service = this.verificationService;
+    const storageClassName = this.verificationStorageClassName.trim();
+    const reason = this.verificationReason.trim();
+    if (!service || !storageClassName || reason.length < 8 || !this.verificationAcknowledged) return;
+    this.busy.set(true);
+    this.verificationError.set('');
+    this.ceph.verifyDataPath(service.id, storageClassName, reason).subscribe({
+      next: (result) => {
+        this.busy.set(false);
+        this.verificationOpen = false;
+        this.notice.set(`${service.name} 데이터 경로 검증 ${result.operation.id}을 시작했습니다. 진행 상태와 결과는 이 페이지의 검증 이력에 유지됩니다.`);
+        this.verificationService = null;
+        this.verificationStorageClassName = '';
+        this.verificationReason = '';
+        this.verificationAcknowledged = false;
+        this.load(true);
+      },
+      error: (failure) => {
+        this.busy.set(false);
+        this.verificationError.set(this.message(failure));
+      },
+    });
   }
 
   async copyProviderRequest(service: CephStorageService): Promise<void> {

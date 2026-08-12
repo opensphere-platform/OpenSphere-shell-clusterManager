@@ -37,6 +37,10 @@ function manifest() {
 }
 
 test('accepts only the pinned Ceph prerequisite contract', () => {
+  assert.equal(EXPECTED_DESIRED_STATE.contract, 'opensphere.ceph.rook-prerequisite/v2');
+  assert.equal(EXPECTED_DESIRED_STATE.runtime.version, '1.3.0');
+  assert.ok(EXPECTED_DESIRED_STATE.components.includes('data-path-verification-runtime'));
+  assert.ok(EXPECTED_DESIRED_STATE.verification.some((item) => item.includes('opensphere-ceph-verification-default-deny')));
   assert.equal(validateGovernedManifest(manifest(), work()).spec.desiredState.release.version, 'v1.20.2');
   const changed = manifest();
   changed.spec.desiredState.release.version = 'latest';

@@ -34,21 +34,30 @@ const CSI_CRDS = Object.freeze([
 ]);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const EXPECTED_DESIRED_STATE = Object.freeze({
-  contract: 'opensphere.ceph.rook-prerequisite/v1',
+  contract: 'opensphere.ceph.rook-prerequisite/v2',
   release: Object.freeze({
     name: 'rook-ceph', namespace: 'rook-ceph', chart: 'rook-ceph',
     version: 'v1.20.2', sha256: ROOK_CHART_SHA256,
   }),
+  runtime: Object.freeze({
+    name: 'opensphere-ceph-runtime',
+    namespace: 'rook-ceph',
+    chart: 'opensphere-ceph-runtime',
+    version: '1.3.0',
+  }),
   // 실제 설치물을 빠짐없이 기술해야 승인자가 위험을 평가할 수 있다.
   // nbd-preparer는 워커 노드에 SYS_MODULE/MKNOD capability를 요구하는 DaemonSet이므로
   // 계약에서 생략하면 AAL2 승인이 실제 권한 범위를 반영하지 못한다.
-  components: Object.freeze(['crds', 'operator', 'csi', 'runtime-rbac', 'nbd-preparer']),
+  components: Object.freeze(['crds', 'operator', 'csi', 'runtime-rbac', 'data-path-verification-runtime', 'nbd-preparer']),
   verification: Object.freeze([
     'cephclusters.ceph.rook.io Established',
     'all ceph-csi-operator CRDs Established',
     'deployment/rook-ceph-operator Ready',
     'deployment/ceph-csi-controller-manager Ready',
     'drivers.csi.ceph.io/rook-ceph.rbd.csi.ceph.com configured',
+    'namespace/opensphere-ceph-verification Pod Security restricted',
+    'role/opensphere-ceph-verification-runner installed',
+    'networkpolicy/opensphere-ceph-verification-default-deny installed',
     'daemonset/opensphere-ceph-nbd-preparer Ready on worker nodes',
   ]),
   // 승인 화면과 동일한 문구로 상승 권한을 명시한다.
@@ -161,6 +170,9 @@ async function waitForRookReady() {
   let operator;
   let csiOperator;
   let rbdDriver;
+  let verificationNamespace;
+  let verificationRole;
+  let verificationNetworkPolicy;
   while (Date.now() < deadline) {
     try {
       [
@@ -169,19 +181,37 @@ async function waitForRookReady() {
         operator,
         csiOperator,
         rbdDriver,
+        verificationNamespace,
+        verificationRole,
+        verificationNetworkPolicy,
       ] = await Promise.all([
         kubernetesGet('/apis/apiextensions.k8s.io/v1/customresourcedefinitions/cephclusters.ceph.rook.io'),
         Promise.all(CSI_CRDS.map((name) => kubernetesGet(`/apis/apiextensions.k8s.io/v1/customresourcedefinitions/${name}`))),
         kubernetesGet('/apis/apps/v1/namespaces/rook-ceph/deployments/rook-ceph-operator'),
         kubernetesGet('/apis/apps/v1/namespaces/rook-ceph/deployments/ceph-csi-controller-manager'),
         kubernetesGet('/apis/csi.ceph.io/v1/namespaces/rook-ceph/drivers/rook-ceph.rbd.csi.ceph.com'),
+        kubernetesGet('/api/v1/namespaces/opensphere-ceph-verification'),
+        kubernetesGet('/apis/rbac.authorization.k8s.io/v1/namespaces/opensphere-ceph-verification/roles/opensphere-ceph-verification-runner'),
+        kubernetesGet('/apis/networking.k8s.io/v1/namespaces/opensphere-ceph-verification/networkpolicies/opensphere-ceph-verification-default-deny'),
       ]);
       if (crdEstablished(cephClusterCrd)
         && csiCrds.every(crdEstablished)
         && deploymentReady(operator)
         && deploymentReady(csiOperator)
-        && rbdDriver?.metadata?.name === 'rook-ceph.rbd.csi.ceph.com') {
-        return { cephClusterCrd, csiCrds, operator, csiOperator, rbdDriver };
+        && rbdDriver?.metadata?.name === 'rook-ceph.rbd.csi.ceph.com'
+        && verificationNamespace?.metadata?.labels?.['pod-security.kubernetes.io/enforce'] === 'restricted'
+        && verificationRole?.metadata?.name === 'opensphere-ceph-verification-runner'
+        && verificationNetworkPolicy?.metadata?.name === 'opensphere-ceph-verification-default-deny') {
+        return {
+          cephClusterCrd,
+          csiCrds,
+          operator,
+          csiOperator,
+          rbdDriver,
+          verificationNamespace,
+          verificationRole,
+          verificationNetworkPolicy,
+        };
       }
     } catch (error) {
       lastError = String(error?.message || error).slice(0, 500);
@@ -230,6 +260,10 @@ async function installPrerequisites() {
     csiOperatorReadyReplicas: observed.csiOperator?.status?.readyReplicas || 0,
     rbdDriver: observed.rbdDriver?.metadata?.name || null,
     runtimeOwnerRelease: 'opensphere-ceph-runtime',
+    runtimeChartVersion: '1.3.0',
+    verificationNamespace: observed.verificationNamespace?.metadata?.name || null,
+    verificationRole: observed.verificationRole?.metadata?.name || null,
+    verificationNetworkPolicy: observed.verificationNetworkPolicy?.metadata?.name || null,
   };
 }
 

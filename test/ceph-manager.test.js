@@ -11,6 +11,11 @@ const {
   validateMonitoringUrl,
   validateCephFsInput,
   cephStorageServiceDiagnostics,
+  storageClassVerificationFingerprint,
+  verificationTemporaryStorageClass,
+  verificationPvc,
+  verificationPod,
+  parseVerificationHistory,
   planFor,
   storageClassManifest,
   snapshotClassManifest,
@@ -286,7 +291,9 @@ test('installed Ceph CSI services distinguish driver registration from usable St
     parameters: {
       pool: 'opensphere-dev',
       'csi.storage.k8s.io/provisioner-secret-name': 'rook-csi-rbd-provisioner',
+      'csi.storage.k8s.io/provisioner-secret-namespace': 'rook-ceph',
       'csi.storage.k8s.io/node-stage-secret-name': 'rook-csi-rbd-node',
+      'csi.storage.k8s.io/node-stage-secret-namespace': 'rook-ceph',
     },
   }];
   const coverage = cephStorageServiceDiagnostics(
@@ -333,6 +340,154 @@ test('CephFS service configuration creates separate restricted CSI credentials w
   assert.equal(manifest.provisioner, 'rook-ceph.cephfs.csi.ceph.com');
   assert.equal(manifest.parameters.fsName, 'shared-fs');
   assert.throws(() => validateCephFsInput({ ...input, provisionerUserID: 'client.admin' }), /client\.admin/);
+});
+
+test('successful matching Ceph data-path evidence gates ready independently from cleanup', () => {
+  const storageClass = {
+    metadata: { name: 'ceph-rbd', uid: 'storage-class-uid' },
+    provisioner: 'rook-ceph.rbd.csi.ceph.com',
+    reclaimPolicy: 'Retain',
+    volumeBindingMode: 'WaitForFirstConsumer',
+    parameters: {
+      pool: 'opensphere-dev',
+      'csi.storage.k8s.io/provisioner-secret-name': 'rook-csi-rbd-provisioner',
+      'csi.storage.k8s.io/provisioner-secret-namespace': 'rook-ceph',
+      'csi.storage.k8s.io/node-stage-secret-name': 'rook-csi-rbd-node',
+      'csi.storage.k8s.io/node-stage-secret-namespace': 'rook-ceph',
+    },
+  };
+  const secrets = [
+    { metadata: { name: 'rook-csi-rbd-provisioner', uid: 'p', resourceVersion: '3' }, data: { userID: 'dQ==', userKey: 'aw==' } },
+    { metadata: { name: 'rook-csi-rbd-node', uid: 'n', resourceVersion: '7' }, data: { userID: 'dQ==', userKey: 'aw==' } },
+  ];
+  const fingerprint = storageClassVerificationFingerprint(storageClass, secrets);
+  const evidence = {
+    id: 'verification-1',
+    serviceId: 'rbd',
+    storageClassName: 'ceph-rbd',
+    configurationFingerprint: fingerprint,
+    phase: 'Passed',
+    verifiedAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    updatedAt: new Date().toISOString(),
+    cleanup: { state: 'Clean', errors: [] },
+  };
+  const coverage = cephStorageServiceDiagnostics(
+    [{ metadata: { name: 'rook-ceph.rbd.csi.ceph.com' } }],
+    [storageClass],
+    secrets,
+    [evidence],
+  );
+  const rbd = coverage.services.find((item) => item.id === 'rbd');
+  assert.equal(rbd.verified, true);
+  assert.equal(rbd.ready, true);
+  assert.equal(rbd.state, 'Verified');
+  assert.equal(coverage.verified, 1);
+  assert.equal(coverage.ready, 1);
+
+  const cleanupRequired = cephStorageServiceDiagnostics(
+    [{ metadata: { name: 'rook-ceph.rbd.csi.ceph.com' } }],
+    [storageClass],
+    secrets,
+    [{ ...evidence, cleanup: { state: 'Required', errors: ['PV deletion timeout'] } }],
+  );
+  assert.equal(cleanupRequired.verified, 1);
+  assert.equal(cleanupRequired.ready, 0);
+  assert.equal(cleanupRequired.services.find((item) => item.id === 'rbd').state, 'CleanupRequired');
+});
+
+test('Ceph data-path evidence expires when the StorageClass or referenced Secret changes', () => {
+  const storageClass = {
+    metadata: { name: 'ceph-rbd', uid: 'storage-class-uid' },
+    provisioner: 'rook-ceph.rbd.csi.ceph.com',
+    parameters: {
+      pool: 'opensphere-dev',
+      'csi.storage.k8s.io/provisioner-secret-name': 'rook-csi-rbd-provisioner',
+      'csi.storage.k8s.io/provisioner-secret-namespace': 'rook-ceph',
+      'csi.storage.k8s.io/node-stage-secret-name': 'rook-csi-rbd-node',
+      'csi.storage.k8s.io/node-stage-secret-namespace': 'rook-ceph',
+    },
+  };
+  const originalSecrets = [
+    { metadata: { name: 'rook-csi-rbd-provisioner', uid: 'p', resourceVersion: '1' }, data: { userID: 'dQ==', userKey: 'aw==' } },
+    { metadata: { name: 'rook-csi-rbd-node', uid: 'n', resourceVersion: '1' }, data: { userID: 'dQ==', userKey: 'aw==' } },
+  ];
+  const evidence = {
+    id: 'verification-2',
+    serviceId: 'rbd',
+    storageClassName: 'ceph-rbd',
+    configurationFingerprint: storageClassVerificationFingerprint(storageClass, originalSecrets),
+    phase: 'Passed',
+    verifiedAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    updatedAt: new Date().toISOString(),
+    cleanup: { state: 'Clean', errors: [] },
+  };
+  const changedSecrets = structuredClone(originalSecrets);
+  changedSecrets[0].metadata.resourceVersion = '2';
+  const coverage = cephStorageServiceDiagnostics(
+    [{ metadata: { name: 'rook-ceph.rbd.csi.ceph.com' } }],
+    [storageClass],
+    changedSecrets,
+    [evidence],
+  );
+  const rbd = coverage.services.find((item) => item.id === 'rbd');
+  assert.equal(rbd.ready, false);
+  assert.equal(rbd.state, 'VerificationStale');
+
+  const movedSecretStorageClass = structuredClone(storageClass);
+  movedSecretStorageClass.parameters['csi.storage.k8s.io/node-stage-secret-namespace'] = 'default';
+  const movedSecretCoverage = cephStorageServiceDiagnostics(
+    [{ metadata: { name: 'rook-ceph.rbd.csi.ceph.com' } }],
+    [movedSecretStorageClass],
+    originalSecrets,
+    [evidence],
+  );
+  const movedSecretRbd = movedSecretCoverage.services.find((item) => item.id === 'rbd');
+  assert.equal(movedSecretRbd.configured, false);
+  assert.equal(movedSecretRbd.ready, false);
+  assert.match(movedSecretRbd.blockers.join(' '), /CSI Secret namespace는 rook-ceph/);
+});
+
+test('Ceph data-path canary uses a Delete clone and restricted non-privileged pods', () => {
+  const record = { id: '12345678-1234-4234-9234-123456789abc', serviceId: 'cephfs', storageClassName: 'cephfs' };
+  const source = {
+    provisioner: 'rook-ceph.cephfs.csi.ceph.com',
+    parameters: { clusterID: 'rook-ceph', fsName: 'cephfs', pool: 'cephfs.data' },
+    reclaimPolicy: 'Retain',
+  };
+  const storageClass = verificationTemporaryStorageClass(source, record);
+  assert.equal(storageClass.reclaimPolicy, 'Delete');
+  assert.equal(storageClass.parameters.fsName, 'cephfs');
+  assert.match(storageClass.metadata.name, /^cephfs-verify-/);
+  assert.equal(storageClass.metadata.annotations['opensphere.io/source-storage-class'], 'cephfs');
+  const pvc = verificationPvc(record, storageClass.metadata.name);
+  assert.deepEqual(pvc.spec.accessModes, ['ReadWriteMany']);
+  assert.equal(pvc.spec.resources.requests.storage, '64Mi');
+  const pod = verificationPod(record, pvc.metadata.name, 'example.invalid/cluster-manager@sha256:abc', 'writer', 'checksum', 'payload', 'node-a');
+  assert.equal(pod.spec.automountServiceAccountToken, false);
+  assert.equal(pod.spec.containers[0].securityContext.allowPrivilegeEscalation, false);
+  assert.equal(pod.spec.containers[0].securityContext.readOnlyRootFilesystem, true);
+  assert.equal(pod.spec.containers[0].securityContext.runAsGroup, 1000);
+  assert.deepEqual(pod.spec.containers[0].securityContext.capabilities.drop, ['ALL']);
+  assert.equal(pod.spec.nodeSelector['kubernetes.io/hostname'], 'node-a');
+});
+
+test('timed-out Ceph data-path work is projected as failed with cleanup required', () => {
+  const history = parseVerificationHistory({
+    data: {
+      history: JSON.stringify([{
+        id: '12345678-1234-4234-9234-123456789abc',
+        phase: 'Running',
+        startedAt: '2020-01-01T00:00:00.000Z',
+        updatedAt: '2020-01-01T00:00:01.000Z',
+        cleanup: { state: 'Pending', errors: [] },
+      }]),
+    },
+  });
+  assert.equal(history[0].phase, 'Failed');
+  assert.equal(history[0].cleanup.state, 'Required');
+  assert.match(history[0].error, /제한 시간을 초과/);
 });
 
 test('Ceph UI reports every installed storage service and provides actionable provider requirements', () => {
@@ -401,7 +556,7 @@ test('Ceph prerequisite request uses the fixed Console Change Control contract w
     consumerId: 'ceph-prerequisites',
     action: 'apply',
     target: 'rook-ceph/v1.20.2',
-    desiredState: { contract: 'opensphere.ceph.rook-prerequisite/v1' },
+    desiredState: { contract: 'opensphere.ceph.rook-prerequisite/v2' },
   };
   const ctx = {
     requestToken: () => 'user-token',
@@ -829,7 +984,7 @@ test('C-01: node prerequisite DaemonSet drops privileged and is disclosed before
   assert.match(ui, /elevatedScopeAcknowledged/);
   assert.match(ui, /!elevatedScopeAcknowledged" \(click\)="requestPrerequisiteInstall\(\)"/);
   // 거버넌스 계약이 실제 설치물을 기술한다.
-  assert.match(reconciler, /'runtime-rbac', 'nbd-preparer'/);
+  assert.match(reconciler, /'runtime-rbac', 'data-path-verification-runtime', 'nbd-preparer'/);
   assert.match(reconciler, /elevatedPrivileges/);
 });
 

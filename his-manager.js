@@ -1039,6 +1039,92 @@ async function probe(ctx, name) {
     }
     return result('Blocked', 'ObservabilityMissing', '공유 kube-prometheus-stack이 없습니다. Observability profile에서 선택 설치할 수 있습니다.', '', details);
   }
+  if (name === 'crossplane') {
+    const [crdList, deploymentList, providerList, providerConfigList, providerConfigListV2, releaseList, releaseListV2] = await Promise.all([
+      k8sListOrEmpty(ctx, '/apis/apiextensions.k8s.io/v1/customresourcedefinitions'),
+      k8sListOrEmpty(ctx, '/apis/apps/v1/namespaces/crossplane-system/deployments'),
+      k8sListOrEmpty(ctx, '/apis/pkg.crossplane.io/v1/providers'),
+      k8sListOrEmpty(ctx, '/apis/helm.crossplane.io/v1beta1/providerconfigs'),
+      k8sListOrEmpty(ctx, '/apis/helm.m.crossplane.io/v1beta1/providerconfigs'),
+      k8sListOrEmpty(ctx, '/apis/helm.crossplane.io/v1beta1/releases'),
+      k8sListOrEmpty(ctx, '/apis/helm.m.crossplane.io/v1beta1/releases'),
+    ]);
+    const crds = crdList.items || [];
+    const deployments = deploymentList.items || [];
+    const core = deployments.find((item) => item.metadata?.name === 'crossplane');
+    const rbacManager = deployments.find((item) => item.metadata?.name === 'crossplane-rbac-manager');
+    const packageApiReady = crds.some((item) => item.metadata?.name === 'providers.pkg.crossplane.io');
+    const providerConfigApiReady = crds.some((item) => /providerconfigs\.helm(\.m)?\.crossplane\.io/.test(item.metadata?.name || ''));
+    const providers = providerList.items || [];
+    const providerHelm = providers.find((item) => /provider-helm/i.test(`${item.metadata?.name || ''} ${item.spec?.package || ''}`));
+    const providerInstalled = condition(providerHelm, 'Installed')?.status === 'True';
+    const providerHealthy = condition(providerHelm, 'Healthy')?.status === 'True';
+    const providerDigestPinned = /@sha256:[a-f0-9]{64}$/i.test(providerHelm?.spec?.package || '');
+    const providerRows = providers.map((item) => ({
+      name: item.metadata?.name || '',
+      package: item.spec?.package || '',
+      currentRevision: item.status?.currentRevision || '',
+      installed: condition(item, 'Installed')?.status || 'Unknown',
+      healthy: condition(item, 'Healthy')?.status || 'Unknown',
+      message: condition(item, 'Healthy')?.message || condition(item, 'Installed')?.message || '',
+    }));
+    const components = [
+      { name: 'Crossplane Core', kind: 'Deployment', item: core },
+      { name: 'Crossplane RBAC Manager', kind: 'Deployment', item: rbacManager },
+      { name: 'provider-helm', kind: 'Provider', item: providerHelm },
+    ];
+    const details = diagnosticDetails({
+      facts: [
+        { label: 'Package API', value: packageApiReady ? 'providers.pkg.crossplane.io' : 'Missing', state: packageApiReady ? 'Passed' : 'Failed' },
+        { label: 'Core workload', value: core ? `${core.status?.availableReplicas || 0}/${core.spec?.replicas || 1}` : 'Missing', state: core && availableDeployment(core) ? 'Passed' : 'Failed' },
+        { label: 'RBAC manager', value: rbacManager ? `${rbacManager.status?.availableReplicas || 0}/${rbacManager.spec?.replicas || 1}` : 'Missing', state: rbacManager && availableDeployment(rbacManager) ? 'Passed' : 'Failed' },
+        { label: 'provider-helm', value: providerHelm?.spec?.package || 'Missing', state: providerInstalled && providerHealthy && providerDigestPinned ? 'Passed' : 'Failed' },
+        { label: 'ProviderConfig API', value: providerConfigApiReady ? 'Discovered' : 'Pending', state: providerConfigApiReady ? 'Passed' : 'Failed' },
+        { label: 'ProviderConfig / Release', value: `${(providerConfigList.items?.length || 0) + (providerConfigListV2.items?.length || 0)} / ${(releaseList.items?.length || 0) + (releaseListV2.items?.length || 0)}`, state: 'Info' },
+      ],
+      tables: [{
+        title: 'Crossplane providers',
+        columns: [
+          { key: 'name', label: 'Provider' }, { key: 'package', label: 'Package' }, { key: 'currentRevision', label: 'Revision' },
+          { key: 'installed', label: 'Installed' }, { key: 'healthy', label: 'Healthy' }, { key: 'message', label: 'Message' },
+        ],
+        rows: providerRows,
+      }],
+      warnings: [
+        ...(!providerDigestPinned && providerHelm ? ['provider-helm package가 exact OCI digest로 고정되지 않았습니다.'] : []),
+        ...(!providerConfigApiReady ? ['provider-helm API가 아직 discovery되지 않았습니다. ProviderRevision condition을 확인하십시오.'] : []),
+      ],
+      security: ['Crossplane core와 provider package lifecycle은 HISS가 소유하고 ProviderConfig·Release 운영은 Foundation Platform Delivery에 위임합니다.', 'Provider credential 값은 표시하지 않고 SecretRef 또는 InjectedIdentity만 허용합니다.'],
+      canaries: [
+        { name: 'Core controllers', state: core && availableDeployment(core) && rbacManager && availableDeployment(rbacManager) ? 'Passed' : 'Failed', message: `${deployments.filter(availableDeployment).length}/${deployments.length} deployments available` },
+        { name: 'Approved provider', state: providerInstalled && providerHealthy && providerDigestPinned ? 'Passed' : 'Failed', message: providerHelm?.spec?.package || 'provider-helm missing' },
+      ],
+    });
+    details.components = components.map((component) => ({
+      name: component.name,
+      kind: component.kind,
+      resourceName: component.item?.metadata?.name || '',
+      namespace: component.item?.metadata?.namespace || (component.kind === 'Deployment' ? 'crossplane-system' : ''),
+      state: !component.item ? 'Missing'
+        : component.kind === 'Deployment' ? (availableDeployment(component.item) ? 'Ready' : 'Pending')
+          : (providerInstalled && providerHealthy ? 'Ready' : 'Pending'),
+      image: component.kind === 'Deployment' ? containerImages(component.item) : component.item?.spec?.package || '',
+    }));
+    details.validationFingerprint = runtimeContractFingerprint('crossplane-core', [core, rbacManager, providerHelm], [
+      packageApiReady, providerConfigApiReady, providerHelm?.spec?.package || '',
+    ]);
+    const observed = [containerImages(core), containerImages(rbacManager), providerHelm?.spec?.package || ''].filter(Boolean).join(', ');
+    if (!packageApiReady && !core && !rbacManager) {
+      return result('Blocked', 'CrossplaneMissing', 'Crossplane core가 없습니다. Platform Delivery profile에서 선택 설치할 수 있습니다.', '', details);
+    }
+    if (!packageApiReady || !core || !rbacManager || !availableDeployment(core) || !availableDeployment(rbacManager)) {
+      return result('Degraded', 'CrossplaneRuntimePartial', 'Crossplane CRD 또는 core/RBAC manager가 아직 준비되지 않았습니다.', observed, details);
+    }
+    if (!providerInstalled || !providerHealthy || !providerDigestPinned || !providerConfigApiReady) {
+      return result('Degraded', 'CrossplaneProviderPartial', 'Core는 Ready이나 승인된 provider-helm package/API가 준비되지 않았습니다.', observed, details);
+    }
+    return result('Ready', 'CrossplaneAdapterRuntimeReady', 'Crossplane core와 exact-digest provider-helm package가 Ready입니다.', observed, details);
+  }
   if (name === 'storage') {
     const [list, drivers, pvcs, pvs] = await Promise.all([
       k8s(ctx, '/apis/storage.k8s.io/v1/storageclasses'),

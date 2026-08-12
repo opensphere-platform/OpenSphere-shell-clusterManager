@@ -10,6 +10,7 @@ const path = require('path');
 const { WebSocketServer, WebSocket } = require('ws');
 const { createHisManager } = require('./his-manager');
 const { createCephManager } = require('./ceph-manager');
+const { createModuleLifecycleProxy } = require('./module-lifecycle-proxy');
 function requestToken(req) {
   const match = String(req.headers.authorization || '').match(/^Bearer\s+(.+)$/i);
   return match ? match[1] : '';
@@ -122,6 +123,9 @@ const cephManager = createCephManager({
   consoleBackend: CONSOLE_IDENTITY_URL,
   publishNotify,
 });
+const moduleLifecycleProxy = createModuleLifecycleProxy({
+  baseUrl: CONSOLE_IDENTITY_URL,
+});
 const _notifiedNodes = new Set();
 async function nodeHealthPublish() {
   try {
@@ -224,6 +228,10 @@ const server = http.createServer(async (req, res) => {
       catch (e) { return jsonRes(res, e.code || 401, { error: e.msg || 'unauthorized' }); }
       res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
       return res.end(JSON.stringify({ user: actor.username }));
+    }
+    if (p.startsWith('/api/module-lifecycle/')) {
+      const handled = await moduleLifecycleProxy(req, res, p);
+      if (handled) return;
     }
     if (p.startsWith('/api/his/')) return hisManager(req, res, p);
     if (p.startsWith('/api/ceph/')) return cephManager(req, res, p);

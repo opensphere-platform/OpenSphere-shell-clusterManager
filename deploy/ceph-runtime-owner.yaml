@@ -13,6 +13,15 @@ metadata:
     opensphere.io/owner: cluster-manager
     pod-security.kubernetes.io/enforce: restricted
 ---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: opensphere-ceph-verification
+  labels:
+    opensphere.io/owner: cluster-manager
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -84,6 +93,69 @@ subjects:
     namespace: opensphere-console
 ---
 apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: opensphere-ceph-verification-runner
+  namespace: opensphere-ceph-verification
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get, list, create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims, pods]
+    verbs: [get, list, create, delete]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: opensphere-ceph-verification-runner
+  namespace: opensphere-ceph-verification
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: opensphere-ceph-verification-runner
+subjects:
+  - kind: ServiceAccount
+    name: opensphere-cluster-manager
+    namespace: opensphere-console
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: opensphere-ceph-verification-default-deny
+  namespace: opensphere-ceph-verification
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: opensphere-ceph-verification-image-reader
+  namespace: opensphere-console
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: opensphere-ceph-verification-image-reader
+  namespace: opensphere-console
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: opensphere-ceph-verification-image-reader
+subjects:
+  - kind: ServiceAccount
+    name: opensphere-cluster-manager
+    namespace: opensphere-console
+---
+apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: opensphere-ceph-consumer-storage-owner
@@ -98,6 +170,10 @@ rules:
   - apiGroups: [storage.k8s.io]
     resources: [storageclasses]
     verbs: [get, list, create, update, patch, delete]
+  # 검증 PVC 삭제 후 CSI가 backing volume까지 정리했는지 확인하기 위한 읽기 전용 권한.
+  - apiGroups: [""]
+    resources: [persistentvolumes]
+    verbs: [get, list]
   - apiGroups: [snapshot.storage.k8s.io]
     resources: [volumesnapshotclasses]
     verbs: [get, list, create, update, patch, delete]

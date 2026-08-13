@@ -1,11 +1,11 @@
 'use strict';
 
+const { createHash, timingSafeEqual } = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const net = require('net');
 const dns = require('dns').promises;
 const path = require('path');
-const { createHash } = require('crypto');
 const { spawn } = require('child_process');
 const yaml = require('js-yaml');
 const { HIS_CATALOG, catalogItem } = require('./his-catalog');
@@ -2049,6 +2049,14 @@ async function actorFor(ctx, req, adminRequired) {
   return actor;
 }
 
+function internalServiceAccountRequest(ctx, req) {
+  const presented = Buffer.from(String(ctx.requestToken(req) || ''), 'utf8');
+  const expected = Buffer.from(String(ctx.token() || ''), 'utf8');
+  return presented.length > 0
+    && presented.length === expected.length
+    && timingSafeEqual(presented, expected);
+}
+
 async function actorForOaaOwner(ctx, req, mutation) {
   const actor = await ctx.verifyToken(ctx.requestToken(req));
   const permissions = new Set(Array.isArray(actor.permissions) ? actor.permissions : []);
@@ -2919,6 +2927,16 @@ function createHisManager(ctx) {
   return async function handle(req, res, pathname) {
     if (!pathname.startsWith('/api/his/')) return false;
     try {
+      // Platform readiness is a controller-to-controller read. It uses the
+      // Cluster Manager ServiceAccount token and never accepts a user bearer,
+      // so the repair/status path remains available even when user identity or
+      // the Console UI is unavailable.
+      if (req.method === 'GET' && pathname === '/api/his/internal/status') {
+        if (!internalServiceAccountRequest(ctx, req)) {
+          throw Object.assign(new Error('HIS internal status requires the Cluster Manager ServiceAccount token.'), { code: 401 });
+        }
+        return ctx.jsonRes(res, 200, await allStatus(ctx)), true;
+      }
       if (req.method === 'GET' && pathname === '/api/his/oaa/capabilities') {
         await actorForOaaOwner(ctx, req, false);
         return ctx.jsonRes(res, 200, {
@@ -3098,6 +3116,7 @@ module.exports = {
   allStatus,
   computeAllStatus,
   invalidateHisStatusSnapshot,
+  internalServiceAccountRequest,
   orderedParallelMap,
   itemStatusWithinDeadline,
   itemStatus,

@@ -157,3 +157,11 @@ test('HIS status aggregation shares one server computation and keeps profile rea
   assert.match(source, /HIS_STATUS_CACHE_TTL_MS = 10 \* 1000/);
   assert.match(source, /\.finally\(\(\) => \{ hisStatusInFlight = null; \}\)/);
 });
+
+test('Platform readiness reads HIS status through the ServiceAccount-only internal contract', () => {
+  const source = readFileSync(resolve(__dirname, '../his-manager.js'), 'utf8');
+  assert.match(source, /pathname === '\/api\/his\/internal\/status'/);
+  assert.match(source, /internalServiceAccountRequest\(ctx, req\)/);
+  assert.match(source, /timingSafeEqual\(presented, expected\)/);
+  assert.match(source, /HIS internal status requires the Cluster Manager ServiceAccount token/);
+});

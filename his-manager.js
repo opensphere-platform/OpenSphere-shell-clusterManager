@@ -1867,9 +1867,28 @@ function evaluateStackStatus(items, profiles) {
   };
 }
 
+async function orderedParallelMap(items, mapper, concurrency = 4) {
+  const source = Array.from(items || []);
+  const results = new Array(source.length);
+  let nextIndex = 0;
+  const worker = async () => {
+    while (nextIndex < source.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(source[index], index);
+    }
+  };
+  const workerCount = Math.min(source.length, Math.max(1, Number(concurrency) || 1));
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  return results;
+}
+
 async function allStatus(ctx) {
-  const items = [];
-  for (const item of HIS_CATALOG) items.push(await itemStatus(ctx, item));
+  // Each item performs independent Kubernetes/Helm probes. Running the full
+  // catalog serially exceeded the Console's governed 15s request budget and
+  // made the validation UI unavailable. Keep catalog order deterministic but
+  // bound parallelism so one status read cannot fan out without limit.
+  const items = await orderedParallelMap(HIS_CATALOG, (item) => itemStatus(ctx, item), 4);
   const explicitProfiles = await readProfileSelection(ctx);
   const profiles = evaluateProfiles(items, explicitProfiles);
   const evaluated = evaluateStackStatus(items, profiles);
@@ -3019,6 +3038,7 @@ function createHisManager(ctx) {
 module.exports = {
   createHisManager,
   allStatus,
+  orderedParallelMap,
   itemStatus,
   readJson,
   reasonFrom,

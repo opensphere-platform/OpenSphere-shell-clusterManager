@@ -36,6 +36,7 @@ const {
   ingressDefaultCertificateRef,
   evaluateProfiles,
   evaluateStackStatus,
+  orderedParallelMap,
   validateObservabilityConfig,
   normalizeOaaObservabilityConfig,
   oaaObservabilityConfirmation,
@@ -48,6 +49,22 @@ const {
   HIS_STATUS_SCHEMA,
   DEFAULT_OBSERVABILITY_CONFIG,
 } = require('../his-manager');
+
+test('HIS status probes preserve catalog order with bounded parallelism', async () => {
+  const source = ['slow', 'fast', 'middle', 'last'];
+  const delays = { slow: 30, fast: 1, middle: 10, last: 2 };
+  let active = 0;
+  let peak = 0;
+  const result = await orderedParallelMap(source, async (item) => {
+    active += 1;
+    peak = Math.max(peak, active);
+    await new Promise((resolve) => setTimeout(resolve, delays[item]));
+    active -= 1;
+    return `${item}-ready`;
+  }, 2);
+  assert.deepEqual(result, source.map((item) => `${item}-ready`));
+  assert.equal(peak, 2);
+});
 
 test('HIS catalog keeps PFS/plugin concepts outside the prerequisite catalog', () => {
   assert.ok(HIS_CATALOG.some((item) => item.mode === 'DetectOnly'));

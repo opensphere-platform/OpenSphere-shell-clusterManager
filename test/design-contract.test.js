@@ -149,3 +149,11 @@ test('HIS aggregate polling is single-flight and schedules only after completion
   assert.match(his, /setTimeout\(\(\) => this\.load\(false\), 15000\)/);
   assert.doesNotMatch(his, /setInterval\(\(\) => this\.load\(false\), 3000\)/);
 });
+
+test('HIS status aggregation shares one server computation and keeps profile reads on the same critical path', () => {
+  const source = readFileSync(resolve(__dirname, '../his-manager.js'), 'utf8');
+  assert.match(source, /const \[items, explicitProfiles\] = await Promise\.all\(\[/);
+  assert.match(source, /if \(hisStatusInFlight\) return hisStatusInFlight/);
+  assert.match(source, /HIS_STATUS_CACHE_TTL_MS = 10 \* 1000/);
+  assert.match(source, /\.finally\(\(\) => \{ hisStatusInFlight = null; \}\)/);
+});

@@ -30,6 +30,7 @@ const HIS_STATUS_SCHEMA = 'his-status.opensphere.io/v1alpha1';
 // The Console extension proxy has a governed 15 second request budget. Status
 // reads must leave enough headroom for authentication, proxying and rendering.
 const HIS_STATUS_ITEM_TIMEOUT_MS = 5 * 1000;
+const HIS_STATUS_CACHE_TTL_MS = 10 * 1000;
 const OAA_HIS_READ_PERMISSION = 'console.his.read';
 const OAA_HIS_MANAGE_PERMISSION = 'console.his.manage';
 const LOKI_QUERY_URL = (process.env.HIS_LOKI_URL || 'http://opensphere-his-loki.monitoring.svc:3100').replace(/\/$/, '');
@@ -1908,17 +1909,24 @@ async function orderedParallelMap(items, mapper, concurrency = 4) {
   return results;
 }
 
-async function allStatus(ctx) {
+let hisStatusSnapshot = null;
+let hisStatusSnapshotAt = 0;
+let hisStatusInFlight = null;
+
+async function computeAllStatus(ctx) {
   // Each item performs independent Kubernetes/Helm probes. The status endpoint
   // is a read model, so one slow probe must not make the whole management UI
-  // unavailable. Start the closed catalog together, preserve catalog order and
-  // isolate every item behind a deadline below the Console's 15s proxy budget.
-  const items = await orderedParallelMap(
-    HIS_CATALOG,
-    (item) => itemStatusWithinDeadline(ctx, item),
-    HIS_CATALOG.length,
-  );
-  const explicitProfiles = await readProfileSelection(ctx);
+  // unavailable. Profile selection is another independent Kubernetes read, so
+  // it shares the bounded parallel window instead of extending the critical
+  // path after all catalog probes have finished.
+  const [items, explicitProfiles] = await Promise.all([
+    orderedParallelMap(
+      HIS_CATALOG,
+      (item) => itemStatusWithinDeadline(ctx, item),
+      HIS_CATALOG.length,
+    ),
+    readProfileSelection(ctx),
+  ]);
   const profiles = evaluateProfiles(items, explicitProfiles);
   const evaluated = evaluateStackStatus(items, profiles);
   return {
@@ -1930,6 +1938,26 @@ async function allStatus(ctx) {
     profiles,
     summary: evaluated.summary,
   };
+}
+
+async function allStatus(ctx) {
+  const now = Date.now();
+  if (hisStatusSnapshot && now - hisStatusSnapshotAt < HIS_STATUS_CACHE_TTL_MS) return hisStatusSnapshot;
+  if (hisStatusInFlight) return hisStatusInFlight;
+
+  hisStatusInFlight = computeAllStatus(ctx)
+    .then((snapshot) => {
+      hisStatusSnapshot = snapshot;
+      hisStatusSnapshotAt = Date.now();
+      return snapshot;
+    })
+    .finally(() => { hisStatusInFlight = null; });
+  return hisStatusInFlight;
+}
+
+function invalidateHisStatusSnapshot() {
+  hisStatusSnapshot = null;
+  hisStatusSnapshotAt = 0;
 }
 
 async function setProfileSelection(ctx, actor, body) {
@@ -1964,6 +1992,7 @@ async function setProfileSelection(ctx, actor, body) {
     result: selected ? 'selected' : 'deselected',
     reason,
   });
+  invalidateHisStatusSnapshot();
   return allStatus(ctx);
 }
 
@@ -3067,6 +3096,8 @@ function createHisManager(ctx) {
 module.exports = {
   createHisManager,
   allStatus,
+  computeAllStatus,
+  invalidateHisStatusSnapshot,
   orderedParallelMap,
   itemStatusWithinDeadline,
   itemStatus,

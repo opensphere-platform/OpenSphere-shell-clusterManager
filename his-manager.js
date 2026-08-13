@@ -27,6 +27,9 @@ const PROFILE_SELECTION_CONFIG_NAME = 'opensphere-his-profile-selection';
 const OBSERVABILITY_RESET_CONFIRMATION = 'RESET OBSERVABILITY DATA';
 const OBSERVABILITY_PUBLIC_CONFIRMATION = 'ENABLE PUBLIC GRAFANA';
 const HIS_STATUS_SCHEMA = 'his-status.opensphere.io/v1alpha1';
+// The Console extension proxy has a governed 15 second request budget. Status
+// reads must leave enough headroom for authentication, proxying and rendering.
+const HIS_STATUS_ITEM_TIMEOUT_MS = 9 * 1000;
 const OAA_HIS_READ_PERMISSION = 'console.his.read';
 const OAA_HIS_MANAGE_PERMISSION = 'console.his.manage';
 const LOKI_QUERY_URL = (process.env.HIS_LOKI_URL || 'http://opensphere-his-loki.monitoring.svc:3100').replace(/\/$/, '');
@@ -1820,6 +1823,28 @@ async function itemStatus(ctx, item) {
   }
 }
 
+async function itemStatusWithinDeadline(ctx, item, timeoutMs = HIS_STATUS_ITEM_TIMEOUT_MS, statusReader = itemStatus) {
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve({
+      ...item,
+      chart: undefined,
+      chartVariants: undefined,
+      values: undefined,
+      kindValues: undefined,
+      ownership: 'Unknown',
+      release: null,
+      operation: null,
+      check: result('Degraded', 'ProbeTimeout', `상태 확인이 ${timeoutMs}ms 제한을 초과했습니다. 해당 항목을 개별 재검사하십시오.`),
+    }), timeoutMs);
+  });
+  try {
+    return await Promise.race([statusReader(ctx, item), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function evaluateProfiles(items, explicitProfiles = new Set()) {
   return knownProfileNames().map((name) => {
     const profileItems = items.filter((item) => item.profile === name);
@@ -1884,11 +1909,15 @@ async function orderedParallelMap(items, mapper, concurrency = 4) {
 }
 
 async function allStatus(ctx) {
-  // Each item performs independent Kubernetes/Helm probes. Running the full
-  // catalog serially exceeded the Console's governed 15s request budget and
-  // made the validation UI unavailable. Keep catalog order deterministic but
-  // bound parallelism so one status read cannot fan out without limit.
-  const items = await orderedParallelMap(HIS_CATALOG, (item) => itemStatus(ctx, item), 4);
+  // Each item performs independent Kubernetes/Helm probes. The status endpoint
+  // is a read model, so one slow probe must not make the whole management UI
+  // unavailable. Start the closed catalog together, preserve catalog order and
+  // isolate every item behind a deadline below the Console's 15s proxy budget.
+  const items = await orderedParallelMap(
+    HIS_CATALOG,
+    (item) => itemStatusWithinDeadline(ctx, item),
+    HIS_CATALOG.length,
+  );
   const explicitProfiles = await readProfileSelection(ctx);
   const profiles = evaluateProfiles(items, explicitProfiles);
   const evaluated = evaluateStackStatus(items, profiles);
@@ -3039,6 +3068,7 @@ module.exports = {
   createHisManager,
   allStatus,
   orderedParallelMap,
+  itemStatusWithinDeadline,
   itemStatus,
   readJson,
   reasonFrom,

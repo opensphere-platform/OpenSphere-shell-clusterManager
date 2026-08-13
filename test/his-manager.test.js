@@ -37,6 +37,7 @@ const {
   evaluateProfiles,
   evaluateStackStatus,
   orderedParallelMap,
+  itemStatusWithinDeadline,
   validateObservabilityConfig,
   normalizeOaaObservabilityConfig,
   oaaObservabilityConfirmation,
@@ -64,6 +65,15 @@ test('HIS status probes preserve catalog order with bounded parallelism', async 
   }, 2);
   assert.deepEqual(result, source.map((item) => `${item}-ready`));
   assert.equal(peak, 2);
+});
+
+test('HIS status isolates a slow probe behind the UI response deadline', async () => {
+  const item = { id: 'slow-probe', displayName: 'Slow probe', probe: 'never-finishes', mode: 'DetectOnly' };
+  const status = await itemStatusWithinDeadline({}, item, 5, () => new Promise(() => {}));
+  assert.equal(status.id, item.id);
+  assert.equal(status.check.state, 'Degraded');
+  assert.equal(status.check.reason, 'ProbeTimeout');
+  assert.match(status.check.message, /5ms/);
 });
 
 test('HIS catalog keeps PFS/plugin concepts outside the prerequisite catalog', () => {

@@ -1069,7 +1069,8 @@ export class HisComponent implements OnInit, OnDestroy {
   configurationMode: ObservabilityConfigurationMode = 'operate';
   observabilityChartVersion = '87.19.1';
   private configurationFingerprint = '';
-  private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private pollTimer: ReturnType<typeof setTimeout> | null = null;
+  private loadInFlight = false;
   private focusItemId = '';
   private focusApplied = false;
 
@@ -1079,14 +1080,22 @@ export class HisComponent implements OnInit, OnDestroy {
       this.focusItemId = /^[a-z0-9-]{1,80}$/.test(requested) ? requested : '';
     } catch { /* standalone/test environment */ }
     this.load();
-    this.pollTimer = setInterval(() => this.load(false), 3000);
   }
 
   ngOnDestroy(): void {
-    if (this.pollTimer) clearInterval(this.pollTimer);
+    if (this.pollTimer) clearTimeout(this.pollTimer);
   }
 
   load(showLoading = true): void {
+    // HIS status is an aggregate of Kubernetes and Helm probes. Never overlap
+    // reads: stacked polls contend for the same runtime resources and can push
+    // otherwise healthy responses beyond the Host API's governed deadline.
+    if (this.loadInFlight) return;
+    this.loadInFlight = true;
+    if (this.pollTimer) {
+      clearTimeout(this.pollTimer);
+      this.pollTimer = null;
+    }
     if (showLoading) {
       this.loading.set(true);
       this.error.set('');
@@ -1098,9 +1107,19 @@ export class HisComponent implements OnInit, OnDestroy {
         this.status.set({ ...status, items });
         this.applyRequestedFocus(items);
         this.loading.set(false);
+        this.finishLoad();
       },
-      error: (error) => { if (showLoading) this.error.set(this.message(error)); this.loading.set(false); },
+      error: (error) => {
+        if (showLoading) this.error.set(this.message(error));
+        this.loading.set(false);
+        this.finishLoad();
+      },
     });
+  }
+
+  private finishLoad(): void {
+    this.loadInFlight = false;
+    this.pollTimer = setTimeout(() => this.load(false), 15000);
   }
 
   private applyRequestedFocus(items: HisItem[]): void {

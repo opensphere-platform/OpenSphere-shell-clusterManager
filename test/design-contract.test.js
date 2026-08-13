@@ -140,3 +140,12 @@ test('HIS action column exposes one primary action and moves secondary work into
   assert.doesNotMatch(his, /profile 해제/);
   assert.match(his, /\.action-buttons\s*\{[^}]*display:\s*flex;[^}]*white-space:\s*nowrap;/s);
 });
+
+test('HIS aggregate polling is single-flight and schedules only after completion', () => {
+  const his = readFileSync(resolve(appRoot, 'resources/his.component.ts'), 'utf8');
+  assert.match(his, /private loadInFlight = false/);
+  assert.match(his, /if \(this\.loadInFlight\) return/);
+  assert.match(his, /private finishLoad\(\): void/);
+  assert.match(his, /setTimeout\(\(\) => this\.load\(false\), 15000\)/);
+  assert.doesNotMatch(his, /setInterval\(\(\) => this\.load\(false\), 3000\)/);
+});

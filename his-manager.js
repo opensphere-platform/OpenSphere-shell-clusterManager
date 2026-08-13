@@ -1,6 +1,6 @@
 'use strict';
 
-const { createHash, timingSafeEqual } = require('crypto');
+const { createHash } = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const net = require('net');
@@ -20,6 +20,8 @@ const MAX_OUTPUT = 1024 * 1024;
 const HELM_TIMEOUT_MS = 12 * 60 * 1000;
 const OPERATION_NAMESPACE = process.env.HIS_OPERATION_NAMESPACE || process.env.POD_NAMESPACE || 'opensphere-console';
 const OPERATION_STALE_MS = 60 * 1000;
+const INTERNAL_STATUS_CALLER = process.env.HIS_INTERNAL_STATUS_CALLER
+  || 'system:serviceaccount:opensphere-console:opensphere-console-dupa-controller';
 const ACTIVE_OPERATION_PHASES = new Set(['Queued', 'Recovering', 'Installing', 'Upgrading', 'RollingBack', 'Configuring', 'Migrating', 'Validating', 'Uninstalling']);
 const OBSERVABILITY_ITEM_ID = 'kube-prometheus-stack';
 const OBSERVABILITY_CONFIG_NAME = 'opensphere-his-config-kube-prometheus-stack';
@@ -2049,12 +2051,19 @@ async function actorFor(ctx, req, adminRequired) {
   return actor;
 }
 
-function internalServiceAccountRequest(ctx, req) {
-  const presented = Buffer.from(String(ctx.requestToken(req) || ''), 'utf8');
-  const expected = Buffer.from(String(ctx.token() || ''), 'utf8');
-  return presented.length > 0
-    && presented.length === expected.length
-    && timingSafeEqual(presented, expected);
+async function internalServiceAccountRequest(ctx, req) {
+  const presented = String(ctx.requestToken(req) || '');
+  if (!presented) return false;
+  const review = await k8sRequest(ctx, '/apis/authentication.k8s.io/v1/tokenreviews', {
+    method: 'POST',
+    body: {
+      apiVersion: 'authentication.k8s.io/v1',
+      kind: 'TokenReview',
+      spec: { token: presented },
+    },
+  });
+  return review?.status?.authenticated === true
+    && review?.status?.user?.username === INTERNAL_STATUS_CALLER;
 }
 
 async function actorForOaaOwner(ctx, req, mutation) {
@@ -2932,7 +2941,7 @@ function createHisManager(ctx) {
       // so the repair/status path remains available even when user identity or
       // the Console UI is unavailable.
       if (req.method === 'GET' && pathname === '/api/his/internal/status') {
-        if (!internalServiceAccountRequest(ctx, req)) {
+        if (!await internalServiceAccountRequest(ctx, req)) {
           throw Object.assign(new Error('HIS internal status requires the Cluster Manager ServiceAccount token.'), { code: 401 });
         }
         return ctx.jsonRes(res, 200, await allStatus(ctx)), true;

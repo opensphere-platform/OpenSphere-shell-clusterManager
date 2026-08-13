@@ -29,7 +29,7 @@ const OBSERVABILITY_PUBLIC_CONFIRMATION = 'ENABLE PUBLIC GRAFANA';
 const HIS_STATUS_SCHEMA = 'his-status.opensphere.io/v1alpha1';
 // The Console extension proxy has a governed 15 second request budget. Status
 // reads must leave enough headroom for authentication, proxying and rendering.
-const HIS_STATUS_ITEM_TIMEOUT_MS = 9 * 1000;
+const HIS_STATUS_ITEM_TIMEOUT_MS = 5 * 1000;
 const OAA_HIS_READ_PERMISSION = 'console.his.read';
 const OAA_HIS_MANAGE_PERMISSION = 'console.his.manage';
 const LOKI_QUERY_URL = (process.env.HIS_LOKI_URL || 'http://opensphere-his-loki.monitoring.svc:3100').replace(/\/$/, '');

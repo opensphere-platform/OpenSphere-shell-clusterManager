@@ -19,6 +19,8 @@ const TEMPO_URL = (process.env.TEMPO_URL || 'http://opensphere-his-tempo.monitor
 const OTLP_HTTP_URL = (process.env.OTLP_HTTP_URL || 'http://opensphere-his-otel-collector.monitoring.svc:4318').replace(/\/$/, '');
 const OTLP_HEALTH_URL = (process.env.OTLP_HEALTH_URL || 'http://opensphere-his-otel-collector.monitoring.svc:13133').replace(/\/$/, '');
 const TELEMETRY_CANARY_REFRESH_MS = Math.max(60000, Number(process.env.TELEMETRY_CANARY_REFRESH_MS || 300000));
+const METRICS_CANARY_REFRESH_MS = Math.max(15000, Number(process.env.METRICS_CANARY_REFRESH_MS || 30000));
+const METRICS_CANARY_FRESHNESS_MS = Math.max(60000, Number(process.env.METRICS_CANARY_FRESHNESS_MS || 120000));
 const METRICS_CANARY_MAX_AGE_MS = Math.max(60 * 60 * 1000, Number(process.env.METRICS_CANARY_MAX_AGE_MS || 24 * 60 * 60 * 1000));
 const GROUP = 'observability.opensphere.io';
 const VERSION = 'v1alpha1';
@@ -152,6 +154,38 @@ async function prometheusQueryReady() {
   } catch { return false; }
 }
 
+function metricsCanaryResult(body, now = Date.now()) {
+  if (body?.status !== 'success' || !Array.isArray(body.data?.result)) {
+    return { ready: false, observedAt: '' };
+  }
+  const samples = body.data.result
+    .map((entry) => entry?.value)
+    .filter((value) => Array.isArray(value) && Number(value[1]) === 1)
+    .map((value) => Number(value[0]) * 1000)
+    .filter(Number.isFinite);
+  const observed = samples.length ? Math.max(...samples) : NaN;
+  const ready = Number.isFinite(observed) && observed <= now + 5000 && now - observed <= METRICS_CANARY_FRESHNESS_MS;
+  return { ready, observedAt: Number.isFinite(observed) ? new Date(observed).toISOString() : '' };
+}
+
+let metricsCanaryCache = { checkedAt: 0, ready: false, observedAt: '', error: '' };
+
+async function metricsCanary() {
+  const cacheTtl = metricsCanaryCache.ready ? METRICS_CANARY_REFRESH_MS : Math.min(15000, METRICS_CANARY_REFRESH_MS);
+  if (metricsCanaryCache.checkedAt && Date.now() - metricsCanaryCache.checkedAt < cacheTtl) return metricsCanaryCache;
+  const checkedAt = Date.now();
+  try {
+    const url = new URL(`${PROMETHEUS_URL}/api/v1/query`);
+    url.searchParams.set('query', 'opensphere_his_binding_canary{binding="opensphere-console"} == 1');
+    const body = await fetchJson(url.toString(), (value) => value?.status === 'success');
+    const result = metricsCanaryResult(body, checkedAt);
+    metricsCanaryCache = { checkedAt, ...result, error: result.ready ? '' : 'fresh scraped canary sample was not found' };
+  } catch (error) {
+    metricsCanaryCache = { checkedAt, ready: false, observedAt: '', error: String(error?.message || error).slice(0, 300) };
+  }
+  return metricsCanaryCache;
+}
+
 async function fetchJson(url, accepted, timeoutMs = 5000) {
   const response = await fetch(url, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(timeoutMs) });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -235,13 +269,13 @@ async function telemetryCanary() {
 }
 
 async function observe() {
-  const [prometheus, alertmanager, grafana, service, operation, queryReady, loki, tempo, collector, lokiService, tempoService, collectorService, telemetry] = await Promise.all([
+  const [prometheus, alertmanager, grafana, service, queryReady, metrics, loki, tempo, collector, lokiService, tempoService, collectorService, telemetry] = await Promise.all([
     k8s('GET', `/apis/apps/v1/namespaces/${MONITORING_NAMESPACE}/statefulsets/prometheus-kube-prometheus-stack-prometheus`),
     k8s('GET', `/apis/apps/v1/namespaces/${MONITORING_NAMESPACE}/statefulsets/alertmanager-kube-prometheus-stack-alertmanager`),
     k8s('GET', `/apis/apps/v1/namespaces/${MONITORING_NAMESPACE}/deployments/kube-prometheus-stack-grafana`),
     k8s('GET', `/api/v1/namespaces/${MONITORING_NAMESPACE}/services/kube-prometheus-stack-prometheus`),
-    k8s('GET', `/api/v1/namespaces/${CONSOLE_NAMESPACE}/configmaps/opensphere-his-operation-kube-prometheus-stack`),
     prometheusQueryReady(),
+    metricsCanary(),
     k8s('GET', `/apis/apps/v1/namespaces/${MONITORING_NAMESPACE}/deployments/opensphere-his-loki`),
     k8s('GET', `/apis/apps/v1/namespaces/${MONITORING_NAMESPACE}/deployments/opensphere-his-tempo`),
     k8s('GET', `/apis/apps/v1/namespaces/${MONITORING_NAMESPACE}/deployments/opensphere-his-otel-collector`),
@@ -250,8 +284,6 @@ async function observe() {
     k8s('GET', `/api/v1/namespaces/${MONITORING_NAMESPACE}/services/opensphere-his-otel-collector`),
     telemetryCanary(),
   ]);
-  const canary = parseOperation(operation.ok ? operation.value : null);
-  const canaryEvidence = currentCanary(canary);
   return {
     stackPresent: service.ok || prometheus.ok || alertmanager.ok || grafana.ok || loki.ok || tempo.ok || collector.ok,
     prometheusReady: prometheus.ok && service.ok && workloadReady(prometheus.value),
@@ -267,8 +299,8 @@ async function observe() {
     telemetryCanaryReady: telemetry.ready,
     telemetryCanaryAt: telemetry.observedAt,
     telemetryCanaryError: telemetry.error,
-    canaryReady: canaryEvidence.ready,
-    canaryAt: canaryEvidence.observedAt,
+    canaryReady: metrics.ready,
+    canaryAt: metrics.observedAt,
   };
 }
 
@@ -345,6 +377,10 @@ async function loop() {
 
 if (require.main === module) {
   http.createServer((req, res) => {
+    if (req.url === '/metrics') {
+      res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4; charset=utf-8' });
+      return res.end('# HELP opensphere_his_binding_canary HIS binding controller scrape canary\n# TYPE opensphere_his_binding_canary gauge\nopensphere_his_binding_canary{binding="opensphere-console"} 1\n');
+    }
     if (!['/healthz', '/readyz'].includes(req.url)) { res.writeHead(404); return res.end('not found'); }
     const ready = lastSuccessAt > 0 && Date.now() - lastSuccessAt < Math.max(90000, INTERVAL_MS * 4);
     const ok = req.url === '/healthz' || ready;
@@ -355,5 +391,5 @@ if (require.main === module) {
     void loop();
   });
 } else {
-  module.exports = { bindingProjection, workloadReady, parseOperation, currentCanary, statusComparable, telemetryPayloads };
+  module.exports = { bindingProjection, workloadReady, parseOperation, currentCanary, metricsCanaryResult, statusComparable, telemetryPayloads };
 }

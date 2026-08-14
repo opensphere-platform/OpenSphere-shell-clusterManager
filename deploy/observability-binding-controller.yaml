@@ -49,26 +49,6 @@ metadata:
   namespace: opensphere-console
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: opensphere-his-binding-controller
-  namespace: opensphere-console
-rules:
-  - apiGroups: [""]
-    resources: [configmaps]
-    resourceNames: [opensphere-his-operation-kube-prometheus-stack]
-    verbs: [get]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: opensphere-his-binding-controller
-  namespace: opensphere-console
-roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: opensphere-his-binding-controller }
-subjects:
-  - { kind: ServiceAccount, name: opensphere-his-binding-controller, namespace: opensphere-console }
----
-apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: opensphere-his-binding-controller
@@ -139,7 +119,8 @@ spec:
             - { name: RECONCILE_INTERVAL_MS, value: "30000" }
             - { name: EVIDENCE_REFRESH_MS, value: "60000" }
             - { name: TELEMETRY_CANARY_REFRESH_MS, value: "300000" }
-            - { name: METRICS_CANARY_MAX_AGE_MS, value: "86400000" }
+            - { name: METRICS_CANARY_REFRESH_MS, value: "30000" }
+            - { name: METRICS_CANARY_FRESHNESS_MS, value: "120000" }
           ports: [{ name: health, containerPort: 8080 }]
           readinessProbe:
             httpGet: { path: /readyz, port: health }
@@ -157,6 +138,38 @@ spec:
             readOnlyRootFilesystem: true
             capabilities: { drop: [ALL] }
 ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: opensphere-his-binding-controller
+  namespace: opensphere-console
+  labels:
+    app: opensphere-his-binding-controller
+    opensphere.io/owner: his
+spec:
+  selector: { app: opensphere-his-binding-controller }
+  ports:
+    - { name: metrics, port: 8080, targetPort: health }
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: opensphere-his-binding-controller
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+    opensphere.io/owner: his
+spec:
+  namespaceSelector:
+    matchNames: [opensphere-console]
+  selector:
+    matchLabels: { app: opensphere-his-binding-controller }
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -165,4 +178,10 @@ metadata:
 spec:
   podSelector: { matchLabels: { app: opensphere-his-binding-controller } }
   policyTypes: [Ingress]
-  ingress: []
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - { protocol: TCP, port: 8080 }

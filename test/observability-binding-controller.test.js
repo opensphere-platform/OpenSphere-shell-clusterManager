@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { bindingProjection, workloadReady, parseOperation, currentCanary, statusComparable, telemetryPayloads } = require('../his-observability-binding-controller');
+const { bindingProjection, workloadReady, parseOperation, currentCanary, metricsCanaryResult, statusComparable, telemetryPayloads } = require('../his-observability-binding-controller');
 
 test('HIS binding publishes only independently verified capabilities', () => {
   const status = bindingProjection({
@@ -69,6 +69,17 @@ test('metrics capability requires a fresh completed synthetic validation', () =>
   assert.equal(currentCanary(operation, Date.parse('2026-08-08T06:27:25.872Z')).ready, false);
 });
 
+test('continuous metrics canary accepts only a fresh Prometheus scrape sample', () => {
+  const now = Date.parse('2026-08-14T08:00:00.000Z');
+  const body = { status: 'success', data: { result: [{ value: [(now - 30000) / 1000, '1'] }] } };
+  assert.deepEqual(metricsCanaryResult(body, now), {
+    ready: true,
+    observedAt: '2026-08-14T07:59:30.000Z',
+  });
+  assert.equal(metricsCanaryResult({ status: 'success', data: { result: [{ value: [(now - 121000) / 1000, '1'] }] } }, now).ready, false);
+  assert.equal(metricsCanaryResult({ status: 'success', data: { result: [] } }, now).ready, false);
+});
+
 test('telemetry capabilities fail closed unless workload, ingestion and read-back all pass', () => {
   const status = bindingProjection({
     stackPresent: true, prometheusReady: true, prometheusQueryReady: true,
@@ -110,6 +121,9 @@ test('ObservabilityBinding controller RBAC cannot read Secrets or mutate monitor
   assert.match(manifest, /resources: \[observabilitybindings\/status\]/);
   assert.match(manifest, /resourceNames: \[opensphere-console\]/);
   assert.match(manifest, /scope: Cluster/);
+  assert.match(manifest, /kind: ServiceMonitor[\s\S]*namespace: monitoring/);
+  assert.match(manifest, /path: \/metrics/);
+  assert.match(manifest, /kubernetes\.io\/metadata\.name: monitoring/);
 });
 
 test('Cluster Manager and HIS Binding Controller share the GA rebuild release', () => {

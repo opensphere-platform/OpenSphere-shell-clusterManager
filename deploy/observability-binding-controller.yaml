@@ -111,7 +111,7 @@ spec:
           # Local developer profile. publish-image.yml renders the reviewed
           # release artifact with the exact attested GHCR digest; production
           # Change Control must consume that rendered manifest, never this tag.
-          image: opensphere-his-binding-controller:local-v3
+          image: ghcr.io/opensphere-platform/opensphere-his-binding-controller@sha256:160ae27cd906e2d8b9652c2edc5b2fd113529f9d34f7f486fa445ea06046a8ce
           imagePullPolicy: IfNotPresent
           env:
             - { name: CONSOLE_NAMESPACE, value: opensphere-console }

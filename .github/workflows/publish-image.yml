@@ -204,7 +204,7 @@ jobs:
             --arg revision "$GITHUB_SHA" \
             --arg manager "ghcr.io/opensphere-platform/opensphere-shell-cluster-manager@$MANAGER_DIGEST" \
             --arg binding "ghcr.io/opensphere-platform/opensphere-his-binding-controller@$BINDING_DIGEST" \
-            '{schema:"infrastructure-owner-release.opensphere.io/v1alpha1",sourceRevision:$revision,clusterManagerImage:$manager,bindingControllerImage:$binding,manifests:{observabilityBindingController:"observability-binding-controller.yaml",cephRuntimeOwner:"ceph-runtime-owner.yaml",hissRuntimeOwner:"hiss-runtime-owner.yaml"},prerequisites:{hissRuntimeOwner:"signed HISS runtime owner RBAC must be applied before lifecycle planning or mutation",cephOperator:"signed platform-owned Rook operator and Ceph CRDs must be Ready before OAA capability publication"}}' \
+            '{schema:"infrastructure-owner-release.opensphere.io/v1alpha1",sourceRevision:$revision,clusterManagerImage:$manager,bindingControllerImage:$binding,manifests:{observabilityBindingController:"observability-binding-controller.yaml",cephRuntimeOwner:"ceph-runtime-owner.yaml",hissRuntimeOwner:"hiss-runtime-owner.yaml"},prerequisites:{hissRuntimeOwner:"signed HISS runtime owner RBAC must be applied before lifecycle planning or mutation",cephOperator:"signed platform-owned Rook operator and Ceph CRDs must be Ready before OSAA capability publication"}}' \
             >"$RUNNER_TEMP/hiss-owner-release/release.json"
       - uses: actions/upload-artifact@v4
         with:

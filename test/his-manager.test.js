@@ -39,8 +39,8 @@ const {
   orderedParallelMap,
   itemStatusWithinDeadline,
   validateObservabilityConfig,
-  normalizeOaaObservabilityConfig,
-  oaaObservabilityConfirmation,
+  normalizeOsaaObservabilityConfig,
+  osaaObservabilityConfirmation,
   observabilityValues,
   observabilityRead,
   observabilityPvcComponent,
@@ -436,22 +436,22 @@ test('Observability installation accepts any existing StorageClass and warns whe
   assert.doesNotMatch(manager, /blockers\.push\(`\$\{component\}:.*등록된 CSIDriver가 아닙니다/);
 });
 
-test('OAA Observability owner input is recursively closed and confirmations expose high-risk choices', () => {
-  const config = normalizeOaaObservabilityConfig(DEFAULT_OBSERVABILITY_CONFIG);
-  assert.equal(oaaObservabilityConfirmation(config, false), 'configure HIS observability public=false data-reset=false');
-  assert.throws(() => normalizeOaaObservabilityConfig({ ...DEFAULT_OBSERVABILITY_CONFIG, command: 'kubectl get secrets' }), /허용되지 않은 필드/);
-  assert.throws(() => normalizeOaaObservabilityConfig({
+test('OSAA Observability owner input is recursively closed and confirmations expose high-risk choices', () => {
+  const config = normalizeOsaaObservabilityConfig(DEFAULT_OBSERVABILITY_CONFIG);
+  assert.equal(osaaObservabilityConfirmation(config, false), 'configure HIS observability public=false data-reset=false');
+  assert.throws(() => normalizeOsaaObservabilityConfig({ ...DEFAULT_OBSERVABILITY_CONFIG, command: 'kubectl get secrets' }), /허용되지 않은 필드/);
+  assert.throws(() => normalizeOsaaObservabilityConfig({
     ...DEFAULT_OBSERVABILITY_CONFIG,
     prometheus: { ...DEFAULT_OBSERVABILITY_CONFIG.prometheus, remoteWrite: { enabled: false, token: 'raw-secret' } },
   }), /허용되지 않은 필드/);
-  const publicConfig = normalizeOaaObservabilityConfig({
+  const publicConfig = normalizeOsaaObservabilityConfig({
     ...DEFAULT_OBSERVABILITY_CONFIG,
     grafana: {
       ...DEFAULT_OBSERVABILITY_CONFIG.grafana,
       exposureMode: 'PublicIngress', hostname: 'grafana.example.com', tlsSecretName: 'grafana-tls', oidcSecretName: 'grafana-oidc',
     },
   });
-  assert.equal(oaaObservabilityConfirmation(publicConfig, true), 'configure HIS observability public=true data-reset=true');
+  assert.equal(osaaObservabilityConfirmation(publicConfig, true), 'configure HIS observability public=true data-reset=true');
 });
 
 test('private Grafana ingress requires TLS, OIDC references and CIDR restrictions', () => {

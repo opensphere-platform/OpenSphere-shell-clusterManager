@@ -386,9 +386,9 @@ export class CephService {
 
   private url(path: string): string { return `${this.base()}/api/ceph/${path}`; }
 
-  status(): Observable<CephStatus> { return this.http.get<CephStatus>(this.url('oaa/status')); }
+  status(): Observable<CephStatus> { return this.http.get<CephStatus>(this.url('osaa/status')); }
   insights(refresh = false): Observable<CephInsights> {
-    return this.http.get<CephInsights>(this.url(`oaa/insights${refresh ? '?refresh=1' : ''}`)).pipe(
+    return this.http.get<CephInsights>(this.url(`osaa/insights${refresh ? '?refresh=1' : ''}`)).pipe(
       retry({
         count: 2,
         delay: (failure: any, retryCount) => {
@@ -413,7 +413,7 @@ export class CephService {
   }
   connectImport(importRef: string, reason: string): Observable<{ ok: boolean; status: CephStatus }> {
     const confirm = `connect Ceph external storage using ${importRef}`;
-    return this.http.post<{ ok: boolean; status: CephStatus }>(this.url('oaa/connect'), { importRef, reason, confirm });
+    return this.http.post<{ ok: boolean; status: CephStatus }>(this.url('osaa/connect'), { importRef, reason, confirm });
   }
   configureCephFs(configuration: CephFsConfigurationInput, reason: string): Observable<{ ok: boolean; status: CephStatus }> {
     return this.http.post<{ ok: boolean; status: CephStatus }>(this.url('services/cephfs'), {
@@ -429,12 +429,12 @@ export class CephService {
   ): Observable<{ accepted: boolean; operation: CephDataPathVerificationRecord; pollPath: string }> {
     const confirm = `verify Ceph ${serviceId} data path using StorageClass/${storageClassName}`;
     return this.http.post<{ accepted: boolean; operation: CephDataPathVerificationRecord; pollPath: string }>(
-      this.url('oaa/verifications'),
+      this.url('osaa/verifications'),
       { serviceId, storageClassName, reason, confirm },
     );
   }
   updateMonitoringUrl(monitoringUrl: string, reason: string): Observable<{ ok: boolean; status: CephStatus; correlationId: string }> {
-    return this.http.post<{ ok: boolean; status: CephStatus; correlationId: string }>(this.url('oaa/monitoring'), {
+    return this.http.post<{ ok: boolean; status: CephStatus; correlationId: string }>(this.url('osaa/monitoring'), {
       monitoringUrl,
       reason,
       confirm: 'update Ceph monitoring URL',
@@ -442,6 +442,6 @@ export class CephService {
   }
   disconnect(reason: string): Observable<{ ok: boolean; retained: string[]; removed: string[] }> {
     const confirm = 'disconnect Ceph external storage';
-    return this.http.post<{ ok: boolean; retained: string[]; removed: string[] }>(this.url('oaa/disconnect'), { reason, confirm });
+    return this.http.post<{ ok: boolean; retained: string[]; removed: string[] }>(this.url('osaa/disconnect'), { reason, confirm });
   }
 }

@@ -2,7 +2,7 @@
 
 // HIS owns the shared telemetry substrate. These manifests are rendered into
 // kube-prometheus-stack's Helm revision through extraManifests; they are never
-// accepted from a browser or an OAA free-form payload.
+// accepted from a browser or an OSAA free-form payload.
 const IMAGES = Object.freeze({
   loki: 'grafana/loki:3.7.2@sha256:191d4fdfb7264f16989f0a57f320872620a5a7c2ceeec6229212c4190ec49b86',
   tempo: 'grafana/tempo:2.10.5@sha256:ee21727732c7a7199cb71c3eee9153bbf23f9b0b87619f0555a0cf21a67f1a33',

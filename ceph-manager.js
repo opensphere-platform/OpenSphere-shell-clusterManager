@@ -60,8 +60,8 @@ const CSI_CRDS = Object.freeze([
   'drivers.csi.ceph.io',
   'operatorconfigs.csi.ceph.io',
 ]);
-const OAA_CEPH_READ_PERMISSION = 'console.ceph.read';
-const OAA_CEPH_MANAGE_PERMISSION = 'console.ceph.manage';
+const OSAA_CEPH_READ_PERMISSION = 'console.ceph.read';
+const OSAA_CEPH_MANAGE_PERMISSION = 'console.ceph.manage';
 const IMPORT_SECRET_TYPE = 'opensphere.io/ceph-provider-export';
 const IMPORT_TTL_MS = 60 * 60 * 1000;
 const IMPORT_NAME_RE = /^opensphere-ceph-import-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -814,12 +814,12 @@ async function actorFor(ctx, req, adminRequired) {
   return actor;
 }
 
-async function actorForOaaOwner(ctx, req, mutation) {
+async function actorForOsaaOwner(ctx, req, mutation) {
   const actor = await ctx.verifyToken(ctx.requestToken(req));
   const permissions = new Set(Array.isArray(actor.permissions) ? actor.permissions : []);
-  const requiredPermission = mutation ? OAA_CEPH_MANAGE_PERMISSION : OAA_CEPH_READ_PERMISSION;
-  if (!permissions.has(requiredPermission)) throw error(`Ceph OAA owner API에는 ${requiredPermission} 권한이 필요합니다.`, 403);
-  if (mutation && String(actor.assurance || 'aal1').toLowerCase() !== 'aal2') throw error('Ceph OAA 변경은 AAL2 재인증이 필요합니다.', 403);
+  const requiredPermission = mutation ? OSAA_CEPH_MANAGE_PERMISSION : OSAA_CEPH_READ_PERMISSION;
+  if (!permissions.has(requiredPermission)) throw error(`Ceph OSAA owner API에는 ${requiredPermission} 권한이 필요합니다.`, 403);
+  if (mutation && String(actor.assurance || 'aal1').toLowerCase() !== 'aal2') throw error('Ceph OSAA 변경은 AAL2 재인증이 필요합니다.', 403);
   return actor;
 }
 
@@ -2420,7 +2420,7 @@ async function startCephDataPathVerification(ctx, req, actor, input) {
   return {
     accepted: true,
     operation: record,
-    pollPath: '/api/ceph/oaa/status',
+    pollPath: '/api/ceph/osaa/status',
   };
 }
 
@@ -2872,8 +2872,8 @@ function createCephManager(ctx) {
   return async function handle(req, res, pathname) {
     if (!pathname.startsWith('/api/ceph/')) return false;
     try {
-      if (req.method === 'GET' && pathname === '/api/ceph/oaa/capabilities') {
-        await actorForOaaOwner(ctx, req, false);
+      if (req.method === 'GET' && pathname === '/api/ceph/osaa/capabilities') {
+        await actorForOsaaOwner(ctx, req, false);
         const [prerequisites, verificationStore, verificationRuntime] = await Promise.all([
           cephOwnerPrerequisites(ctx),
           readVerificationStore(ctx),
@@ -2883,7 +2883,7 @@ function createCephManager(ctx) {
         if (prerequisites.ready) capabilities.push('import-stage', 'plan-from-import', 'connect-from-import', 'monitoring-update', 'disconnect');
         if (verificationStore.available && verificationRuntime.ready) capabilities.push('data-path-verify');
         ctx.jsonRes(res, 200, {
-          apiVersion: 'opensphere.io/oaa-ceph-owner/v1', capabilities,
+          apiVersion: 'opensphere.io/osaa-ceph-owner/v1', capabilities,
           secretInputPolicy: 'StagedSecretRefOnly', mutationAssurance: 'aal2', prerequisites,
           dataPathVerification: {
             ...verificationStore,
@@ -2893,8 +2893,8 @@ function createCephManager(ctx) {
         });
         return true;
       }
-      if (req.method === 'POST' && pathname === '/api/ceph/oaa/verifications') {
-        const actor = await actorForOaaOwner(ctx, req, true);
+      if (req.method === 'POST' && pathname === '/api/ceph/osaa/verifications') {
+        const actor = await actorForOsaaOwner(ctx, req, true);
         const accepted = await startCephDataPathVerification(
           ctx,
           req,
@@ -2904,8 +2904,8 @@ function createCephManager(ctx) {
         ctx.jsonRes(res, 202, accepted);
         return true;
       }
-      if (req.method === 'GET' && pathname === '/api/ceph/oaa/status') {
-        await actorForOaaOwner(ctx, req, false);
+      if (req.method === 'GET' && pathname === '/api/ceph/osaa/status') {
+        await actorForOsaaOwner(ctx, req, false);
         const [status, prerequisites, installationRequest] = await Promise.all([
           cephStatus(ctx),
           cephOwnerPrerequisites(ctx),
@@ -2914,8 +2914,8 @@ function createCephManager(ctx) {
         ctx.jsonRes(res, 200, { ...status, ownerPrerequisites: { ...prerequisites, installationRequest } });
         return true;
       }
-      if (req.method === 'GET' && pathname === '/api/ceph/oaa/insights') {
-        await actorForOaaOwner(ctx, req, false);
+      if (req.method === 'GET' && pathname === '/api/ceph/osaa/insights') {
+        await actorForOsaaOwner(ctx, req, false);
         const requestUrl = new URL(req.url || pathname, 'http://cluster-manager.local');
         const refresh = requestUrl.searchParams.get('refresh') === '1';
         ctx.jsonRes(res, 200, await cephInsights(ctx, refresh));
@@ -2927,7 +2927,7 @@ function createCephManager(ctx) {
         return true;
       }
       if (req.method === 'POST' && pathname === '/api/ceph/imports') {
-        const actor = await actorForOaaOwner(ctx, req, true);
+        const actor = await actorForOsaaOwner(ctx, req, true);
         const body = requireClosedObject(await readJson(req), ['connection', 'confirm', 'reason'], 'request');
         if (String(body.confirm || '') !== 'stage Ceph connection') throw error("Ceph 접속 정보 staging 확인 값으로 'stage Ceph connection'을 입력해야 합니다.");
         const reason = reasonFrom(body);
@@ -2946,16 +2946,16 @@ function createCephManager(ctx) {
         ctx.jsonRes(res, 201, { ...staged, correlationId });
         return true;
       }
-      if (req.method === 'POST' && pathname === '/api/ceph/oaa/plan') {
-        await actorForOaaOwner(ctx, req, false);
+      if (req.method === 'POST' && pathname === '/api/ceph/osaa/plan') {
+        await actorForOsaaOwner(ctx, req, false);
         const body = requireClosedObject(await readJson(req), ['importRef'], 'request');
         const staged = await connectionFromImportRef(ctx, body.importRef);
         const [snapshotSupported, prerequisites] = await Promise.all([snapshotApiAvailable(ctx), cephOwnerPrerequisites(ctx)]);
         ctx.jsonRes(res, 200, { ...planFor(staged.connection, snapshotSupported), importRef: `${IMPORT_NAMESPACE}/${staged.name}`, prerequisites });
         return true;
       }
-      if (req.method === 'POST' && pathname === '/api/ceph/oaa/connect') {
-        const actor = await actorForOaaOwner(ctx, req, true);
+      if (req.method === 'POST' && pathname === '/api/ceph/osaa/connect') {
+        const actor = await actorForOsaaOwner(ctx, req, true);
         const body = requireClosedObject(await readJson(req), ['importRef', 'confirm', 'reason'], 'request');
         const importName = importNameFromRef(body.importRef);
         const importRef = `${IMPORT_NAMESPACE}/${importName}`;
@@ -2967,7 +2967,7 @@ function createCephManager(ctx) {
           const staged = await connectionFromImportRef(ctx, importRef);
           const correlationId = correlationFrom(req);
           const status = await auditedChange(
-            ctx, actor, 'OAACephExternalConnectRequested', reason,
+            ctx, actor, 'OSAACephExternalConnectRequested', reason,
             { importRef, fsidFingerprint: staged.connection.fsidFingerprint, chartVersion: CHART_VERSION, storageClasses: staged.connection.storageClasses.map((item) => item.name) },
             correlationId,
             async () => {
@@ -2984,7 +2984,7 @@ function createCephManager(ctx) {
         } finally { activeOperations.delete('external'); }
       }
       if (req.method === 'POST' && pathname === '/api/ceph/services/cephfs') {
-        const actor = await actorForOaaOwner(ctx, req, true);
+        const actor = await actorForOsaaOwner(ctx, req, true);
         const body = requireClosedObject(await readJson(req), ['configuration', 'confirm', 'reason'], 'request');
         if (String(body.confirm || '') !== 'configure CephFS storage service') {
           throw error("CephFS 구성 확인 값으로 'configure CephFS storage service'를 입력해야 합니다.");
@@ -3013,8 +3013,8 @@ function createCephManager(ctx) {
           return true;
         } finally { activeOperations.delete('cephfs'); }
       }
-      if (req.method === 'POST' && pathname === '/api/ceph/oaa/monitoring') {
-        const actor = await actorForOaaOwner(ctx, req, true);
+      if (req.method === 'POST' && pathname === '/api/ceph/osaa/monitoring') {
+        const actor = await actorForOsaaOwner(ctx, req, true);
         const body = requireClosedObject(await readJson(req), ['monitoringUrl', 'confirm', 'reason'], 'request');
         if (String(body.confirm || '') !== 'update Ceph monitoring URL') {
           throw error("모니터 주소 변경 확인 값으로 'update Ceph monitoring URL'을 입력해야 합니다.");
@@ -3045,8 +3045,8 @@ function createCephManager(ctx) {
           return true;
         } finally { activeOperations.delete('monitoring'); }
       }
-      if (req.method === 'POST' && pathname === '/api/ceph/oaa/disconnect') {
-        const actor = await actorForOaaOwner(ctx, req, true);
+      if (req.method === 'POST' && pathname === '/api/ceph/osaa/disconnect') {
+        const actor = await actorForOsaaOwner(ctx, req, true);
         const body = requireClosedObject(await readJson(req), ['confirm', 'reason'], 'request');
         if (String(body.confirm || '') !== 'disconnect Ceph external storage') throw error("Ceph 연결 해제 확인 값으로 'disconnect Ceph external storage'를 입력해야 합니다.");
         const reason = reasonFrom(body);
@@ -3058,7 +3058,7 @@ function createCephManager(ctx) {
           if (!metadata) throw error('Cluster Manager가 관리하는 Ceph 연결이 없습니다.', 409);
           const correlationId = correlationFrom(req);
           const result = await auditedChange(
-            ctx, actor, 'OAACephExternalDisconnectRequested', reason,
+            ctx, actor, 'OSAACephExternalDisconnectRequested', reason,
             { fsidFingerprint: metadata.fsidFingerprint, storageClasses: metadata.storageClasses },
             correlationId,
             () => disconnect(ctx, metadata),
@@ -3068,20 +3068,20 @@ function createCephManager(ctx) {
           return true;
         } finally { activeOperations.delete('external'); }
       }
-      // 읽기 전용 상태 조회도 OAA 읽기 권한(console.ceph.read)을 요구한다.
-      // 이전에는 임의 인증 사용자에게 제공되어 /api/ceph/oaa/status와 인가 기준이 어긋났다.
+      // 읽기 전용 상태 조회도 OSAA 읽기 권한(console.ceph.read)을 요구한다.
+      // 이전에는 임의 인증 사용자에게 제공되어 /api/ceph/osaa/status와 인가 기준이 어긋났다.
       if (req.method === 'GET' && pathname === '/api/ceph/status') {
-        await actorForOaaOwner(ctx, req, false);
+        await actorForOsaaOwner(ctx, req, false);
         ctx.jsonRes(res, 200, await cephStatus(ctx));
         return true;
       }
       if (req.method !== 'POST') throw error('method not allowed', 405);
       const body = await readJson(req);
-      // 변경 계획 수립은 비변경 작업이므로 /api/ceph/oaa/plan과 동일하게 읽기 권한을 요구한다.
+      // 변경 계획 수립은 비변경 작업이므로 /api/ceph/osaa/plan과 동일하게 읽기 권한을 요구한다.
       // 변경을 수행하는 legacy 경로(/api/ceph/connect·/api/ceph/disconnect)는 staged Secret과
-      // AAL2 게이트를 우회할 수 있어 제거했다. 연결·해제는 /api/ceph/oaa/* 만 사용한다.
+      // AAL2 게이트를 우회할 수 있어 제거했다. 연결·해제는 /api/ceph/osaa/* 만 사용한다.
       if (pathname === '/api/ceph/plan') {
-        await actorForOaaOwner(ctx, req, false);
+        await actorForOsaaOwner(ctx, req, false);
         const request = requireClosedObject(body, ['connection'], 'request');
         const connection = validateConnectionInput(request.connection);
         const snapshotSupported = await snapshotApiAvailable(ctx);
@@ -3089,7 +3089,7 @@ function createCephManager(ctx) {
         return true;
       }
       if (pathname === '/api/ceph/connect' || pathname === '/api/ceph/disconnect') {
-        throw error('이 경로는 제거되었습니다. AAL2와 console.ceph.manage를 강제하는 /api/ceph/oaa/connect 또는 /api/ceph/oaa/disconnect를 사용하십시오.', 410);
+        throw error('이 경로는 제거되었습니다. AAL2와 console.ceph.manage를 강제하는 /api/ceph/osaa/connect 또는 /api/ceph/osaa/disconnect를 사용하십시오.', 410);
       }
       throw error('not found', 404);
     } catch (e) {

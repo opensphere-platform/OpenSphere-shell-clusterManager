@@ -33,8 +33,8 @@ const HIS_STATUS_SCHEMA = 'his-status.opensphere.io/v1alpha1';
 // reads must leave enough headroom for authentication, proxying and rendering.
 const HIS_STATUS_ITEM_TIMEOUT_MS = 5 * 1000;
 const HIS_STATUS_CACHE_TTL_MS = 10 * 1000;
-const OAA_HIS_READ_PERMISSION = 'console.his.read';
-const OAA_HIS_MANAGE_PERMISSION = 'console.his.manage';
+const OSAA_HIS_READ_PERMISSION = 'console.his.read';
+const OSAA_HIS_MANAGE_PERMISSION = 'console.his.manage';
 const LOKI_QUERY_URL = (process.env.HIS_LOKI_URL || 'http://opensphere-his-loki.monitoring.svc:3100').replace(/\/$/, '');
 const TEMPO_QUERY_URL = (process.env.HIS_TEMPO_URL || 'http://opensphere-his-tempo.monitoring.svc:3200').replace(/\/$/, '');
 const OIDC_SECRET_KEYS = Object.freeze([
@@ -197,7 +197,7 @@ function requireClosedObject(input, allowedKeys, label) {
   return input;
 }
 
-function normalizeOaaObservabilityConfig(input) {
+function normalizeOsaaObservabilityConfig(input) {
   const source = requireClosedObject(input, ['schemaVersion', 'prometheus', 'alertmanager', 'grafana', 'telemetry'], 'config');
   if (source.schemaVersion !== undefined && source.schemaVersion !== 1) {
     throw Object.assign(new Error('config.schemaVersion은 1이어야 합니다.'), { code: 400 });
@@ -220,7 +220,7 @@ function normalizeOaaObservabilityConfig(input) {
   return validateObservabilityConfig(source);
 }
 
-function oaaObservabilityConfirmation(config, resetData) {
+function osaaObservabilityConfirmation(config, resetData) {
   const publicExposure = config.grafana.exposureMode === 'PublicIngress';
   return `configure HIS observability public=${publicExposure} data-reset=${Boolean(resetData)}`;
 }
@@ -2066,15 +2066,15 @@ async function internalServiceAccountRequest(ctx, req) {
     && review?.status?.user?.username === INTERNAL_STATUS_CALLER;
 }
 
-async function actorForOaaOwner(ctx, req, mutation) {
+async function actorForOsaaOwner(ctx, req, mutation) {
   const actor = await ctx.verifyToken(ctx.requestToken(req));
   const permissions = new Set(Array.isArray(actor.permissions) ? actor.permissions : []);
-  const requiredPermission = mutation ? OAA_HIS_MANAGE_PERMISSION : OAA_HIS_READ_PERMISSION;
+  const requiredPermission = mutation ? OSAA_HIS_MANAGE_PERMISSION : OSAA_HIS_READ_PERMISSION;
   if (!permissions.has(requiredPermission)) {
-    throw Object.assign(new Error(`HIS OAA owner API에는 ${requiredPermission} 권한이 필요합니다.`), { code: 403 });
+    throw Object.assign(new Error(`HIS OSAA owner API에는 ${requiredPermission} 권한이 필요합니다.`), { code: 403 });
   }
   if (mutation && String(actor.assurance || 'aal1').toLowerCase() !== 'aal2') {
-    throw Object.assign(new Error('HIS OAA 변경은 AAL2 재인증이 필요합니다.'), { code: 403 });
+    throw Object.assign(new Error('HIS OSAA 변경은 AAL2 재인증이 필요합니다.'), { code: 403 });
   }
   return actor;
 }
@@ -2946,32 +2946,32 @@ function createHisManager(ctx) {
         }
         return ctx.jsonRes(res, 200, await allStatus(ctx)), true;
       }
-      if (req.method === 'GET' && pathname === '/api/his/oaa/capabilities') {
-        await actorForOaaOwner(ctx, req, false);
+      if (req.method === 'GET' && pathname === '/api/his/osaa/capabilities') {
+        await actorForOsaaOwner(ctx, req, false);
         return ctx.jsonRes(res, 200, {
-          apiVersion: 'opensphere.io/oaa-his-owner/v1',
+          apiVersion: 'opensphere.io/osaa-his-owner/v1',
           capabilities: ['observability-config-read', 'observability-plan', 'observability-configure'],
           secretInputPolicy: 'SecretRefOnly',
           mutationAssurance: 'aal2',
         }), true;
       }
-      if (req.method === 'GET' && pathname === '/api/his/oaa/observability/config') {
-        await actorForOaaOwner(ctx, req, false);
+      if (req.method === 'GET' && pathname === '/api/his/osaa/observability/config') {
+        await actorForOsaaOwner(ctx, req, false);
         return ctx.jsonRes(res, 200, await observabilityConfiguration(ctx)), true;
       }
-      if (req.method === 'POST' && pathname === '/api/his/oaa/observability/plan') {
-        await actorForOaaOwner(ctx, req, false);
+      if (req.method === 'POST' && pathname === '/api/his/osaa/observability/plan') {
+        await actorForOsaaOwner(ctx, req, false);
         const body = requireClosedObject(await readJson(req), ['config'], 'request');
-        return ctx.jsonRes(res, 200, await observabilityConfigurationPlan(ctx, normalizeOaaObservabilityConfig(body.config))), true;
+        return ctx.jsonRes(res, 200, await observabilityConfigurationPlan(ctx, normalizeOsaaObservabilityConfig(body.config))), true;
       }
-      if (req.method === 'POST' && pathname === '/api/his/oaa/observability/configure') {
-        const actor = await actorForOaaOwner(ctx, req, true);
+      if (req.method === 'POST' && pathname === '/api/his/osaa/observability/configure') {
+        const actor = await actorForOsaaOwner(ctx, req, true);
         const body = requireClosedObject(await readJson(req), ['config', 'resetData', 'confirm', 'reason'], 'request');
         if (typeof body.resetData !== 'boolean') throw Object.assign(new Error('resetData는 boolean이어야 합니다.'), { code: 400 });
         const reason = reasonFrom(body);
-        const desired = normalizeOaaObservabilityConfig(body.config);
+        const desired = normalizeOsaaObservabilityConfig(body.config);
         const configurationPlan = await observabilityConfigurationPlan(ctx, desired);
-        const expectedConfirmation = oaaObservabilityConfirmation(desired, body.resetData);
+        const expectedConfirmation = osaaObservabilityConfirmation(desired, body.resetData);
         if (String(body.confirm || '') !== expectedConfirmation) {
             throw Object.assign(new Error(`HIS observability 변경 확인 값으로 '${expectedConfirmation}'를 입력해야 합니다.`), { code: 400 });
         }
@@ -2985,7 +2985,7 @@ function createHisManager(ctx) {
         const item = catalogItem(OBSERVABILITY_ITEM_ID);
         const release = await helmStatus(ctx, item);
         if (!release?.managed) throw Object.assign(new Error('Cluster Manager가 설치한 Shared Observability만 재구성할 수 있습니다.'), { code: 409 });
-        await auditRequired(ctx, actor, 'OAAHISObservabilityConfigureRequested', item, reason, `requested:${desired.grafana.exposureMode}:reset=${body.resetData}`);
+        await auditRequired(ctx, actor, 'OSAAHISObservabilityConfigureRequested', item, reason, `requested:${desired.grafana.exposureMode}:reset=${body.resetData}`);
         const operation = await createOperation(ctx, item, actor, 'configure', reason);
         ctx.jsonRes(res, 202, { ok: true, operation });
         setImmediate(() => { void executeObservabilityConfiguration(ctx, actor, item, operation, desired, body.resetData); });
@@ -3165,8 +3165,8 @@ module.exports = {
   evaluateProfiles,
   evaluateStackStatus,
   validateObservabilityConfig,
-  normalizeOaaObservabilityConfig,
-  oaaObservabilityConfirmation,
+  normalizeOsaaObservabilityConfig,
+  osaaObservabilityConfirmation,
   observabilityValues,
   observabilityRead,
   observabilityPvcComponent,

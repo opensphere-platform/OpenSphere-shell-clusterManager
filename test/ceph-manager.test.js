@@ -708,12 +708,12 @@ test('status exposes current non-secret Ceph connection values and never the use
   assert.ok(!Object.hasOwn(projection, 'userKey'));
 });
 
-test('OAA Ceph accepts only an owner-staged SecretRef and never raw connection credentials', () => {
+test('OSAA Ceph accepts only an owner-staged SecretRef and never raw connection credentials', () => {
   const name = 'opensphere-ceph-import-12345678-1234-4234-9234-123456789abc';
   assert.equal(importNameFromRef(`opensphere-ceph-imports/${name}`), name);
   assert.throws(() => importNameFromRef(`rook-ceph/${name}`), /importRef/);
   assert.throws(() => importNameFromRef('opensphere-ceph-imports/arbitrary-secret'), /importRef/);
-  assert.match(source, /\/api\/ceph\/oaa\/connect/);
+  assert.match(source, /\/api\/ceph\/osaa\/connect/);
   assert.match(source, /connectionFromImportRef/);
   assert.match(source, /secretInputPolicy: 'StagedSecretRefOnly'/);
   assert.match(source, /requireClosedObject\(await readJson\(req\), \['importRef', 'confirm', 'reason'\]/);
@@ -848,7 +848,7 @@ test('Ceph insights preserve available sections and explain permission-limited s
 });
 
 test('Ceph insights endpoint is fixed, read-only, bounded, and accepts no command input', () => {
-  assert.match(source, /pathname === '\/api\/ceph\/oaa\/insights'/);
+  assert.match(source, /pathname === '\/api\/ceph\/osaa\/insights'/);
   assert.match(source, /CEPH_OBSERVER_MAX_BYTES = 4 \* 1024 \* 1024/);
   assert.match(source, /AbortSignal\.timeout\(25_000\)/);
   assert.match(source, /searchParams\.get\('refresh'\) === '1'/);
@@ -925,7 +925,7 @@ test('C-03: legacy direct API cannot bypass the AAL2 + console.ceph.manage gate'
       await handle(request('POST', { connection: {}, reason: 'audit regression probe' }), res, pathname);
       assert.equal(res.code, 410, `${pathname}는 제거되어야 한다`);
     }
-    // 남은 legacy 경로는 OAA 읽기 권한을 강제해야 한다(403).
+    // 남은 legacy 경로는 OSAA 읽기 권한을 강제해야 한다(403).
     for (const [method, pathname] of [['POST', '/api/ceph/plan'], ['GET', '/api/ceph/status']]) {
       const res = {};
       await handle(request(method, { connection: {} }), res, pathname);
@@ -938,14 +938,14 @@ test('C-03: mutating legacy connect/disconnect handlers are removed from the sou
   // legacy 경로는 410을 반환하는 단일 분기로만 남아야 한다.
   assert.match(source, /pathname === '\/api\/ceph\/connect' \|\| pathname === '\/api\/ceph\/disconnect'\)[^]*?410/);
   // legacy 변경 핸들러가 사용하던 audit action이 남아 있으면 핸들러도 남아 있는 것이다.
-  // (OAA 경로는 OAACephExternal* 접두사를 사용하므로 이 검사와 충돌하지 않는다.)
+  // (OSAA 경로는 OSAACephExternal* 접두사를 사용하므로 이 검사와 충돌하지 않는다.)
   assert.doesNotMatch(source, /auditRequired\([^)]*'CephExternalConnectRequested'/);
   assert.doesNotMatch(source, /auditRequired\([^)]*'CephExternalDisconnectRequested'/);
   // legacy 경로에서 installConnection/disconnect를 직접 호출하지 않는다.
   assert.doesNotMatch(source, /String\(body\.confirm \|\| ''\) !== 'DISCONNECT'/);
-  // 남은 legacy 경로는 group 검사(actorFor)가 아니라 OAA 인가를 사용해야 한다.
-  assert.match(source, /pathname === '\/api\/ceph\/status'\) \{\s*await actorForOaaOwner\(ctx, req, false\)/);
-  assert.match(source, /pathname === '\/api\/ceph\/plan'\) \{\s*await actorForOaaOwner\(ctx, req, false\)/);
+  // 남은 legacy 경로는 group 검사(actorFor)가 아니라 OSAA 인가를 사용해야 한다.
+  assert.match(source, /pathname === '\/api\/ceph\/status'\) \{\s*await actorForOsaaOwner\(ctx, req, false\)/);
+  assert.match(source, /pathname === '\/api\/ceph\/plan'\) \{\s*await actorForOsaaOwner\(ctx, req, false\)/);
 });
 
 test('C-02: runtime RBAC limits ConfigMap mutation to the managed names', () => {
@@ -1054,6 +1054,6 @@ test('Ceph Monitoring embeds read-only Grafana with explicit browser security bo
   assert.match(component, /sessionStorage\?\.setItem\(READ_ONLY_NOTICE_DISMISSED_KEY, '1'\)/);
   assert.match(component, /params\.append\('kiosk', ''\)/);
   assert.match(component, /refresh: this\.refresh\(\)/);
-  assert.match(source, /pathname === '\/api\/ceph\/oaa\/monitoring'/);
+  assert.match(source, /pathname === '\/api\/ceph\/osaa\/monitoring'/);
   assert.match(source, /CephMonitoringConfigurationUpdated/);
 });
